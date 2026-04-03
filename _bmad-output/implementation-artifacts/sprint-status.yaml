@@ -1,5 +1,5 @@
 # generated: 2026-04-02
-# last_updated: 2026-04-04T00:40:00
+# last_updated: 2026-04-03T12:46:19Z
 # project: TheFlightWall_OSS-main
 # project_key: NOKEY
 # tracking_system: file-system
@@ -37,7 +37,7 @@
 # - Epic 4 stories (4.1-4.4) are parallelizable — no internal dependencies
 
 generated: 2026-04-02
-last_updated: 2026-04-04T00:40:00
+last_updated: 2026-04-03T14:28:02Z
 project: TheFlightWall_OSS-main
 project_key: NOKEY
 tracking_system: file-system
@@ -68,15 +68,15 @@ development_status:
   # === Epic 3: Enhanced Flight Display & Canvas Preview ===
   epic-3: in-progress
   3-1-layout-engine-and-shared-zone-algorithm: done
-  3-2-logo-manager-and-fallback-sprite: review
-  3-3-zone-based-flight-rendering-with-logos-and-telemetry: ready-for-dev
-  3-4-canvas-layout-preview-in-dashboard: ready-for-dev
+  3-2-logo-manager-and-fallback-sprite: done
+  3-3-zone-based-flight-rendering-with-logos-and-telemetry: done
+  3-4-canvas-layout-preview-in-dashboard: done
   epic-3-retrospective: optional
 
   # === Epic 4: Advanced Dashboard Tools ===
-  epic-4: backlog
-  4-1-interactive-map-with-circle-radius: backlog
-  4-2-display-calibration-and-test-pattern: backlog
-  4-3-logo-upload-with-rgb565-preview: backlog
-  4-4-logo-list-management-and-deletion: backlog
+  epic-4: in-progress
+  4-1-interactive-map-with-circle-radius: done
+  4-2-display-calibration-and-test-pattern: done
+  4-3-logo-upload-with-rgb565-preview: done
+  4-4-logo-list-management-and-deletion: done
   epic-4-retrospective: optional

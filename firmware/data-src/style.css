@@ -270,6 +270,194 @@ body{
 .card.over-pace{border-color:#d29922}
 .card.over-pace h2{color:#d29922}
 
+/* Layout preview (Story 3.4) */
+.preview-container{margin-top:var(--gap)}
+.preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+.preview-legend{
+  display:flex;align-items:center;gap:12px;
+  margin-top:8px;font-size:0.75rem;color:var(--text-muted);flex-wrap:wrap;
+}
+.legend-chip{
+  display:inline-block;width:12px;height:12px;border-radius:2px;
+  margin-right:4px;vertical-align:middle;
+}
+
+/* Location card (Story 4.1) */
+.location-toggle{cursor:pointer;user-select:none}
+.location-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#location-card .location-toggle.open::after{
+  transform:rotate(90deg);
+}
+#location-map{
+  height:260px;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--bg);
+}
+.location-radius-handle{
+  width:16px;height:16px;border-radius:50%;
+  background:var(--primary);border:2px solid #fff;
+  box-shadow:0 0 0 2px rgba(13,17,23,0.85);
+}
+.map-loading{
+  color:var(--text-muted);font-size:0.875rem;
+  text-align:center;padding:var(--gap) 0;
+}
+#location-fallback input[type="number"]{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -moz-appearance:textfield;
+}
+#location-fallback input[type="number"]::-webkit-inner-spin-button,
+#location-fallback input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+#location-fallback input:focus{border-color:var(--primary)}
+
+/* Leaflet dark-theme overrides */
+.leaflet-container{background:var(--bg)!important}
+.leaflet-control-zoom a{
+  background:var(--surface)!important;color:var(--text)!important;
+  border-color:var(--border)!important;
+}
+.leaflet-control-attribution{
+  background:rgba(22,27,34,0.8)!important;color:var(--text-muted)!important;
+  font-size:0.625rem!important;
+}
+.leaflet-control-attribution a{color:var(--primary)!important}
+
+/* Calibration card (Story 4.2) */
+.calibration-toggle{cursor:pointer;user-select:none}
+.calibration-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#calibration-card .calibration-toggle.open::after{
+  transform:rotate(90deg);
+}
+.cal-select{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b949e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;
+  padding-right:30px;
+}
+.cal-select:focus{border-color:var(--primary)}
+.cal-preview-container{margin-top:var(--gap)}
+.cal-preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+
+/* Logo upload (Story 4.3) */
+.logo-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);text-align:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.logo-upload-zone.drag-over{
+  border-color:var(--primary);background:rgba(88,166,255,0.08);
+}
+.upload-prompt{font-size:0.875rem;color:var(--text-muted);margin-bottom:8px}
+.upload-prompt code{color:var(--primary);font-size:0.8125rem}
+.upload-label{
+  display:inline-block;padding:8px 16px;font-size:0.875rem;
+  background:var(--surface);color:var(--primary);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s;
+}
+.upload-label:hover{background:var(--primary);color:#0d1117}
+.upload-hint{font-size:0.75rem;color:var(--text-muted);margin-top:8px}
+.logo-file-list{display:flex;flex-direction:column;gap:6px;margin-top:var(--gap)}
+.logo-file-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-file-row.file-error{border-color:var(--error)}
+.logo-file-row.file-ok{border-color:var(--success)}
+.logo-file-preview{
+  width:128px;height:128px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-file-info{flex:1;min-width:0}
+.logo-file-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-file-status{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-file-status.status-error{color:var(--error)}
+.logo-file-status.status-ok{color:var(--success)}
+.logo-file-remove{
+  background:none;border:none;color:var(--text-muted);
+  font-size:1.125rem;cursor:pointer;padding:4px;line-height:1;
+}
+.logo-file-remove:hover{color:var(--error)}
+
+/* Logo list management (Story 4.4) */
+.logo-storage-summary{
+  font-size:0.8125rem;color:var(--text-muted);margin-top:var(--gap);
+  text-align:center;
+}
+.logo-list-container{margin-top:var(--gap)}
+.logo-empty-state{
+  font-size:0.875rem;color:var(--text-muted);font-style:italic;
+  text-align:center;padding:var(--gap) 0;
+}
+.logo-list{display:flex;flex-direction:column;gap:6px}
+.logo-list-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-list-thumb{
+  width:48px;height:48px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-list-info{flex:1;min-width:0}
+.logo-list-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-list-size{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-list-actions{flex-shrink:0;display:flex;align-items:center;gap:6px}
+.logo-list-delete{
+  background:none;border:1px solid var(--error);color:var(--error);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s,color 0.15s;
+  white-space:nowrap;
+}
+.logo-list-delete:hover{background:var(--error);color:#fff}
+.logo-list-delete:disabled{opacity:0.5;cursor:default}
+.logo-list-confirm-text{
+  font-size:0.75rem;color:var(--error);white-space:nowrap;
+}
+.logo-list-confirm-btn{
+  background:var(--error);border:1px solid var(--error);color:#fff;
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;font-weight:600;white-space:nowrap;
+}
+.logo-list-confirm-btn:disabled{opacity:0.5;cursor:default}
+.logo-list-cancel-btn{
+  background:none;border:1px solid var(--border);color:var(--text);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;white-space:nowrap;
+}
+.logo-list-cancel-btn:hover{border-color:var(--text-muted)}
+
 /* Danger zone / System card (Story 2.5) */
 .card-danger{border-color:var(--error)}
 .card-danger h2{color:var(--error)}

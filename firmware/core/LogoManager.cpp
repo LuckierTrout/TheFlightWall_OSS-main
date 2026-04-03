@@ -14,6 +14,13 @@ static const char LOGO_DIR[] = "/logos";
 
 size_t LogoManager::_logoCount = 0;
 
+namespace {
+String logoBasename(const String& path) {
+    int lastSlash = path.lastIndexOf('/');
+    return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+}
+}
+
 // --- Fallback airplane sprite (32x32 RGB565, stored in PROGMEM) ---
 // A simple airplane silhouette: white (0xFFFF) on black (0x0000).
 // Oriented nose-up, stylized front view with wings spread.
@@ -85,6 +92,16 @@ bool LogoManager::init() {
             return false;
         }
         LOG_I("LogoManager", "Created /logos/ directory");
+    } else {
+        File dir = LittleFS.open(LOGO_DIR);
+        if (!dir || !dir.isDirectory()) {
+            if (dir) {
+                dir.close();
+            }
+            LOG_E("LogoManager", "/logos exists but is not a directory");
+            return false;
+        }
+        dir.close();
     }
 
     scanLogoCount();
@@ -146,27 +163,123 @@ void LogoManager::getLittleFSUsage(size_t& usedBytes, size_t& totalBytes) {
     totalBytes = LittleFS.totalBytes();
 }
 
+bool LogoManager::isSafeLogoFilename(const String& filename) {
+    if (filename.length() <= 4) {
+        return false;
+    }
+    if (!filename.endsWith(".bin")) {
+        return false;
+    }
+    if (filename.indexOf('/') >= 0 || filename.indexOf('\\') >= 0) {
+        return false;
+    }
+    if (filename.indexOf("..") >= 0) {
+        return false;
+    }
+    return true;
+}
+
 void LogoManager::scanLogoCount() {
     _logoCount = 0;
-
-#ifdef PIO_UNIT_TESTING
-    // In test environment, LittleFS directory iteration may not be available
-    return;
-#endif
-
     File dir = LittleFS.open(LOGO_DIR);
     if (!dir || !dir.isDirectory()) {
+        if (dir) {
+            dir.close();
+        }
         return;
     }
 
     File entry = dir.openNextFile();
     while (entry) {
         if (!entry.isDirectory()) {
-            String name = entry.name();
-            if (name.endsWith(".bin")) {
+            String name = logoBasename(entry.name());
+            if (isSafeLogoFilename(name) && entry.size() == LOGO_BUFFER_BYTES) {
                 _logoCount++;
             }
         }
+        entry.close();
         entry = dir.openNextFile();
     }
+    dir.close();
+}
+
+bool LogoManager::listLogos(std::vector<LogoEntry>& result) {
+    result.clear();
+    File dir = LittleFS.open(LOGO_DIR);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    File entry = dir.openNextFile();
+    while (entry) {
+        if (!entry.isDirectory()) {
+            String name = logoBasename(entry.name());
+            if (!isSafeLogoFilename(name) || entry.size() != LOGO_BUFFER_BYTES) {
+                entry.close();
+                entry = dir.openNextFile();
+                continue;
+            }
+            LogoEntry e;
+            e.name = name;
+            e.size = entry.size();
+            result.push_back(e);
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    return true;
+}
+
+std::vector<LogoEntry> LogoManager::listLogos() {
+    std::vector<LogoEntry> result;
+    listLogos(result);
+    return result;
+}
+
+bool LogoManager::hasLogo(const String& filename) {
+    if (!isSafeLogoFilename(filename)) {
+        return false;
+    }
+    String path = String(LOGO_DIR) + "/" + filename;
+    return LittleFS.exists(path);
+}
+
+bool LogoManager::deleteLogo(const String& filename) {
+    if (!isSafeLogoFilename(filename)) {
+        return false;
+    }
+    String path = String(LOGO_DIR) + "/" + filename;
+    if (!LittleFS.exists(path)) {
+        return false;
+    }
+    bool ok = LittleFS.remove(path);
+    if (ok) {
+        scanLogoCount();
+    }
+    return ok;
+}
+
+bool LogoManager::saveLogo(const String& filename, const uint8_t* data, size_t len) {
+    if (len != LOGO_BUFFER_BYTES || !isSafeLogoFilename(filename)) {
+        return false;
+    }
+
+    String path = String(LOGO_DIR) + "/" + filename;
+    File f = LittleFS.open(path, "w");
+    if (!f) {
+        return false;
+    }
+
+    size_t written = f.write(data, len);
+    f.close();
+
+    if (written != len) {
+        LittleFS.remove(path);
+        return false;
+    }
+
+    scanLogoCount();
+    return true;
 }

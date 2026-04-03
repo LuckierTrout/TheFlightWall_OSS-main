@@ -2,8 +2,9 @@
 Purpose: Render flight info on a WS2812B NeoPixel matrix via FastLED_NeoMatrix.
 Responsibilities:
 - Initialize LED matrix based on HardwareConfiguration and user display settings.
-- Render a bordered, three-line flight “card” and a minimal loading screen.
+- Render zone-based flight cards: logo zone, flight zone, telemetry zone (Story 3.3).
 - Cycle through multiple flights at a configurable interval.
+- Handle compact/full/expanded modes with appropriate content density.
 Inputs: FlightInfo list; UserConfiguration (colors/brightness), TimingConfiguration (cycle),
         HardwareConfiguration (dimensions/pin/tiling).
 Outputs: Visual output to LED matrix using FastLED.
@@ -15,6 +16,7 @@ Outputs: Visual output to LED matrix using FastLED.
 #include <FastLED.h>
 #include "utils/Log.h"
 #include "core/ConfigManager.h"
+#include "core/LogoManager.h"
 
 namespace {
 template <uint8_t Pin>
@@ -71,6 +73,92 @@ NeoMatrixDisplay::~NeoMatrixDisplay()
     }
 }
 
+uint8_t NeoMatrixDisplay::buildMatrixFlags(const HardwareConfig &hw) const
+{
+    uint8_t flags = 0;
+
+    switch (hw.origin_corner)
+    {
+        case 1:
+            flags |= NEO_MATRIX_TOP + NEO_MATRIX_RIGHT;
+            flags |= NEO_TILE_TOP + NEO_TILE_RIGHT;
+            break;
+        case 2:
+            flags |= NEO_MATRIX_BOTTOM + NEO_MATRIX_LEFT;
+            flags |= NEO_TILE_BOTTOM + NEO_TILE_LEFT;
+            break;
+        case 3:
+            flags |= NEO_MATRIX_BOTTOM + NEO_MATRIX_RIGHT;
+            flags |= NEO_TILE_BOTTOM + NEO_TILE_RIGHT;
+            break;
+        case 0:
+        default:
+            flags |= NEO_MATRIX_TOP + NEO_MATRIX_LEFT;
+            flags |= NEO_TILE_TOP + NEO_TILE_LEFT;
+            break;
+    }
+
+    if (hw.scan_dir == 1)
+    {
+        flags |= NEO_MATRIX_COLUMNS + NEO_TILE_COLUMNS;
+    }
+    else
+    {
+        flags |= NEO_MATRIX_ROWS + NEO_TILE_ROWS;
+    }
+
+    if (hw.zigzag != 0)
+    {
+        flags |= NEO_MATRIX_ZIGZAG + NEO_TILE_ZIGZAG;
+    }
+    else
+    {
+        flags |= NEO_MATRIX_PROGRESSIVE + NEO_TILE_PROGRESSIVE;
+    }
+
+    return flags;
+}
+
+bool NeoMatrixDisplay::rebuildMatrix(const HardwareConfig &hw, const DisplayConfig &disp)
+{
+    if (_leds == nullptr)
+    {
+        return false;
+    }
+
+    if (_matrix != nullptr)
+    {
+        _matrix->fillScreen(0);
+        FastLED.show();
+        delete _matrix;
+        _matrix = nullptr;
+    }
+
+    _matrix = new FastLED_NeoMatrix(
+        _leds,
+        hw.tile_pixels,
+        hw.tile_pixels,
+        hw.tiles_x,
+        hw.tiles_y,
+        buildMatrixFlags(hw));
+
+    if (_matrix == nullptr)
+    {
+        return false;
+    }
+
+    _matrix->setTextWrap(false);
+    _matrix->setTextSize(1);
+    _matrix->setBrightness(disp.brightness);
+
+    _layout = LayoutEngine::compute(hw);
+    _hardware = hw;
+    _currentFlightIndex = 0;
+    _lastCycleMs = millis();
+    clear();
+    return true;
+}
+
 bool NeoMatrixDisplay::initialize()
 {
     HardwareConfig hw = ConfigManager::getHardware();
@@ -80,26 +168,32 @@ bool NeoMatrixDisplay::initialize()
     _matrixHeight = hw.tile_pixels * hw.tiles_y;
     _numPixels = (uint32_t)_matrixWidth * (uint32_t)_matrixHeight;
 
+    if (_leds != nullptr)
+    {
+        delete[] _leds;
+        _leds = nullptr;
+    }
     _leds = new CRGB[_numPixels];
 
-    _matrix = new FastLED_NeoMatrix(
-        _leds,
-        hw.tile_pixels,
-        hw.tile_pixels,
-        hw.tiles_x,
-        hw.tiles_y,
-        NEO_MATRIX_BOTTOM + NEO_MATRIX_RIGHT +
-            NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG +
-            NEO_TILE_TOP + NEO_TILE_RIGHT + NEO_TILE_COLUMNS + NEO_TILE_ZIGZAG);
-
     configureStripForPin(hw.display_pin, _leds, _numPixels);
-    _matrix->setTextWrap(false);
-    _matrix->setTextSize(1);
-    _matrix->setBrightness(disp.brightness);
-    clear();
-    _currentFlightIndex = 0;
-    _lastCycleMs = millis();
-    return true;
+    return rebuildMatrix(hw, disp);
+}
+
+bool NeoMatrixDisplay::reconfigureFromConfig()
+{
+    HardwareConfig hw = ConfigManager::getHardware();
+    if (hw.tiles_x != _hardware.tiles_x ||
+        hw.tiles_y != _hardware.tiles_y ||
+        hw.tile_pixels != _hardware.tile_pixels ||
+        hw.display_pin != _hardware.display_pin)
+    {
+        return false;
+    }
+
+    _matrixWidth = hw.tile_pixels * hw.tiles_x;
+    _matrixHeight = hw.tile_pixels * hw.tiles_y;
+    _numPixels = (uint32_t)_matrixWidth * (uint32_t)_matrixHeight;
+    return rebuildMatrix(hw, ConfigManager::getDisplay());
 }
 
 void NeoMatrixDisplay::clear()
@@ -162,6 +256,8 @@ String NeoMatrixDisplay::truncateToColumns(const String &text, int maxColumns)
     return text.substring(0, maxColumns - 3) + String("...");
 }
 
+// --- Legacy full-screen card (kept for fallback if layout is invalid) ---
+
 void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
 {
     DisplayConfig disp = ConfigManager::getDisplay();
@@ -178,11 +274,6 @@ void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
     const int innerWidth = _matrixWidth - 2 - (2 * padding); // Account for border and padding
     const int innerHeight = _matrixHeight - 2 - (2 * padding);
     const int maxCols = innerWidth / charWidth;
-
-    // Lines per display:
-    // 1: airline
-    // 2: route
-    // 3: aircraft
 
     String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
                                                           : (f.operator_iata.length() ? f.operator_iata : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
@@ -214,6 +305,194 @@ void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
     drawTextLine(startX, y, line3, textColor);
 }
 
+// --- Zone-based rendering (Story 3.3) ---
+
+String NeoMatrixDisplay::formatTelemetryValue(double value, const char* suffix, int decimals)
+{
+    if (isnan(value)) {
+        return String("--");
+    }
+    if (decimals == 0) {
+        return String((int)value) + suffix;
+    }
+    return String(value, decimals) + suffix;
+}
+
+void NeoMatrixDisplay::drawBitmapRGB565(int16_t x, int16_t y, uint16_t w, uint16_t h,
+                                         const uint16_t *bitmap, uint16_t zoneW, uint16_t zoneH)
+{
+    // Render RGB565 bitmap into the matrix, clipped to zone bounds.
+    // Bitmap is always 32x32 (LOGO_WIDTH x LOGO_HEIGHT).
+    // If zone is smaller, we center-crop. If larger, we center the bitmap.
+    int16_t offsetX = 0, offsetY = 0;
+    uint16_t drawW = w, drawH = h;
+
+    if (zoneW < w) {
+        offsetX = (w - zoneW) / 2; // crop from center
+        drawW = zoneW;
+    }
+    if (zoneH < h) {
+        offsetY = (h - zoneH) / 2;
+        drawH = zoneH;
+    }
+
+    int16_t destX = x;
+    int16_t destY = y;
+    if (zoneW > w) {
+        destX = x + (zoneW - w) / 2; // center in zone
+    }
+    if (zoneH > h) {
+        destY = y + (zoneH - h) / 2;
+    }
+
+    for (uint16_t row = 0; row < drawH; row++) {
+        for (uint16_t col = 0; col < drawW; col++) {
+            uint16_t pixel = bitmap[(row + offsetY) * w + (col + offsetX)];
+            if (pixel != 0) {
+                // Convert RGB565 to R, G, B components
+                uint8_t r = ((pixel >> 11) & 0x1F) << 3;
+                uint8_t g = ((pixel >> 5) & 0x3F) << 2;
+                uint8_t b = (pixel & 0x1F) << 3;
+                _matrix->drawPixel(destX + col, destY + row, _matrix->Color(r, g, b));
+            }
+        }
+    }
+}
+
+void NeoMatrixDisplay::renderLogoZone(const FlightInfo &f, const Rect &zone)
+{
+    // Load logo by operator ICAO; fallback sprite if not found
+    LogoManager::loadLogo(f.operator_icao, _logoBuffer);
+    drawBitmapRGB565(zone.x, zone.y, LOGO_WIDTH, LOGO_HEIGHT,
+                     _logoBuffer, zone.w, zone.h);
+}
+
+void NeoMatrixDisplay::renderFlightZone(const FlightInfo &f, const Rect &zone)
+{
+    DisplayConfig disp = ConfigManager::getDisplay();
+    const uint16_t textColor = _matrix->Color(disp.text_color_r,
+                                              disp.text_color_g,
+                                              disp.text_color_b);
+    const int charWidth = 6;
+    const int charHeight = 8;
+    const int maxCols = zone.w / charWidth;
+
+    if (maxCols <= 0) return;
+
+    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
+                     : (f.operator_iata.length() ? f.operator_iata
+                     : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
+    String route = f.origin.code_icao + String(">") + f.destination.code_icao;
+    String aircraft = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short : f.aircraft_code;
+
+    // Determine how many lines fit
+    int linesAvailable = zone.h / charHeight;
+    if (linesAvailable <= 0) return;
+
+    String line1;
+    String line2;
+    String line3;
+    int linesToDraw = 1;
+
+    if (linesAvailable == 1) {
+        // Compact mode prioritizes route when only one row fits.
+        String compactLine = route.length() ? route : airline;
+        if (compactLine.length() == 0) {
+            compactLine = aircraft;
+        }
+        line1 = truncateToColumns(compactLine, maxCols);
+    } else if (linesAvailable == 2) {
+        // Full 32px layouts cannot fit three 8px rows, so compress type into row two.
+        line1 = truncateToColumns(airline, maxCols);
+        String detailLine = route;
+        if (aircraft.length() > 0) {
+            if (detailLine.length() > 0) {
+                detailLine += " ";
+            }
+            detailLine += aircraft;
+        }
+        line2 = truncateToColumns(detailLine, maxCols);
+        linesToDraw = line2.length() > 0 ? 2 : 1;
+    } else {
+        line1 = truncateToColumns(airline, maxCols);
+        line2 = truncateToColumns(route, maxCols);
+        line3 = truncateToColumns(aircraft, maxCols);
+        linesToDraw = line3.length() > 0 ? 3 : (line2.length() > 0 ? 2 : 1);
+    }
+
+    int16_t y = zone.y;
+    int totalTextH = linesToDraw * charHeight;
+    y = zone.y + (zone.h - totalTextH) / 2;
+
+    drawTextLine(zone.x, y, line1, textColor);
+    if (linesToDraw >= 2 && line2.length() > 0) {
+        y += charHeight;
+        drawTextLine(zone.x, y, line2, textColor);
+    }
+    if (linesToDraw >= 3 && line3.length() > 0) {
+        y += charHeight;
+        drawTextLine(zone.x, y, line3, textColor);
+    }
+}
+
+void NeoMatrixDisplay::renderTelemetryZone(const FlightInfo &f, const Rect &zone)
+{
+    DisplayConfig disp = ConfigManager::getDisplay();
+    const uint16_t textColor = _matrix->Color(disp.text_color_r,
+                                              disp.text_color_g,
+                                              disp.text_color_b);
+    const int charWidth = 6;
+    const int charHeight = 8;
+    const int maxCols = zone.w / charWidth;
+
+    if (maxCols <= 0) return;
+
+    int linesAvailable = zone.h / charHeight;
+    if (linesAvailable <= 0) return;
+
+    // Build telemetry strings based on available space
+    // Compact: single line with abbreviated values
+    // Full/Expanded: two lines with more detail
+    String telLine1, telLine2;
+
+    if (linesAvailable >= 2) {
+        // Two-line format: altitude + speed on line 1, track + vrate on line 2
+        String alt = formatTelemetryValue(f.altitude_kft, "kft", 1);
+        String spd = formatTelemetryValue(f.speed_mph, "mph");
+        telLine1 = truncateToColumns(alt + " " + spd, maxCols);
+
+        String trk = formatTelemetryValue(f.track_deg, "d");
+        String vr = formatTelemetryValue(f.vertical_rate_fps, "fps");
+        telLine2 = truncateToColumns(trk + " " + vr, maxCols);
+    } else {
+        // Compact mode condenses all four values into one row with abbreviated labels.
+        String alt = String("A") + formatTelemetryValue(f.altitude_kft, "k", 0);
+        String spd = String("S") + formatTelemetryValue(f.speed_mph, "", 0);
+        String trk = String("T") + formatTelemetryValue(f.track_deg, "", 0);
+        String vr = String("V") + formatTelemetryValue(f.vertical_rate_fps, "", 0);
+        telLine1 = truncateToColumns(alt + " " + spd + " " + trk + " " + vr, maxCols);
+    }
+
+    int linesToDraw = (linesAvailable >= 2 && telLine2.length() > 0) ? 2 : 1;
+    int totalTextH = linesToDraw * charHeight;
+    int16_t y = zone.y + (zone.h - totalTextH) / 2;
+
+    drawTextLine(zone.x, y, telLine1, textColor);
+    if (linesToDraw >= 2) {
+        y += charHeight;
+        drawTextLine(zone.x, y, telLine2, textColor);
+    }
+}
+
+void NeoMatrixDisplay::renderZoneFlight(const FlightInfo &f)
+{
+    renderLogoZone(f, _layout.logoZone);
+    renderFlightZone(f, _layout.flightZone);
+    renderTelemetryZone(f, _layout.telemetryZone);
+}
+
+// --- Public display methods ---
+
 void NeoMatrixDisplay::displayFlights(const std::vector<FlightInfo> &flights)
 {
     if (_matrix == nullptr)
@@ -240,7 +519,12 @@ void NeoMatrixDisplay::displayFlights(const std::vector<FlightInfo> &flights)
         }
 
         const size_t index = _currentFlightIndex % flights.size();
-        displaySingleFlightCard(flights[index]);
+
+        if (_layout.valid) {
+            renderZoneFlight(flights[index]);
+        } else {
+            displaySingleFlightCard(flights[index]);
+        }
     }
     else
     {
@@ -316,6 +600,83 @@ void NeoMatrixDisplay::updateBrightness(uint8_t brightness)
     }
 }
 
+// --- Calibration mode (Story 4.2) ---
+
+void NeoMatrixDisplay::setCalibrationMode(bool enabled)
+{
+    _calibrationMode = enabled;
+}
+
+bool NeoMatrixDisplay::isCalibrationMode() const
+{
+    return _calibrationMode;
+}
+
+void NeoMatrixDisplay::renderCalibrationPattern()
+{
+    if (_matrix == nullptr) return;
+
+    _matrix->fillScreen(0);
+
+    // Deterministic test pattern that reveals orientation/scan/zigzag effects.
+    // Draws a gradient from pixel (0,0) corner to the opposite corner,
+    // plus numbered quadrant markers and a directional arrow.
+    // This makes it immediately obvious which corner is the origin
+    // and which direction scanning progresses.
+
+    uint16_t w = _matrixWidth;
+    uint16_t h = _matrixHeight;
+
+    if (w == 0 || h == 0) return;
+
+    // Draw gradient: red at (0,0), green at (w-1,0), blue at (0,h-1), white at (w-1,h-1)
+    // This creates a clear visual that shows all four corners distinctly.
+    for (uint16_t y = 0; y < h; y++) {
+        for (uint16_t x = 0; x < w; x++) {
+            float fx = (float)x / (float)(w > 1 ? w - 1 : 1);
+            float fy = (float)y / (float)(h > 1 ? h - 1 : 1);
+
+            // Bilinear interpolation between four corner colors:
+            // TL(0,0)=Red, TR(1,0)=Green, BL(0,1)=Blue, BR(1,1)=White
+            uint8_t r = (uint8_t)((1.0f - fx) * (1.0f - fy) * 255 +  // TL Red
+                                   fx * (1.0f - fy) * 0 +              // TR Green
+                                   (1.0f - fx) * fy * 0 +              // BL Blue
+                                   fx * fy * 255);                      // BR White
+            uint8_t g = (uint8_t)((1.0f - fx) * (1.0f - fy) * 0 +
+                                   fx * (1.0f - fy) * 255 +
+                                   (1.0f - fx) * fy * 0 +
+                                   fx * fy * 255);
+            uint8_t b = (uint8_t)((1.0f - fx) * (1.0f - fy) * 0 +
+                                   fx * (1.0f - fy) * 0 +
+                                   (1.0f - fx) * fy * 255 +
+                                   fx * fy * 255);
+
+            _matrix->drawPixel(x, y, _matrix->Color(r, g, b));
+        }
+    }
+
+    // Draw a bright white border on the first row and first column
+    // to clearly indicate where pixel 0 starts
+    for (uint16_t x = 0; x < w; x++) {
+        _matrix->drawPixel(x, 0, _matrix->Color(255, 255, 255));
+    }
+    for (uint16_t y = 0; y < h; y++) {
+        _matrix->drawPixel(0, y, _matrix->Color(255, 255, 255));
+    }
+
+    // Bright red pixel at (0,0) — the origin marker
+    _matrix->drawPixel(0, 0, _matrix->Color(255, 0, 0));
+    if (w > 1) _matrix->drawPixel(1, 0, _matrix->Color(255, 0, 0));
+    if (h > 1) _matrix->drawPixel(0, 1, _matrix->Color(255, 0, 0));
+
+    // Corner marker at (w-1, h-1) in bright cyan
+    _matrix->drawPixel(w - 1, h - 1, _matrix->Color(0, 255, 255));
+    if (w > 1) _matrix->drawPixel(w - 2, h - 1, _matrix->Color(0, 255, 255));
+    if (h > 1) _matrix->drawPixel(w - 1, h - 2, _matrix->Color(0, 255, 255));
+
+    FastLED.show();
+}
+
 void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size_t index)
 {
     if (_matrix == nullptr)
@@ -325,7 +686,11 @@ void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size
 
     if (!flights.empty() && index < flights.size())
     {
-        displaySingleFlightCard(flights[index]);
+        if (_layout.valid) {
+            renderZoneFlight(flights[index]);
+        } else {
+            displaySingleFlightCard(flights[index]);
+        }
     }
     else
     {

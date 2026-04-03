@@ -112,7 +112,96 @@
         <input type="number" id="d-zigzag" inputmode="numeric" min="0" step="1" autocomplete="off">
       </div>
       <p class="resolution-text" id="d-resolution-text"></p>
+
+      <div class="preview-container" id="preview-container">
+        <canvas id="layout-preview"></canvas>
+        <div class="preview-legend" id="preview-legend">
+          <span class="legend-chip" style="background:#58a6ff"></span> Logo
+          <span class="legend-chip" style="background:#3fb950"></span> Flight
+          <span class="legend-chip" style="background:#d29922"></span> Telemetry
+        </div>
+        <p class="helper-copy">Predictive preview — actual LED wall updates after Apply.</p>
+      </div>
+
       <button type="button" class="apply-btn" id="btn-apply-hardware">Apply</button>
+    </section>
+
+    <!-- Calibration Card -->
+    <section class="card" id="calibration-card">
+      <h2 class="calibration-toggle">Calibration</h2>
+      <div class="calibration-body" id="calibration-body" style="display:none">
+        <p class="helper-copy" style="margin-top:0;margin-bottom:12px">Adjust wiring flags and see the test pattern update in real-time on the LED wall and canvas preview.</p>
+
+        <div class="form-fields">
+          <label for="cal-origin-corner">Origin Corner</label>
+          <select id="cal-origin-corner" class="cal-select">
+            <option value="0">0 — Top-Left</option>
+            <option value="1">1 — Top-Right</option>
+            <option value="2">2 — Bottom-Left</option>
+            <option value="3">3 — Bottom-Right</option>
+          </select>
+
+          <label for="cal-scan-dir">Scan Direction</label>
+          <select id="cal-scan-dir" class="cal-select">
+            <option value="0">0 — Rows (Horizontal)</option>
+            <option value="1">1 — Columns (Vertical)</option>
+          </select>
+
+          <label for="cal-zigzag">Zigzag</label>
+          <select id="cal-zigzag" class="cal-select">
+            <option value="0">0 — Progressive (same direction)</option>
+            <option value="1">1 — Zigzag (alternating)</option>
+          </select>
+        </div>
+
+        <div class="cal-preview-container" id="cal-preview-container">
+          <canvas id="cal-preview-canvas"></canvas>
+          <div class="preview-legend">
+            <span class="legend-chip" style="background:#f85149"></span> Pixel 0 (start)
+            <span class="legend-chip" style="background:#58a6ff"></span> Pixel N (end)
+          </div>
+        </div>
+
+        <p class="helper-copy">Form &rarr; Canvas preview (instant) &rarr; LED wall (50-200ms)</p>
+      </div>
+    </section>
+
+    <!-- Location Card -->
+    <section class="card" id="location-card">
+      <h2 class="location-toggle">Location</h2>
+      <div class="location-body" id="location-body" style="display:none">
+        <div id="location-map-wrap">
+          <div id="location-map"></div>
+          <p class="map-loading" id="map-loading">Loading map...</p>
+        </div>
+        <div class="form-fields" id="location-fallback">
+          <label for="d-center-lat">Latitude</label>
+          <input type="number" id="d-center-lat" step="any" autocomplete="off">
+          <label for="d-center-lon">Longitude</label>
+          <input type="number" id="d-center-lon" step="any" autocomplete="off">
+          <label for="d-radius-km">Radius (km)</label>
+          <input type="number" id="d-radius-km" step="any" min="0.1" autocomplete="off">
+        </div>
+        <p class="helper-copy" id="location-helper">Drag the center marker or radius handle to update your capture area.</p>
+      </div>
+    </section>
+
+    <!-- Logos Card -->
+    <section class="card" id="logos-card">
+      <h2>Logos</h2>
+      <div class="logo-upload-zone" id="logo-upload-zone">
+        <p class="upload-prompt">Drag &amp; drop <code>.bin</code> logo files here or</p>
+        <label class="upload-label" for="logo-file-input">Choose files</label>
+        <input type="file" id="logo-file-input" accept=".bin" multiple hidden>
+        <p class="upload-hint">32×32 RGB565, 2048 bytes each</p>
+      </div>
+      <div class="logo-file-list" id="logo-file-list"></div>
+      <button type="button" class="apply-btn" id="btn-upload-logos" style="display:none">Upload</button>
+      <p class="logo-storage-summary" id="logo-storage-summary"></p>
+      <div class="logo-list-container" id="logo-list-container">
+        <p class="logo-empty-state" id="logo-empty-state" style="display:none">No logos uploaded yet. Drag .bin files here to add airline logos.</p>
+        <div class="logo-list" id="logo-list"></div>
+      </div>
     </section>
 
     <!-- System / Danger Zone Card -->

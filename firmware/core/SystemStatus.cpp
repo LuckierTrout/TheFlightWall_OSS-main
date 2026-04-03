@@ -13,8 +13,13 @@ Responsibilities:
 #include <LittleFS.h>
 
 SubsystemStatus SystemStatus::_statuses[SUBSYSTEM_COUNT] = {};
+SemaphoreHandle_t SystemStatus::_mutex = nullptr;
 
 void SystemStatus::init() {
+    _mutex = xSemaphoreCreateMutex();
+    if (!_mutex) {
+        LOG_E("SystemStatus", "Mutex creation failed — running without synchronization");
+    }
     for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
         _statuses[i].level = StatusLevel::OK;
         _statuses[i].message = "Not initialized";
@@ -27,9 +32,16 @@ void SystemStatus::set(Subsystem sys, StatusLevel level, const String& message) 
     uint8_t idx = static_cast<uint8_t>(sys);
     if (idx >= SUBSYSTEM_COUNT) return;
 
-    _statuses[idx].level = level;
-    _statuses[idx].message = message;
-    _statuses[idx].timestamp = millis();
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        _statuses[idx].level = level;
+        _statuses[idx].message = message;
+        _statuses[idx].timestamp = millis();
+        xSemaphoreGive(_mutex);
+    } else {
+        _statuses[idx].level = level;
+        _statuses[idx].message = message;
+        _statuses[idx].timestamp = millis();
+    }
 }
 
 SubsystemStatus SystemStatus::get(Subsystem sys) {
@@ -37,15 +49,34 @@ SubsystemStatus SystemStatus::get(Subsystem sys) {
     if (idx >= SUBSYSTEM_COUNT) {
         return {StatusLevel::ERROR, "Invalid subsystem", millis()};
     }
-    return _statuses[idx];
+    SubsystemStatus snapshot;
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        snapshot = _statuses[idx];
+        xSemaphoreGive(_mutex);
+    } else {
+        snapshot = _statuses[idx]; // best-effort if mutex unavailable
+    }
+    return snapshot;
 }
 
 void SystemStatus::toJson(JsonObject& obj) {
+    // Snapshot all statuses under mutex, then serialize outside
+    SubsystemStatus snap[SUBSYSTEM_COUNT];
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
+            snap[i] = _statuses[i];
+        }
+        xSemaphoreGive(_mutex);
+    } else {
+        for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
+            snap[i] = _statuses[i];
+        }
+    }
     for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
         JsonObject sub = obj[subsystemName(static_cast<Subsystem>(i))].to<JsonObject>();
-        sub["level"] = levelName(_statuses[i].level);
-        sub["message"] = _statuses[i].message;
-        sub["timestamp"] = _statuses[i].timestamp;
+        sub["level"] = levelName(snap[i].level);
+        sub["message"] = snap[i].message;
+        sub["timestamp"] = snap[i].timestamp;
     }
 }
 

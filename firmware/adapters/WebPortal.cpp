@@ -27,6 +27,7 @@ GET /api/status extended JSON (Story 2.4):
 #include <vector>
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
+#include "core/LogoManager.h"
 #include "utils/Log.h"
 
 // Defined in main.cpp — provides thread-safe flight stats for the health page
@@ -42,6 +43,40 @@ struct PendingRequestBody {
 
 std::vector<PendingRequestBody> g_pendingBodies;
 constexpr size_t MAX_SETTINGS_BODY_BYTES = 4096;
+
+// Logo upload state — streams file data directly to LittleFS
+struct LogoUploadState {
+    AsyncWebServerRequest* request;
+    String filename;
+    String path;
+    File file;
+    bool valid;
+    bool written;
+    String error;
+    String errorCode;
+};
+
+std::vector<LogoUploadState> g_logoUploads;
+
+LogoUploadState* findLogoUpload(AsyncWebServerRequest* request) {
+    for (auto& u : g_logoUploads) {
+        if (u.request == request) return &u;
+    }
+    return nullptr;
+}
+
+void clearLogoUpload(AsyncWebServerRequest* request, bool removeFile = false) {
+    for (auto it = g_logoUploads.begin(); it != g_logoUploads.end(); ++it) {
+        if (it->request == request) {
+            if (it->file) it->file.close();
+            if (removeFile && it->path.length()) {
+                LittleFS.remove(it->path);
+            }
+            g_logoUploads.erase(it);
+            return;
+        }
+    }
+}
 
 PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
     for (auto& pending : g_pendingBodies) {
@@ -77,6 +112,10 @@ void WebPortal::begin() {
 
 void WebPortal::onReboot(RebootCallback callback) {
     _rebootCallback = callback;
+}
+
+void WebPortal::onCalibration(CalibrationCallback callback) {
+    _calibrationCallback = callback;
 }
 
 void WebPortal::_registerRoutes() {
@@ -115,6 +154,9 @@ void WebPortal::_registerRoutes() {
                 PendingRequestBody pending{request, String()};
                 pending.body.reserve(total);
                 g_pendingBodies.push_back(pending);
+                request->onDisconnect([request]() {
+                    clearPendingBody(request);
+                });
             }
 
             PendingRequestBody* pending = findPendingBody(request);
@@ -161,6 +203,130 @@ void WebPortal::_registerRoutes() {
     // GET /api/layout (Story 3.1)
     _server->on("/api/layout", HTTP_GET, [this](AsyncWebServerRequest* request) {
         _handleGetLayout(request);
+    });
+
+    // POST /api/calibration/start (Story 4.2)
+    _server->on("/api/calibration/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostCalibrationStart(request);
+    });
+
+    // POST /api/calibration/stop (Story 4.2)
+    _server->on("/api/calibration/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostCalibrationStop(request);
+    });
+
+    // GET /api/logos — list uploaded logos
+    _server->on("/api/logos", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLogos(request);
+    });
+
+    // POST /api/logos — multipart file upload (streaming to LittleFS)
+    _server->on("/api/logos", HTTP_POST,
+        // Request handler — called after upload completes
+        [this](AsyncWebServerRequest* request) {
+            auto* state = findLogoUpload(request);
+            JsonDocument doc;
+            JsonObject root = doc.to<JsonObject>();
+
+            if (!state || !state->valid) {
+                root["ok"] = false;
+                root["error"] = (state && state->error.length()) ? state->error : "Upload failed";
+                root["code"] = (state && state->errorCode.length()) ? state->errorCode : "UPLOAD_ERROR";
+                String output;
+                serializeJson(doc, output);
+                clearLogoUpload(request, true);
+                request->send(400, "application/json", output);
+                return;
+            }
+
+            root["ok"] = true;
+            JsonObject data = root["data"].to<JsonObject>();
+            data["filename"] = state->filename;
+            data["size"] = LOGO_BUFFER_BYTES;
+
+            String output;
+            serializeJson(doc, output);
+            clearLogoUpload(request);
+            LogoManager::scanLogoCount();
+            request->send(200, "application/json", output);
+        },
+        // Upload handler — called for each chunk of file data
+        [this](AsyncWebServerRequest* request, const String& filename,
+               size_t index, uint8_t* data, size_t len, bool final) {
+            if (index == 0) {
+                // First chunk — validate and open file for writing
+                clearLogoUpload(request);
+                LogoUploadState state;
+                state.request = request;
+                state.filename = filename;
+                state.path = String("/logos/") + filename;
+                state.valid = true;
+                state.written = false;
+
+                // Validate filename before touching LittleFS.
+                if (!LogoManager::isSafeLogoFilename(filename)) {
+                    state.valid = false;
+                    state.error = filename + " - invalid filename";
+                    state.errorCode = "INVALID_NAME";
+                    g_logoUploads.push_back(state);
+                    return;
+                }
+
+                request->onDisconnect([request]() {
+                    clearLogoUpload(request, true);
+                });
+
+                // Open file for streaming write
+                state.file = LittleFS.open(state.path, "w");
+                if (!state.file) {
+                    state.valid = false;
+                    state.error = "LittleFS full or write error";
+                    state.errorCode = "FS_WRITE_ERROR";
+                }
+                g_logoUploads.push_back(state);
+            }
+
+            auto* state = findLogoUpload(request);
+            if (!state || !state->valid) return;
+
+            // Stream write chunk to file
+            if (state->file && len > 0) {
+                size_t written = state->file.write(data, len);
+                if (written != len) {
+                    state->valid = false;
+                    state->error = "LittleFS full";
+                    state->errorCode = "FS_FULL";
+                    state->file.close();
+                    LittleFS.remove(state->path);
+                    return;
+                }
+            }
+
+            if (final) {
+                size_t totalSize = index + len;
+                if (state->file) state->file.close();
+
+                if (totalSize != LOGO_BUFFER_BYTES) {
+                    state->valid = false;
+                    state->error = state->filename + " - invalid size (" + String((unsigned long)totalSize) + " bytes, expected 2048)";
+                    state->errorCode = "INVALID_SIZE";
+                    LittleFS.remove(state->path);
+                    return;
+                }
+
+                state->written = true;
+            }
+        }
+    );
+
+    // DELETE /api/logos/:name
+    _server->on("/api/logos/*", HTTP_DELETE, [this](AsyncWebServerRequest* request) {
+        _handleDeleteLogo(request);
+    });
+
+    // GET /logos/:name — serve raw logo binary for thumbnail rendering
+    _server->on("/logos/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLogoFile(request);
     });
 
     // Shared static assets (gzipped on LittleFS)
@@ -430,6 +596,134 @@ void WebPortal::_serveGzAsset(AsyncWebServerRequest* request, const char* path, 
     AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, contentType);
     response->addHeader("Content-Encoding", "gzip");
     request->send(response);
+}
+
+void WebPortal::_handlePostCalibrationStart(AsyncWebServerRequest* request) {
+    if (_calibrationCallback) {
+        _calibrationCallback(true);
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Calibration mode started";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostCalibrationStop(AsyncWebServerRequest* request) {
+    if (_calibrationCallback) {
+        _calibrationCallback(false);
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Calibration mode stopped";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLogos(AsyncWebServerRequest* request) {
+    std::vector<LogoEntry> logos;
+    if (!LogoManager::listLogos(logos)) {
+        _sendJsonError(request, 500, "Logo storage unavailable. Reboot the device and try again.", "STORAGE_UNAVAILABLE");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonArray data = root["data"].to<JsonArray>();
+
+    for (const auto& logo : logos) {
+        JsonObject entry = data.add<JsonObject>();
+        entry["name"] = logo.name;
+        entry["size"] = logo.size;
+    }
+
+    // Storage usage metadata
+    size_t usedBytes = 0, totalBytes = 0;
+    LogoManager::getLittleFSUsage(usedBytes, totalBytes);
+    JsonObject storage = root["storage"].to<JsonObject>();
+    storage["used"] = usedBytes;
+    storage["total"] = totalBytes;
+    storage["logo_count"] = LogoManager::getLogoCount();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleDeleteLogo(AsyncWebServerRequest* request) {
+    // Extract filename from URL: /api/logos/FILENAME
+    String url = request->url();
+    int lastSlash = url.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == (int)(url.length() - 1)) {
+        _sendJsonError(request, 400, "Missing logo filename", "MISSING_FILENAME");
+        return;
+    }
+    String filename = url.substring(lastSlash + 1);
+    int queryStart = filename.indexOf('?');
+    if (queryStart >= 0) {
+        filename = filename.substring(0, queryStart);
+    }
+
+    if (!LogoManager::isSafeLogoFilename(filename)) {
+        _sendJsonError(request, 400, "Invalid logo filename", "INVALID_NAME");
+        return;
+    }
+
+    if (!LogoManager::hasLogo(filename)) {
+        _sendJsonError(request, 404, "Logo not found", "NOT_FOUND");
+        return;
+    }
+
+    if (!LogoManager::deleteLogo(filename)) {
+        _sendJsonError(request, 500, "Could not delete logo. Check storage health and try again.", "FS_DELETE_ERROR");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Logo deleted";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLogoFile(AsyncWebServerRequest* request) {
+    // Extract filename from URL: /logos/FILENAME
+    String url = request->url();
+    int lastSlash = url.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == (int)(url.length() - 1)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+    String filename = url.substring(lastSlash + 1);
+    int queryStart = filename.indexOf('?');
+    if (queryStart >= 0) {
+        filename = filename.substring(0, queryStart);
+    }
+
+    if (!LogoManager::isSafeLogoFilename(filename)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    String path = String("/logos/") + filename;
+    if (!LittleFS.exists(path)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    request->send(LittleFS, path, "application/octet-stream");
 }
 
 void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {

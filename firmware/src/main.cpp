@@ -232,6 +232,21 @@ static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfi
            lhs.zigzag != rhs.zigzag;
 }
 
+static bool hardwareGeometryChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
+{
+    return lhs.tiles_x != rhs.tiles_x ||
+           lhs.tiles_y != rhs.tiles_y ||
+           lhs.tile_pixels != rhs.tile_pixels ||
+           lhs.display_pin != rhs.display_pin;
+}
+
+static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
+{
+    return lhs.origin_corner != rhs.origin_corner ||
+           lhs.scan_dir != rhs.scan_dir ||
+           lhs.zigzag != rhs.zigzag;
+}
+
 // --- Display task (Task 2) ---
 
 void displayTask(void *pvParameters)
@@ -263,9 +278,24 @@ void displayTask(void *pvParameters)
 
             if (hardwareConfigChanged(localHw, newHw))
             {
-                localHw = newHw;
-                LOG_I("DisplayTask", "Hardware config changed; reboot required to apply layout");
-                // No automatic restart — dashboard sends POST /api/reboot after apply
+                if (hardwareGeometryChanged(localHw, newHw))
+                {
+                    localHw = newHw;
+                    LOG_I("DisplayTask", "Display geometry changed; reboot required to apply layout");
+                    // No automatic restart — dashboard sends POST /api/reboot after apply
+                }
+                else if (hardwareMappingChanged(localHw, newHw))
+                {
+                    localHw = newHw;
+                    if (g_display.reconfigureFromConfig())
+                    {
+                        LOG_I("DisplayTask", "Applied matrix mapping change without reboot");
+                    }
+                    else
+                    {
+                        LOG_E("DisplayTask", "Failed to reconfigure matrix mapping at runtime");
+                    }
+                }
             }
 
             localDisp = newDisp;
@@ -295,6 +325,15 @@ void displayTask(void *pvParameters)
             }
 
             statusMessageVisible = false;
+        }
+
+        // Calibration mode (Story 4.2): render test pattern instead of flights
+        if (g_display.isCalibrationMode())
+        {
+            g_display.renderCalibrationPattern();
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(50)); // Keep calibration feedback responsive
+            continue;
         }
 
         // Read latest flight data from queue (peek, don't remove)
@@ -466,6 +505,16 @@ void setup()
     // WebPortal initialization — register routes then start server
     // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
     g_webPortal.init(g_webServer, g_wifiManager);
+
+    // Register calibration callback (Story 4.2) — toggles display test pattern
+    g_webPortal.onCalibration([](bool enabled) {
+        g_display.setCalibrationMode(enabled);
+        if (enabled) {
+            LOG_I("Main", "Calibration mode started");
+        } else {
+            LOG_I("Main", "Calibration mode stopped");
+        }
+    });
 
     // Register reboot callback so "Saving config..." shows on LED before restart
     g_webPortal.onReboot([]() {
@@ -650,7 +699,9 @@ void loop()
         g_statsEnrichedFlights.store(static_cast<uint16_t>(enriched));
         // g_statsLogosMatched stays 0 until Epic 3
 
+#if LOG_LEVEL >= 2
         Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
+#endif
 
 #if LOG_LEVEL >= 3
         for (const auto &s : states)

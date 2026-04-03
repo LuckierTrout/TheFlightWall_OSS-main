@@ -98,6 +98,25 @@ void test_apply_json_hot_reload() {
     TEST_ASSERT_EQUAL_UINT8(200, ConfigManager::getDisplay().text_color_r);
 }
 
+void test_apply_json_matrix_mapping_hot_reload() {
+    clearNvs();
+    ConfigManager::init();
+
+    JsonDocument doc;
+    doc["origin_corner"] = 3;
+    doc["scan_dir"] = 1;
+    doc["zigzag"] = 1;
+    JsonObject settings = doc.as<JsonObject>();
+
+    ApplyResult result = ConfigManager::applyJson(settings);
+
+    TEST_ASSERT_EQUAL(3, result.applied.size());
+    TEST_ASSERT_FALSE(result.reboot_required);
+    TEST_ASSERT_EQUAL_UINT8(3, ConfigManager::getHardware().origin_corner);
+    TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getHardware().scan_dir);
+    TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getHardware().zigzag);
+}
+
 void test_apply_json_hot_reload_persists_after_debounce() {
     clearNvs();
     ConfigManager::init();
@@ -199,9 +218,6 @@ void test_requires_reboot_hardware_layout_keys() {
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_x"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_y"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tile_pixels"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("origin_corner"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("scan_dir"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("zigzag"));
 }
 
 void test_requires_reboot_hot_reload_keys() {
@@ -209,6 +225,9 @@ void test_requires_reboot_hot_reload_keys() {
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("text_color_r"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("center_lat"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("fetch_interval"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("origin_corner"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("scan_dir"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("zigzag"));
 }
 
 // --- Factory Reset Tests ---
@@ -326,6 +345,7 @@ void setup() {
 
     // applyJson paths
     RUN_TEST(test_apply_json_hot_reload);
+    RUN_TEST(test_apply_json_matrix_mapping_hot_reload);
     RUN_TEST(test_apply_json_hot_reload_persists_after_debounce);
     RUN_TEST(test_apply_json_reboot_path);
     RUN_TEST(test_apply_json_mixed_keys);

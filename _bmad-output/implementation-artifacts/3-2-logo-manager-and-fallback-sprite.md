@@ -1,6 +1,6 @@
 # Story 3.2: Logo Manager & Fallback Sprite
 
-Status: review
+Status: done
 
 Ultimate context engine analysis completed - comprehensive developer guide created.
 
@@ -59,6 +59,12 @@ so that the display shows real branding when available.
 - [x] Task 6: Build verification
   - [x] `pio run`
   - [x] `pio test` (including logo manager tests if added)
+
+### Review Findings
+
+- [x] [Review][Patch] Fixed unit-test logo counting by removing the `PIO_UNIT_TESTING` early return from `scanLogoCount()`, so re-init now repopulates `_logoCount` in the same build used by `test_logo_count()`. [firmware/core/LogoManager.cpp:149]
+- [x] [Review][Patch] Fixed `LogoManager::init()` to reject a `/logos` path that exists as a file instead of silently treating it as the required directory, and added regression coverage for that malformed-filesystem case. [firmware/core/LogoManager.cpp:81]
+- [x] [Review][Patch] Fixed `getLogoCount()` to count only valid 2048-byte `.bin` logos, so corrupt files no longer inflate System Health inventory metrics; added regression coverage alongside the existing count test. [firmware/core/LogoManager.cpp:160]
 
 ## Dev Notes
 

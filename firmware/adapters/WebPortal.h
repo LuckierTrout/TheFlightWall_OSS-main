@@ -8,15 +8,18 @@
 class WebPortal {
 public:
     using RebootCallback = std::function<void()>;
+    using CalibrationCallback = std::function<void(bool)>;
 
     void init(AsyncWebServer& server, WiFiManager& wifiMgr);
     void begin();
     void onReboot(RebootCallback callback);
+    void onCalibration(CalibrationCallback callback);
 
 private:
     AsyncWebServer* _server = nullptr;
     WiFiManager* _wifiMgr = nullptr;
     RebootCallback _rebootCallback = nullptr;
+    CalibrationCallback _calibrationCallback = nullptr;
 
     void _registerRoutes();
     void _handleRoot(AsyncWebServerRequest* request);
@@ -27,6 +30,11 @@ private:
     void _handlePostReset(AsyncWebServerRequest* request);
     void _handleGetWifiScan(AsyncWebServerRequest* request);
     void _handleGetLayout(AsyncWebServerRequest* request);
+    void _handlePostCalibrationStart(AsyncWebServerRequest* request);
+    void _handlePostCalibrationStop(AsyncWebServerRequest* request);
+    void _handleGetLogos(AsyncWebServerRequest* request);
+    void _handleDeleteLogo(AsyncWebServerRequest* request);
+    void _handleGetLogoFile(AsyncWebServerRequest* request);
 
     static void _serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType);
     void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);

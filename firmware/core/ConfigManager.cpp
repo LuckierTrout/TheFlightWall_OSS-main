@@ -129,8 +129,7 @@ static const char* REBOOT_KEYS[] = {
     "wifi_ssid", "wifi_password",
     "os_client_id", "os_client_sec",
     "aeroapi_key", "display_pin",
-    "tiles_x", "tiles_y", "tile_pixels",
-    "origin_corner", "scan_dir", "zigzag"
+    "tiles_x", "tiles_y", "tile_pixels"
 };
 static const size_t REBOOT_KEY_COUNT = sizeof(REBOOT_KEYS) / sizeof(REBOOT_KEYS[0]);
 

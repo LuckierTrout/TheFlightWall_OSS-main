@@ -2,11 +2,29 @@
 var FW = (function() {
   'use strict';
 
+  function parseJsonResponse(res) {
+    return res.text().then(function(text) {
+      if (!text) {
+        return {
+          status: res.status,
+          body: { ok: false, error: 'Empty server response (HTTP ' + res.status + ')', code: 'EMPTY_RESPONSE' }
+        };
+      }
+
+      try {
+        return { status: res.status, body: JSON.parse(text) };
+      } catch (err) {
+        return {
+          status: res.status,
+          body: { ok: false, error: 'Invalid server response (HTTP ' + res.status + ')', code: 'INVALID_RESPONSE' }
+        };
+      }
+    });
+  }
+
   function fetchJson(url, opts) {
     return fetch(url, opts || {}).then(function(res) {
-      return res.json().then(function(body) {
-        return { status: res.status, body: body };
-      });
+      return parseJsonResponse(res);
     });
   }
 
@@ -20,6 +38,10 @@ var FW = (function() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
+  }
+
+  function del(url) {
+    return fetchJson(url, { method: 'DELETE' });
   }
 
   /* Toast notification system */
@@ -54,5 +76,5 @@ var FW = (function() {
     }, 2500);
   }
 
-  return { get: get, post: post, showToast: showToast };
+  return { get: get, post: post, del: del, showToast: showToast };
 })();

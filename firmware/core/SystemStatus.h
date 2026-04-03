@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <freertos/semphr.h>
 
 enum class Subsystem : uint8_t {
     WIFI,
@@ -50,5 +51,6 @@ public:
 private:
     static const uint8_t SUBSYSTEM_COUNT = 6;
     static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
+    static SemaphoreHandle_t _mutex;
     static const char* subsystemName(Subsystem sys);
 };

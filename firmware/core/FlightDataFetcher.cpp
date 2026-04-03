@@ -59,6 +59,21 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
                     }
                 }
             }
+            // Join state-vector telemetry with display units (Story 3.3)
+            // Convert from SI (meters, m/s) to display units (kft, mph, deg, ft/s)
+            if (!isnan(s.baro_altitude)) {
+                info.altitude_kft = s.baro_altitude * 3.28084 / 1000.0;
+            }
+            if (!isnan(s.velocity)) {
+                info.speed_mph = s.velocity * 2.23694;
+            }
+            if (!isnan(s.heading)) {
+                info.track_deg = s.heading;
+            }
+            if (!isnan(s.vertical_rate)) {
+                info.vertical_rate_fps = s.vertical_rate * 3.28084;
+            }
+
             outFlights.push_back(info);
             enriched++;
         }

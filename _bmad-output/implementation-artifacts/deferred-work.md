@@ -1,13 +1,15 @@
-## Deferred from: code review (2026-04-02) — 1-3-freertos-dual-core-task-architecture.md
+## Resolved items
 
-- **Serial vs LOG for dynamic fetch line** (`firmware/src/main.cpp` ~228): Story asks for LOG macros; dynamic string logging uses `Serial.println`. Dev Agent Record notes exception — leave until log helpers exist or policy changes.
+- **Serial vs LOG for dynamic fetch line** (`firmware/src/main.cpp` ~702): Wrapped in `#if LOG_LEVEL >= 2` guard. (Resolved 2026-04-03)
 
-- **ConfigManager cross-core read during `applyJson`**: Display task reads getters on Core 0 while Core 1 may update structs — confirm thread-safety or add a short critical section / snapshot pattern.
+- **ConfigManager cross-core read during `applyJson`**: Investigated — `g_configMutex` already synchronizes all getter/setter access via `ConfigLockGuard` RAII pattern. No action needed. (Confirmed 2026-04-03)
 
-## Deferred from: code review (2026-04-02) — 2-1-dashboard-layout-display-settings-and-toast-system.md
+- **`POST /api/settings` pending-body cleanup** (`firmware/adapters/WebPortal.cpp`): Added `request->onDisconnect()` handler to clean up stale `g_pendingBodies` entries on client disconnect. (Resolved 2026-04-03)
 
-- **`POST /api/settings` pending-body cleanup remains incomplete** (`firmware/adapters/WebPortal.cpp` ~31): aborted or over-length chunked uploads can leave stale `g_pendingBodies` entries because cleanup only happens on a few explicit paths inside the body handler; defer because this is a pre-existing WebPortal issue, not introduced by Story 2.1’s new static-asset routes.
+- **Unsynchronized subsystem `String` access in `/api/status`** (`firmware/core/SystemStatus.cpp`): Added `SemaphoreHandle_t _mutex` to SystemStatus; `set()`, `get()`, and `toJson()` now take/give mutex. `toJson()` snapshots under lock, serializes outside. (Resolved 2026-04-03)
 
-## Deferred from: code review (2026-04-03) — 2-4-system-health-page.md
+## Open items
 
-- **Unsynchronized subsystem `String` access in `/api/status`** (`firmware/core/SystemStatus.cpp` ~25): `SystemStatus::set()` and `toJson()`/`toExtendedJson()` still share mutable `String` message fields across async HTTP reads and WiFi/event writes without synchronization. Real issue, but pre-existing before Story 2.4.
+- **Calibration mode uses `volatile bool` instead of `std::atomic<bool>`** (`firmware/adapters/NeoMatrixDisplay.h` `_calibrationMode`): Cross-core visibility not guaranteed on Xtensa dual-core ESP32. `volatile` prevents compiler optimization but does not issue memory barriers. Should use `std::atomic<bool>` for safe cross-core reads. (Surfaced by code review 2026-04-03, Story 4.2)
+
+- **`hardwareConfigChanged` if/else if misses combined geometry+mapping changes** (`firmware/src/main.cpp` displayTask): When both geometry AND mapping change in one settings save, only the geometry branch executes. The runtime mapping reconfiguration is skipped, requiring a reboot to apply both. Should apply mapping after geometry detection, or restructure to handle both. (Surfaced by code review 2026-04-03, Story 4.2)
