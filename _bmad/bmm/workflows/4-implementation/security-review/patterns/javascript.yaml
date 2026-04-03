@@ -1,0 +1,145 @@
+# JavaScript/TypeScript-specific CWE Security Patterns
+# ~12 entries with concrete JS/TS vulnerable/safe code examples
+
+patterns:
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "JS: DOM XSS via innerHTML"
+    vulnerable_example: |
+      element.innerHTML = userInput;
+      document.write(userInput);
+    safe_example: |
+      element.textContent = userInput;
+    detection_hint: "innerHTML, outerHTML, document.write with user data"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "JS: React dangerouslySetInnerHTML"
+    vulnerable_example: |
+      <div dangerouslySetInnerHTML={{__html: userInput}} />
+    safe_example: |
+      <div>{DOMPurify.sanitize(userInput)}</div>
+    detection_hint: "dangerouslySetInnerHTML with unsanitized user input"
+
+  - cwe_id: CWE-95
+    severity: HIGH
+    tier: 1
+    title: "JS: eval() and similar code execution"
+    vulnerable_example: |
+      eval(userCode);
+      new Function(userCode)();
+      setTimeout(userCode, 1000);
+    safe_example: |
+      // Use a sandboxed interpreter or AST-based evaluation
+    detection_hint: "eval(), new Function(), setTimeout/setInterval with string argument"
+
+  - cwe_id: CWE-1321
+    severity: HIGH
+    tier: 1
+    title: "JS: Prototype Pollution"
+    vulnerable_example: |
+      function merge(target, source) {
+        for (let key in source) { target[key] = source[key]; }
+      }
+    safe_example: |
+      function merge(target, source) {
+        for (let key of Object.keys(source)) {
+          if (key === '__proto__' || key === 'constructor') continue;
+          target[key] = source[key];
+        }
+      }
+    detection_hint: "obj[userKey] assignment, deep merge without __proto__ guard"
+
+  - cwe_id: CWE-352
+    severity: HIGH
+    tier: 1
+    title: "JS: Missing CSRF protection"
+    vulnerable_example: |
+      app.post('/api/transfer', (req, res) => { /* no CSRF check */ });
+    safe_example: |
+      app.use(csrf({ cookie: true }));
+      app.post('/api/transfer', csrfProtection, handler);
+    detection_hint: "POST/PUT/DELETE routes without CSRF middleware"
+
+  - cwe_id: CWE-346
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Missing CORS validation"
+    vulnerable_example: |
+      app.use(cors({ origin: '*' }));
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    safe_example: |
+      app.use(cors({ origin: ['https://example.com'] }));
+    detection_hint: "Access-Control-Allow-Origin: * or cors({origin: '*'})"
+
+  - cwe_id: CWE-522
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Credentials in client-side code"
+    vulnerable_example: |
+      const API_KEY = "sk_live_abc123";
+      fetch(url, { headers: { Authorization: `Bearer ${hardcodedToken}` }});
+    safe_example: |
+      // API keys should be server-side only, use session cookies for auth
+    detection_hint: "API keys, tokens, secrets in .js/.ts files (not .env)"
+
+  - cwe_id: CWE-601
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Open Redirect"
+    vulnerable_example: |
+      res.redirect(req.query.returnUrl);
+    safe_example: |
+      const url = new URL(req.query.returnUrl, 'https://example.com');
+      if (url.origin !== 'https://example.com') throw new Error('Invalid redirect');
+    detection_hint: "res.redirect() or window.location with user-controlled URL"
+
+  - cwe_id: CWE-209
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Detailed error messages in production"
+    vulnerable_example: |
+      app.use((err, req, res, next) => {
+        res.status(500).json({ error: err.message, stack: err.stack });
+      });
+    safe_example: |
+      app.use((err, req, res, next) => {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+      });
+    detection_hint: "err.stack or err.message in HTTP response"
+
+  - cwe_id: CWE-614
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Insecure cookie settings"
+    vulnerable_example: |
+      res.cookie('session', token);
+    safe_example: |
+      res.cookie('session', token, { secure: true, httpOnly: true, sameSite: 'strict' });
+    detection_hint: "res.cookie() without secure, httpOnly, sameSite flags"
+
+  - cwe_id: CWE-918
+    severity: MEDIUM
+    tier: 2
+    title: "JS: Server-Side Request Forgery"
+    vulnerable_example: |
+      const resp = await fetch(req.body.url);
+    safe_example: |
+      const parsed = new URL(req.body.url);
+      if (!ALLOWED_HOSTS.includes(parsed.hostname)) throw new Error('Forbidden');
+    detection_hint: "fetch/axios/http.request with user-provided URL on server side"
+
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "JS: Unsafe JSON parse with reviver or deserialization"
+    vulnerable_example: |
+      const obj = JSON.parse(userInput, customReviver);
+      // or: require(userInput)
+    safe_example: |
+      const obj = JSON.parse(userInput);
+      // validate schema after parsing
+    detection_hint: "require() with user input, JSON.parse with unsafe reviver"

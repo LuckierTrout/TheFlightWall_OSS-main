@@ -1,0 +1,136 @@
+# Python-specific CWE Security Patterns
+# ~12 entries with concrete Python vulnerable/safe code examples
+
+patterns:
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "Python: pickle deserialization of untrusted data"
+    vulnerable_example: |
+      data = pickle.loads(request.body)
+      obj = pickle.load(open(user_file, "rb"))
+    safe_example: |
+      data = json.loads(request.body)
+    detection_hint: "pickle.loads, pickle.load on untrusted input"
+
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "Python: yaml.load without SafeLoader"
+    vulnerable_example: |
+      config = yaml.load(user_input)
+      config = yaml.load(f, Loader=yaml.FullLoader)
+    safe_example: |
+      config = yaml.safe_load(user_input)
+    detection_hint: "yaml.load() without Loader=yaml.SafeLoader"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "Python: subprocess with shell=True"
+    vulnerable_example: |
+      subprocess.run(f"grep {pattern} {filename}", shell=True)
+      os.system(f"rm {user_path}")
+    safe_example: |
+      subprocess.run(["grep", pattern, filename])
+    detection_hint: "shell=True with user input, os.system(), os.popen()"
+
+  - cwe_id: CWE-95
+    severity: HIGH
+    tier: 1
+    title: "Python: eval/exec on untrusted input"
+    vulnerable_example: |
+      result = eval(user_expression)
+      exec(user_code)
+    safe_example: |
+      import ast
+      result = ast.literal_eval(user_expression)
+    detection_hint: "eval(), exec(), compile() with user-controlled strings"
+
+  - cwe_id: CWE-22
+    severity: HIGH
+    tier: 1
+    title: "Python: path traversal via os.path.join"
+    vulnerable_example: |
+      filepath = os.path.join(upload_dir, filename)
+    safe_example: |
+      safe_name = os.path.basename(filename)
+      filepath = os.path.join(upload_dir, safe_name)
+      assert os.path.realpath(filepath).startswith(os.path.realpath(upload_dir))
+    detection_hint: "os.path.join with user filename without basename/realpath check"
+
+  - cwe_id: CWE-327
+    severity: MEDIUM
+    tier: 2
+    title: "Python: weak hash for passwords"
+    vulnerable_example: |
+      hashed = hashlib.md5(password.encode()).hexdigest()
+    safe_example: |
+      import bcrypt
+      hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    detection_hint: "hashlib.md5/sha1 for password hashing"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "Python: SQL injection via string formatting"
+    vulnerable_example: |
+      cursor.execute(f"SELECT * FROM users WHERE name = '{name}'")
+      cursor.execute("SELECT * FROM users WHERE name = '%s'" % name)
+    safe_example: |
+      cursor.execute("SELECT * FROM users WHERE name = %s", (name,))
+    detection_hint: "f-string or % formatting in cursor.execute() SQL"
+
+  - cwe_id: CWE-611
+    severity: MEDIUM
+    tier: 2
+    title: "Python: XXE via lxml/defusedxml"
+    vulnerable_example: |
+      tree = etree.parse(user_file)
+    safe_example: |
+      from defusedxml.lxml import parse
+      tree = parse(user_file)
+    detection_hint: "etree.parse, ElementTree.parse on untrusted XML without defusedxml"
+
+  - cwe_id: CWE-532
+    severity: MEDIUM
+    tier: 2
+    title: "Python: secrets in log output"
+    vulnerable_example: |
+      logger.info(f"Connecting with token={api_token}")
+    safe_example: |
+      logger.info(f"Connecting with token={api_token[:4]}...")
+    detection_hint: "password, token, secret, key values in logger/print calls"
+
+  - cwe_id: CWE-798
+    severity: HIGH
+    tier: 1
+    title: "Python: hardcoded secrets in source"
+    vulnerable_example: |
+      SECRET_KEY = "django-insecure-abc123"
+      DB_PASSWORD = "production-password"
+    safe_example: |
+      SECRET_KEY = os.environ["SECRET_KEY"]
+    detection_hint: "literal assignment to SECRET_KEY, PASSWORD, API_KEY variables"
+
+  - cwe_id: CWE-918
+    severity: MEDIUM
+    tier: 2
+    title: "Python: SSRF via requests"
+    vulnerable_example: |
+      resp = requests.get(user_url)
+    safe_example: |
+      parsed = urllib.parse.urlparse(user_url)
+      if parsed.hostname not in ALLOWED_HOSTS: raise ValueError()
+    detection_hint: "requests.get/post with user-provided URL without allowlist"
+
+  - cwe_id: CWE-94
+    severity: HIGH
+    tier: 1
+    title: "Python: code injection via __import__"
+    vulnerable_example: |
+      module = __import__(user_module_name)
+    safe_example: |
+      ALLOWED_MODULES = {"math", "json"}
+      if user_module_name not in ALLOWED_MODULES: raise ValueError()
+    detection_hint: "__import__() or importlib.import_module() with user input"

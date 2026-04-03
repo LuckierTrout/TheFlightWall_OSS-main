@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FlightWall Setup</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wizard">
+  <header class="wizard-header">
+    <h1>FlightWall Setup</h1>
+    <p id="progress">Step 1 of 5</p>
+  </header>
+
+  <main class="wizard-content">
+    <!-- Step 1: WiFi -->
+    <section id="step-1" class="step active">
+      <h2>WiFi Network</h2>
+      <div id="scan-status" class="scan-status">
+        <p class="scan-msg">Scanning for networks...</p>
+        <div class="spinner"></div>
+      </div>
+      <div id="scan-results" class="scan-results" style="display:none"></div>
+      <button type="button" id="btn-manual" class="link-btn">Enter manually instead</button>
+      <div id="wifi-form" class="form-fields">
+        <label for="wifi-ssid">Network Name (SSID)</label>
+        <input type="text" id="wifi-ssid" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Enter SSID">
+        <label for="wifi-pass">Password</label>
+        <input type="password" id="wifi-pass" autocomplete="off" placeholder="Enter password">
+        <p id="wifi-err" class="field-error" style="display:none">SSID and password are required.</p>
+      </div>
+    </section>
+
+    <!-- Step 2: API Keys -->
+    <section id="step-2" class="step">
+      <h2>API Keys</h2>
+      <p class="step-desc">Enter your API credentials. These are used to fetch live flight data.</p>
+      <div class="form-fields">
+        <label for="os-client-id">OpenSky Client ID</label>
+        <input type="text" id="os-client-id" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client ID">
+        <label for="os-client-sec">OpenSky Client Secret</label>
+        <input type="text" id="os-client-sec" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client secret">
+        <label for="aeroapi-key">AeroAPI Key</label>
+        <input type="text" id="aeroapi-key" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key">
+        <p id="api-err" class="field-error" style="display:none">All three API fields are required.</p>
+      </div>
+    </section>
+
+    <!-- Step 3: Location -->
+    <section id="step-3" class="step">
+      <h2>Location</h2>
+      <p class="step-desc">Set the center point and radius for flight tracking.</p>
+      <button type="button" id="btn-geolocate" class="geo-btn">Use my location</button>
+      <p id="geo-status" class="geo-status" style="display:none"></p>
+      <div class="form-fields">
+        <label for="center-lat">Latitude</label>
+        <input type="text" id="center-lat" inputmode="decimal" autocomplete="off" placeholder="e.g. 37.7749">
+        <label for="center-lon">Longitude</label>
+        <input type="text" id="center-lon" inputmode="decimal" autocomplete="off" placeholder="e.g. -122.4194">
+        <label for="radius-km">Radius (km)</label>
+        <input type="text" id="radius-km" inputmode="decimal" autocomplete="off" placeholder="e.g. 50">
+        <p id="loc-err" class="field-error" style="display:none"></p>
+      </div>
+      <p class="helper-copy">An interactive map is available later in the dashboard.</p>
+    </section>
+
+    <!-- Step 4: Hardware -->
+    <section id="step-4" class="step">
+      <h2>Hardware</h2>
+      <p class="step-desc">Configure your LED matrix dimensions.</p>
+      <div class="form-fields">
+        <label for="tiles-x">Tiles Wide</label>
+        <input type="text" id="tiles-x" inputmode="numeric" autocomplete="off" placeholder="10">
+        <label for="tiles-y">Tiles High</label>
+        <input type="text" id="tiles-y" inputmode="numeric" autocomplete="off" placeholder="2">
+        <label for="tile-pixels">Pixels per Tile</label>
+        <input type="text" id="tile-pixels" inputmode="numeric" autocomplete="off" placeholder="16">
+        <label for="display-pin">Data Pin (GPIO)</label>
+        <input type="text" id="display-pin" inputmode="numeric" autocomplete="off" placeholder="25">
+        <p id="hw-err" class="field-error" style="display:none"></p>
+      </div>
+      <p id="resolution-text" class="resolution-text"></p>
+    </section>
+
+    <!-- Step 5: Review & Connect -->
+    <section id="step-5" class="step">
+      <h2>Review &amp; Connect</h2>
+      <p class="step-desc">Confirm your settings, then save and connect.</p>
+      <div id="review-sections" class="review-sections"></div>
+    </section>
+  </main>
+
+  <nav class="wizard-nav">
+    <button type="button" id="btn-back" class="nav-btn" style="visibility:hidden">&larr; Back</button>
+    <button type="button" id="btn-next" class="nav-btn nav-btn-primary">Next &rarr;</button>
+  </nav>
+</div>
+
+<script src="/common.js"></script>
+<script src="/wizard.js"></script>
+</body>
+</html>

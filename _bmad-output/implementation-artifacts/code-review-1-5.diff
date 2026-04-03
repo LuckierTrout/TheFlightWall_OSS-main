@@ -1,0 +1,1148 @@
+diff --git a/firmware/adapters/WebPortal.h b/firmware/adapters/WebPortal.h
+new file mode 100644
+index 0000000..d4db355
+--- /dev/null
++++ b/firmware/adapters/WebPortal.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include <Arduino.h>
++#include <ESPAsyncWebServer.h>
++#include "adapters/WiFiManager.h"
++
++class WebPortal {
++public:
++    void init(AsyncWebServer& server, WiFiManager& wifiMgr);
++    void begin();
++
++private:
++    AsyncWebServer* _server = nullptr;
++    WiFiManager* _wifiMgr = nullptr;
++
++    void _registerRoutes();
++    void _handleRoot(AsyncWebServerRequest* request);
++    void _handleGetSettings(AsyncWebServerRequest* request);
++    void _handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len);
++    void _handleGetStatus(AsyncWebServerRequest* request);
++    void _handlePostReboot(AsyncWebServerRequest* request);
++    void _handleGetWifiScan(AsyncWebServerRequest* request);
++
++    void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);
++};
+diff --git a/firmware/adapters/WebPortal.cpp b/firmware/adapters/WebPortal.cpp
+new file mode 100644
+index 0000000..cb56aca
+--- /dev/null
++++ b/firmware/adapters/WebPortal.cpp
+@@ -0,0 +1,248 @@
++/*
++Purpose: Web server adapter serving gzipped HTML pages and REST API endpoints.
++Responsibilities:
++- Serve wizard.html.gz in AP mode, dashboard.html.gz in STA mode via GET /.
++- Expose JSON API: GET/POST /api/settings, GET /api/status, POST /api/reboot, GET /api/wifi/scan.
++- Use consistent JSON envelope: { "ok": bool, "data": ..., "error": "...", "code": "..." }.
++Architecture: ESPAsyncWebServer (mathieucarbou fork) — non-blocking, runs on AsyncTCP task.
++
++JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
++  Display:   brightness, text_color_r, text_color_g, text_color_b
++  Location:  center_lat, center_lon, radius_km
++  Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
++  Timing:    fetch_interval, display_cycle
++  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
++*/
++#include "adapters/WebPortal.h"
++#include <LittleFS.h>
++#include <ArduinoJson.h>
++#include <WiFi.h>
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "utils/Log.h"
++
++void WebPortal::init(AsyncWebServer& server, WiFiManager& wifiMgr) {
++    _server = &server;
++    _wifiMgr = &wifiMgr;
++    _registerRoutes();
++    LOG_I("WebPortal", "Routes registered");
++}
++
++void WebPortal::begin() {
++    if (!_server) return;
++    _server->begin();
++    LOG_I("WebPortal", "Server started on port 80");
++}
++
++void WebPortal::_registerRoutes() {
++    // GET / — serve wizard or dashboard based on WiFi mode
++    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleRoot(request);
++    });
++
++    // GET /api/settings
++    _server->on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetSettings(request);
++    });
++
++    // POST /api/settings — uses body handler for JSON parsing
++    _server->on("/api/settings", HTTP_POST,
++        // request handler (called after body is received)
++        [](AsyncWebServerRequest* request) {
++            // no-op: response sent in body handler
++        },
++        nullptr, // upload handler
++        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
++            // Only process once we have the complete body (single-chunk for small JSON)
++            if (index == 0 && len == total) {
++                _handlePostSettings(request, data, len);
++            } else if (index + len == total) {
++                // Multi-chunk: for simplicity, reject large bodies
++                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
++            }
++        }
++    );
++
++    // GET /api/status
++    _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetStatus(request);
++    });
++
++    // POST /api/reboot
++    _server->on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
++        _handlePostReboot(request);
++    });
++
++    // GET /api/wifi/scan
++    _server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetWifiScan(request);
++    });
++}
++
++void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
++    WiFiState state = _wifiMgr->getState();
++    const char* file;
++    if (state == WiFiState::AP_SETUP || state == WiFiState::AP_FALLBACK) {
++        file = "/wizard.html.gz";
++    } else {
++        // STA_CONNECTED, CONNECTING, STA_RECONNECTING — serve dashboard
++        file = "/dashboard.html.gz";
++    }
++
++    if (!LittleFS.exists(file)) {
++        _sendJsonError(request, 404, "Asset not found", "ASSET_MISSING");
++        return;
++    }
++
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, file, "text/html");
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_handleGetSettings(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    ConfigManager::dumpSettingsJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
++    JsonDocument doc;
++    DeserializationError err = deserializeJson(doc, data, len);
++    if (err) {
++        _sendJsonError(request, 400, "Invalid JSON", "PARSE_ERROR");
++        return;
++    }
++
++    if (!doc.is<JsonObject>()) {
++        _sendJsonError(request, 400, "Expected JSON object", "INVALID_PAYLOAD");
++        return;
++    }
++
++    JsonObject settings = doc.as<JsonObject>();
++    if (settings.size() == 0) {
++        _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++        return;
++    }
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    JsonDocument respDoc;
++    JsonObject resp = respDoc.to<JsonObject>();
++    resp["ok"] = true;
++    JsonArray applied = resp["applied"].to<JsonArray>();
++    for (const String& key : result.applied) {
++        applied.add(key);
++    }
++    resp["reboot_required"] = result.reboot_required;
++
++    String output;
++    serializeJson(respDoc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    SystemStatus::toJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostReboot(AsyncWebServerRequest* request) {
++    // Flush all pending NVS writes before restart
++    ConfigManager::persistAllNow();
++
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["message"] = "Rebooting...";
++
++    String output;
++    serializeJson(doc, output);
++
++    // Send response first, then schedule restart
++    request->send(200, "application/json", output);
++
++    // Delay restart slightly so the HTTP response can be sent
++    // Use a one-shot timer to avoid blocking the async callback
++    static esp_timer_handle_t rebootTimer = nullptr;
++    if (!rebootTimer) {
++        esp_timer_create_args_t args = {};
++        args.callback = [](void*) { ESP.restart(); };
++        args.name = "reboot";
++        esp_timer_create(&args, &rebootTimer);
++    }
++    esp_timer_start_once(rebootTimer, 1000000); // 1 second in microseconds
++}
++
++void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
++    int16_t scanResult = WiFi.scanComplete();
++
++    if (scanResult == WIFI_SCAN_FAILED) {
++        // No scan running — kick off an async scan
++        WiFi.scanNetworks(true); // async=true
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"] = JsonArray();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    if (scanResult == WIFI_SCAN_RUNNING) {
++        // Scan still in progress
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"] = JsonArray();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    // Scan complete — return results
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["scanning"] = false;
++    JsonArray data = root["data"].to<JsonArray>();
++
++    for (int i = 0; i < scanResult; i++) {
++        JsonObject net = data.add<JsonObject>();
++        net["ssid"] = WiFi.SSID(i);
++        net["rssi"] = WiFi.RSSI(i);
++    }
++
++    // Free scan memory for next scan
++    WiFi.scanDelete();
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = false;
++    root["error"] = error;
++    root["code"] = code;
++    String output;
++    serializeJson(doc, output);
++    request->send(httpCode, "application/json", output);
++}
+diff --git a/firmware/core/ConfigManager.h b/firmware/core/ConfigManager.h
+new file mode 100644
+index 0000000..5e33713
+--- /dev/null
++++ b/firmware/core/ConfigManager.h
+@@ -0,0 +1,81 @@
++#pragma once
++
++#include <Arduino.h>
++#include <ArduinoJson.h>
++#include <vector>
++#include <functional>
++
++// NVS key abbreviations (15-char limit):
++// os_client_id   = opensky_client_id
++// os_client_sec  = opensky_client_secret
++// scan_dir       = scan_direction
++
++struct DisplayConfig {
++    uint8_t brightness;
++    uint8_t text_color_r, text_color_g, text_color_b;
++};
++
++struct LocationConfig {
++    double center_lat, center_lon, radius_km;
++};
++
++struct HardwareConfig {
++    uint8_t tiles_x, tiles_y, tile_pixels, display_pin;
++    uint8_t origin_corner, scan_dir, zigzag;
++};
++
++struct TimingConfig {
++    uint16_t fetch_interval, display_cycle;
++};
++
++struct NetworkConfig {
++    String wifi_ssid, wifi_password;
++    String opensky_client_id, opensky_client_secret;
++    String aeroapi_key;
++};
++
++struct ApplyResult {
++    std::vector<String> applied;
++    bool reboot_required;
++};
++
++class ConfigManager {
++public:
++    static void init();
++    static void tick();
++    static DisplayConfig getDisplay();
++    static LocationConfig getLocation();
++    static HardwareConfig getHardware();
++    static TimingConfig getTiming();
++    static NetworkConfig getNetwork();
++    static ApplyResult applyJson(const JsonObject& settings);
++    static void dumpSettingsJson(JsonObject& out);
++    static void persistAllNow();
++    static void schedulePersist(uint16_t delayMs = 2000);
++    static void onChange(std::function<void()> callback);
++    static bool requiresReboot(const char* key);
++
++    // Compile-time URL accessors (remain in ConfigManager, not NVS)
++    static const char* getOpenSkyTokenUrl();
++    static const char* getOpenSkyBaseUrl();
++    static const char* getAeroApiBaseUrl();
++    static const char* getFlightWallCdnBaseUrl();
++    static bool getAeroApiInsecureTls();
++    static bool getFlightWallInsecureTls();
++
++private:
++    static DisplayConfig _display;
++    static LocationConfig _location;
++    static HardwareConfig _hardware;
++    static TimingConfig _timing;
++    static NetworkConfig _network;
++
++    static std::vector<std::function<void()>> _callbacks;
++    static unsigned long _persistScheduledAt;
++    static bool _persistPending;
++
++    static void loadFromNvs();
++    static void persistToNvs();
++    static void fireCallbacks();
++    static bool updateCacheFromKey(const char* key, JsonVariant value);
++};
+diff --git a/firmware/core/ConfigManager.cpp b/firmware/core/ConfigManager.cpp
+new file mode 100644
+index 0000000..798dce9
+--- /dev/null
++++ b/firmware/core/ConfigManager.cpp
+@@ -0,0 +1,376 @@
++/*
++Purpose: Centralized configuration manager with NVS persistence and compile-time fallbacks.
++Responsibilities:
++- Load settings from NVS on init, falling back to compile-time defaults from config headers.
++- Provide category struct getters for thread-safe reads (copy semantics).
++- Apply JSON patches via applyJson(), distinguishing reboot vs hot-reload keys.
++- Debounce NVS writes for hot-reload keys via schedulePersist().
++- Only file that includes config/*.h headers (AR13 compliance).
++*/
++#include "core/ConfigManager.h"
++#include <Preferences.h>
++#include "utils/Log.h"
++
++// AR13: Only ConfigManager.cpp includes config headers
++#include "config/UserConfiguration.h"
++#include "config/WiFiConfiguration.h"
++#include "config/TimingConfiguration.h"
++#include "config/HardwareConfiguration.h"
++#include "config/APIConfiguration.h"
++
++static const char* NVS_NAMESPACE = "flightwall";
++
++static bool isSupportedDisplayPin(uint8_t pin) {
++    switch (pin) {
++        case 0:
++        case 2:
++        case 4:
++        case 5:
++        case 12:
++        case 13:
++        case 14:
++        case 15:
++        case 16:
++        case 17:
++        case 18:
++        case 19:
++        case 21:
++        case 22:
++        case 23:
++        case 25:
++        case 26:
++        case 27:
++        case 32:
++        case 33:
++            return true;
++        default:
++            return false;
++    }
++}
++
++// Reboot-required keys
++static const char* REBOOT_KEYS[] = {
++    "wifi_ssid", "wifi_password",
++    "os_client_id", "os_client_sec",
++    "aeroapi_key", "display_pin"
++};
++static const size_t REBOOT_KEY_COUNT = sizeof(REBOOT_KEYS) / sizeof(REBOOT_KEYS[0]);
++
++// Static member initialization
++DisplayConfig ConfigManager::_display = {};
++LocationConfig ConfigManager::_location = {};
++HardwareConfig ConfigManager::_hardware = {};
++TimingConfig ConfigManager::_timing = {};
++NetworkConfig ConfigManager::_network = {};
++std::vector<std::function<void()>> ConfigManager::_callbacks;
++unsigned long ConfigManager::_persistScheduledAt = 0;
++bool ConfigManager::_persistPending = false;
++
++void ConfigManager::init() {
++    _persistPending = false;
++    _persistScheduledAt = 0;
++
++    // Set compile-time defaults first
++    _display.brightness = UserConfiguration::DISPLAY_BRIGHTNESS;
++    _display.text_color_r = UserConfiguration::TEXT_COLOR_R;
++    _display.text_color_g = UserConfiguration::TEXT_COLOR_G;
++    _display.text_color_b = UserConfiguration::TEXT_COLOR_B;
++
++    _location.center_lat = UserConfiguration::CENTER_LAT;
++    _location.center_lon = UserConfiguration::CENTER_LON;
++    _location.radius_km = UserConfiguration::RADIUS_KM;
++
++    _hardware.tiles_x = HardwareConfiguration::DISPLAY_TILES_X;
++    _hardware.tiles_y = HardwareConfiguration::DISPLAY_TILES_Y;
++    _hardware.tile_pixels = HardwareConfiguration::DISPLAY_TILE_PIXEL_W;
++    _hardware.display_pin = HardwareConfiguration::DISPLAY_PIN;
++    _hardware.origin_corner = 0;
++    _hardware.scan_dir = 0;
++    _hardware.zigzag = 0;
++
++    _timing.fetch_interval = TimingConfiguration::FETCH_INTERVAL_SECONDS;
++    _timing.display_cycle = TimingConfiguration::DISPLAY_CYCLE_SECONDS;
++
++    _network.wifi_ssid = WiFiConfiguration::WIFI_SSID;
++    _network.wifi_password = WiFiConfiguration::WIFI_PASSWORD;
++    _network.opensky_client_id = APIConfiguration::OPENSKY_CLIENT_ID;
++    _network.opensky_client_secret = APIConfiguration::OPENSKY_CLIENT_SECRET;
++    _network.aeroapi_key = APIConfiguration::AEROAPI_KEY;
++
++    // Override with NVS values where they exist
++    loadFromNvs();
++
++    LOG_I("ConfigManager", "Initialized");
++}
++
++void ConfigManager::tick() {
++    if (!_persistPending) {
++        return;
++    }
++
++    if ((long)(millis() - _persistScheduledAt) >= 0) {
++        persistToNvs();
++    }
++}
++
++void ConfigManager::loadFromNvs() {
++    Preferences prefs;
++    if (!prefs.begin(NVS_NAMESPACE, true)) {
++        LOG_I("ConfigManager", "NVS namespace empty or first boot — using compile-time defaults");
++        return;
++    }
++
++    // Display
++    if (prefs.isKey("brightness"))     _display.brightness = prefs.getUChar("brightness", _display.brightness);
++    if (prefs.isKey("text_color_r"))   _display.text_color_r = prefs.getUChar("text_color_r", _display.text_color_r);
++    if (prefs.isKey("text_color_g"))   _display.text_color_g = prefs.getUChar("text_color_g", _display.text_color_g);
++    if (prefs.isKey("text_color_b"))   _display.text_color_b = prefs.getUChar("text_color_b", _display.text_color_b);
++
++    // Location
++    if (prefs.isKey("center_lat"))     _location.center_lat = prefs.getDouble("center_lat", _location.center_lat);
++    if (prefs.isKey("center_lon"))     _location.center_lon = prefs.getDouble("center_lon", _location.center_lon);
++    if (prefs.isKey("radius_km"))      _location.radius_km = prefs.getDouble("radius_km", _location.radius_km);
++
++    // Hardware
++    if (prefs.isKey("tiles_x"))        _hardware.tiles_x = prefs.getUChar("tiles_x", _hardware.tiles_x);
++    if (prefs.isKey("tiles_y"))        _hardware.tiles_y = prefs.getUChar("tiles_y", _hardware.tiles_y);
++    if (prefs.isKey("tile_pixels"))    _hardware.tile_pixels = prefs.getUChar("tile_pixels", _hardware.tile_pixels);
++    if (prefs.isKey("display_pin")) {
++        const uint8_t storedPin = prefs.getUChar("display_pin", _hardware.display_pin);
++        if (isSupportedDisplayPin(storedPin)) {
++            _hardware.display_pin = storedPin;
++        }
++    }
++    if (prefs.isKey("origin_corner"))  _hardware.origin_corner = prefs.getUChar("origin_corner", _hardware.origin_corner);
++    if (prefs.isKey("scan_dir"))       _hardware.scan_dir = prefs.getUChar("scan_dir", _hardware.scan_dir);
++    if (prefs.isKey("zigzag"))         _hardware.zigzag = prefs.getUChar("zigzag", _hardware.zigzag);
++
++    // Timing
++    if (prefs.isKey("fetch_interval")) _timing.fetch_interval = prefs.getUShort("fetch_interval", _timing.fetch_interval);
++    if (prefs.isKey("display_cycle"))  _timing.display_cycle = prefs.getUShort("display_cycle", _timing.display_cycle);
++
++    // Network
++    if (prefs.isKey("wifi_ssid"))      _network.wifi_ssid = prefs.getString("wifi_ssid", _network.wifi_ssid);
++    if (prefs.isKey("wifi_password"))  _network.wifi_password = prefs.getString("wifi_password", _network.wifi_password);
++    if (prefs.isKey("os_client_id"))   _network.opensky_client_id = prefs.getString("os_client_id", _network.opensky_client_id);
++    if (prefs.isKey("os_client_sec"))  _network.opensky_client_secret = prefs.getString("os_client_sec", _network.opensky_client_secret);
++    if (prefs.isKey("aeroapi_key"))    _network.aeroapi_key = prefs.getString("aeroapi_key", _network.aeroapi_key);
++
++    prefs.end();
++    LOG_I("ConfigManager", "NVS values loaded");
++}
++
++void ConfigManager::persistToNvs() {
++    Preferences prefs;
++    if (!prefs.begin(NVS_NAMESPACE, false)) {
++        LOG_E("ConfigManager", "Failed to open NVS for writing");
++        return;
++    }
++
++    // Display
++    prefs.putUChar("brightness", _display.brightness);
++    prefs.putUChar("text_color_r", _display.text_color_r);
++    prefs.putUChar("text_color_g", _display.text_color_g);
++    prefs.putUChar("text_color_b", _display.text_color_b);
++
++    // Location
++    prefs.putDouble("center_lat", _location.center_lat);
++    prefs.putDouble("center_lon", _location.center_lon);
++    prefs.putDouble("radius_km", _location.radius_km);
++
++    // Hardware
++    prefs.putUChar("tiles_x", _hardware.tiles_x);
++    prefs.putUChar("tiles_y", _hardware.tiles_y);
++    prefs.putUChar("tile_pixels", _hardware.tile_pixels);
++    prefs.putUChar("display_pin", _hardware.display_pin);
++    prefs.putUChar("origin_corner", _hardware.origin_corner);
++    prefs.putUChar("scan_dir", _hardware.scan_dir);
++    prefs.putUChar("zigzag", _hardware.zigzag);
++
++    // Timing
++    prefs.putUShort("fetch_interval", _timing.fetch_interval);
++    prefs.putUShort("display_cycle", _timing.display_cycle);
++
++    // Network
++    prefs.putString("wifi_ssid", _network.wifi_ssid);
++    prefs.putString("wifi_password", _network.wifi_password);
++    prefs.putString("os_client_id", _network.opensky_client_id);
++    prefs.putString("os_client_sec", _network.opensky_client_secret);
++    prefs.putString("aeroapi_key", _network.aeroapi_key);
++
++    prefs.end();
++    _persistScheduledAt = 0;
++    _persistPending = false;
++    LOG_I("ConfigManager", "NVS persisted");
++}
++
++void ConfigManager::dumpSettingsJson(JsonObject& out) {
++    // Display — uses same key names as updateCacheFromKey / applyJson
++    out["brightness"] = _display.brightness;
++    out["text_color_r"] = _display.text_color_r;
++    out["text_color_g"] = _display.text_color_g;
++    out["text_color_b"] = _display.text_color_b;
++
++    // Location
++    out["center_lat"] = _location.center_lat;
++    out["center_lon"] = _location.center_lon;
++    out["radius_km"] = _location.radius_km;
++
++    // Hardware
++    out["tiles_x"] = _hardware.tiles_x;
++    out["tiles_y"] = _hardware.tiles_y;
++    out["tile_pixels"] = _hardware.tile_pixels;
++    out["display_pin"] = _hardware.display_pin;
++    out["origin_corner"] = _hardware.origin_corner;
++    out["scan_dir"] = _hardware.scan_dir;
++    out["zigzag"] = _hardware.zigzag;
++
++    // Timing
++    out["fetch_interval"] = _timing.fetch_interval;
++    out["display_cycle"] = _timing.display_cycle;
++
++    // Network — NVS abbreviated keys for API round-trip consistency
++    out["wifi_ssid"] = _network.wifi_ssid;
++    out["wifi_password"] = _network.wifi_password;
++    out["os_client_id"] = _network.opensky_client_id;
++    out["os_client_sec"] = _network.opensky_client_secret;
++    out["aeroapi_key"] = _network.aeroapi_key;
++}
++
++void ConfigManager::persistAllNow() {
++    persistToNvs();
++    _persistPending = false;
++    _persistScheduledAt = 0;
++    LOG_I("ConfigManager", "Full NVS flush completed");
++}
++
++DisplayConfig ConfigManager::getDisplay() { return _display; }
++LocationConfig ConfigManager::getLocation() { return _location; }
++HardwareConfig ConfigManager::getHardware() { return _hardware; }
++TimingConfig ConfigManager::getTiming() { return _timing; }
++NetworkConfig ConfigManager::getNetwork() { return _network; }
++
++bool ConfigManager::requiresReboot(const char* key) {
++    for (size_t i = 0; i < REBOOT_KEY_COUNT; i++) {
++        if (strcmp(key, REBOOT_KEYS[i]) == 0) return true;
++    }
++    return false;
++}
++
++bool ConfigManager::updateCacheFromKey(const char* key, JsonVariant value) {
++    // Display
++    if (strcmp(key, "brightness") == 0)        { _display.brightness = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_r") == 0)      { _display.text_color_r = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_g") == 0)      { _display.text_color_g = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_b") == 0)      { _display.text_color_b = value.as<uint8_t>(); return true; }
++
++    // Location
++    if (strcmp(key, "center_lat") == 0)        { _location.center_lat = value.as<double>(); return true; }
++    if (strcmp(key, "center_lon") == 0)        { _location.center_lon = value.as<double>(); return true; }
++    if (strcmp(key, "radius_km") == 0)         { _location.radius_km = value.as<double>(); return true; }
++
++    // Hardware
++    if (strcmp(key, "tiles_x") == 0)           { _hardware.tiles_x = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "tiles_y") == 0)           { _hardware.tiles_y = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "tile_pixels") == 0)       { _hardware.tile_pixels = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "display_pin") == 0) {
++        const uint8_t pin = value.as<uint8_t>();
++        if (!isSupportedDisplayPin(pin)) {
++            return false;
++        }
++        _hardware.display_pin = pin;
++        return true;
++    }
++    if (strcmp(key, "origin_corner") == 0)     { _hardware.origin_corner = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "scan_dir") == 0)          { _hardware.scan_dir = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "zigzag") == 0)            { _hardware.zigzag = value.as<uint8_t>(); return true; }
++
++    // Timing
++    if (strcmp(key, "fetch_interval") == 0)    { _timing.fetch_interval = value.as<uint16_t>(); return true; }
++    if (strcmp(key, "display_cycle") == 0)     { _timing.display_cycle = value.as<uint16_t>(); return true; }
++
++    // Network
++    if (strcmp(key, "wifi_ssid") == 0)         { _network.wifi_ssid = value.as<String>(); return true; }
++    if (strcmp(key, "wifi_password") == 0)     { _network.wifi_password = value.as<String>(); return true; }
++    if (strcmp(key, "os_client_id") == 0)      { _network.opensky_client_id = value.as<String>(); return true; }
++    if (strcmp(key, "os_client_sec") == 0)     { _network.opensky_client_secret = value.as<String>(); return true; }
++    if (strcmp(key, "aeroapi_key") == 0)       { _network.aeroapi_key = value.as<String>(); return true; }
++
++    return false;
++}
++
++ApplyResult ConfigManager::applyJson(const JsonObject& settings) {
++    ApplyResult result;
++    result.reboot_required = false;
++
++    bool hasRebootKey = false;
++    bool hasHotKey = false;
++
++    for (JsonPair kv : settings) {
++        const char* key = kv.key().c_str();
++        JsonVariant value = kv.value();
++
++        if (!updateCacheFromKey(key, value)) {
++            Serial.print("ConfigManager: Ignoring unknown or invalid key: ");
++            Serial.println(key);
++            continue;
++        }
++
++        result.applied.push_back(String(key));
++
++        if (requiresReboot(key)) {
++            hasRebootKey = true;
++        } else {
++            hasHotKey = true;
++        }
++    }
++
++    if (hasRebootKey) {
++        // Reboot keys persist immediately — no debounce
++        Preferences prefs;
++        if (prefs.begin(NVS_NAMESPACE, false)) {
++            for (const String& key : result.applied) {
++                if (!requiresReboot(key.c_str())) continue;
++
++                if (key == "wifi_ssid")         prefs.putString("wifi_ssid", _network.wifi_ssid);
++                else if (key == "wifi_password") prefs.putString("wifi_password", _network.wifi_password);
++                else if (key == "os_client_id")  prefs.putString("os_client_id", _network.opensky_client_id);
++                else if (key == "os_client_sec") prefs.putString("os_client_sec", _network.opensky_client_secret);
++                else if (key == "aeroapi_key")   prefs.putString("aeroapi_key", _network.aeroapi_key);
++                else if (key == "display_pin")   prefs.putUChar("display_pin", _hardware.display_pin);
++            }
++            prefs.end();
++        }
++        result.reboot_required = true;
++    }
++
++    if (hasHotKey) {
++        schedulePersist(2000);
++        fireCallbacks();
++    }
++
++    return result;
++}
++
++void ConfigManager::schedulePersist(uint16_t delayMs) {
++    _persistScheduledAt = millis() + delayMs;
++    _persistPending = true;
++}
++
++void ConfigManager::onChange(std::function<void()> callback) {
++    _callbacks.push_back(callback);
++}
++
++void ConfigManager::fireCallbacks() {
++    for (auto& cb : _callbacks) {
++        cb();
++    }
++}
++
++// Compile-time URL accessors — these never change at runtime
++const char* ConfigManager::getOpenSkyTokenUrl() { return APIConfiguration::OPENSKY_TOKEN_URL; }
++const char* ConfigManager::getOpenSkyBaseUrl() { return APIConfiguration::OPENSKY_BASE_URL; }
++const char* ConfigManager::getAeroApiBaseUrl() { return APIConfiguration::AEROAPI_BASE_URL; }
++const char* ConfigManager::getFlightWallCdnBaseUrl() { return APIConfiguration::FLIGHTWALL_CDN_BASE_URL; }
++bool ConfigManager::getAeroApiInsecureTls() { return APIConfiguration::AEROAPI_INSECURE_TLS; }
++bool ConfigManager::getFlightWallInsecureTls() { return APIConfiguration::FLIGHTWALL_INSECURE_TLS; }
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+new file mode 100644
+index 0000000..86c9c40
+--- /dev/null
++++ b/firmware/src/main.cpp
+@@ -0,0 +1,380 @@
++/*
++Purpose: Firmware entry point for ESP32.
++Responsibilities:
++- Initialize serial, connect to Wi-Fi, and construct fetchers and display.
++- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
++- Display task on Core 0 reads queue and renders to LED matrix independently.
++Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
++Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
++*/
++#include <vector>
++#include <atomic>
++#include <WiFi.h>
++#include <HTTPClient.h>
++#include <WiFiClientSecure.h>
++#include <LittleFS.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <freertos/queue.h>
++#include "esp_task_wdt.h"
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "adapters/OpenSkyFetcher.h"
++#include "adapters/AeroAPIFetcher.h"
++#include "core/FlightDataFetcher.h"
++#include "adapters/NeoMatrixDisplay.h"
++#include "adapters/WiFiManager.h"
++#include "adapters/WebPortal.h"
++
++#ifndef PIO_UNIT_TESTING
++
++// --- Shared data structures (Task 1) ---
++
++struct FlightDisplayData {
++    std::vector<FlightInfo> flights;
++};
++
++struct DisplayStatusMessage {
++    char text[64];
++    uint32_t durationMs;
++};
++
++// Double buffer for safe cross-core data transfer (no memcpy of String/vector)
++static FlightDisplayData g_flightBuf[2];
++static uint8_t g_writeBuf = 0;
++
++// FreeRTOS queue holding a pointer to the current read buffer
++static QueueHandle_t g_flightQueue = nullptr;
++static QueueHandle_t g_displayMessageQueue = nullptr;
++
++// Atomic flag for config change notification (Core 1 sets, Core 0 reads)
++static std::atomic<bool> g_configChanged(false);
++
++// --- Existing globals ---
++
++static OpenSkyFetcher g_openSky;
++static AeroAPIFetcher g_aeroApi;
++static FlightDataFetcher *g_fetcher = nullptr;
++static NeoMatrixDisplay g_display;
++static WiFiManager g_wifiManager;
++static AsyncWebServer g_webServer(80);
++static WebPortal g_webPortal;
++
++static unsigned long g_lastFetchMs = 0;
++
++static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
++{
++    if (g_displayMessageQueue == nullptr)
++    {
++        return;
++    }
++
++    DisplayStatusMessage statusMessage = {};
++    snprintf(statusMessage.text, sizeof(statusMessage.text), "%s", message.c_str());
++    statusMessage.durationMs = durationMs;
++    xQueueOverwrite(g_displayMessageQueue, &statusMessage);
++}
++
++static void showInitialWiFiMessage()
++{
++    switch (g_wifiManager.getState())
++    {
++        case WiFiState::AP_SETUP:
++            g_display.displayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            g_display.displayMessage(String("Connecting..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            g_display.displayMessage(String("IP: ") + g_wifiManager.getLocalIP());
++            break;
++        case WiFiState::STA_RECONNECTING:
++            g_display.displayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            g_display.displayMessage(String("WiFi Failed - Setup Mode"));
++            break;
++    }
++}
++
++static void queueWiFiStateMessage(WiFiState state)
++{
++    switch (state)
++    {
++        case WiFiState::AP_SETUP:
++            queueDisplayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            queueDisplayMessage(String("Connecting..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 3000);
++            break;
++        case WiFiState::STA_RECONNECTING:
++            queueDisplayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            queueDisplayMessage(String("WiFi Failed - Setup Mode"));
++            break;
++    }
++}
++
++static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
++{
++    return lhs.tiles_x != rhs.tiles_x ||
++           lhs.tiles_y != rhs.tiles_y ||
++           lhs.tile_pixels != rhs.tile_pixels ||
++           lhs.display_pin != rhs.display_pin ||
++           lhs.origin_corner != rhs.origin_corner ||
++           lhs.scan_dir != rhs.scan_dir ||
++           lhs.zigzag != rhs.zigzag;
++}
++
++// --- Display task (Task 2) ---
++
++void displayTask(void *pvParameters)
++{
++    LOG_I("DisplayTask", "Display task started");
++
++    // Read initial config as local copies
++    DisplayConfig localDisp = ConfigManager::getDisplay();
++    HardwareConfig localHw = ConfigManager::getHardware();
++    TimingConfig localTiming = ConfigManager::getTiming();
++
++    // Flight cycling state (owned by display task)
++    size_t currentFlightIndex = 0;
++    unsigned long lastCycleMs = millis();
++    bool statusMessageVisible = false;
++    unsigned long statusMessageUntilMs = 0;
++
++    // Subscribe to task watchdog
++    esp_task_wdt_add(NULL);
++
++    for (;;)
++    {
++        // Check for config changes (atomic flag from Core 1)
++        if (g_configChanged.exchange(false))
++        {
++            DisplayConfig newDisp = ConfigManager::getDisplay();
++            HardwareConfig newHw = ConfigManager::getHardware();
++            TimingConfig newTiming = ConfigManager::getTiming();
++
++            if (hardwareConfigChanged(localHw, newHw))
++            {
++                localHw = newHw;
++                LOG_I("DisplayTask", "Hardware config changed; restarting to apply layout");
++                delay(50);
++                ESP.restart();
++            }
++
++            localDisp = newDisp;
++            localTiming = newTiming;
++            g_display.updateBrightness(localDisp.brightness);
++            LOG_I("DisplayTask", "Config change detected, display settings updated");
++        }
++
++        DisplayStatusMessage statusMessage = {};
++        if (g_displayMessageQueue != nullptr &&
++            xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
++        {
++            statusMessageVisible = true;
++            statusMessageUntilMs = statusMessage.durationMs == 0
++                ? 0
++                : millis() + statusMessage.durationMs;
++            g_display.displayMessage(String(statusMessage.text));
++        }
++
++        if (statusMessageVisible)
++        {
++            if (statusMessageUntilMs == 0 || millis() < statusMessageUntilMs)
++            {
++                esp_task_wdt_reset();
++                vTaskDelay(pdMS_TO_TICKS(50));
++                continue;
++            }
++
++            statusMessageVisible = false;
++        }
++
++        // Read latest flight data from queue (peek, don't remove)
++        FlightDisplayData *ptr = nullptr;
++        if (g_flightQueue != nullptr && xQueuePeek(g_flightQueue, &ptr, 0) == pdTRUE && ptr != nullptr)
++        {
++            const auto &flights = ptr->flights;
++
++            if (!flights.empty())
++            {
++                const unsigned long now = millis();
++                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
++
++                if (flights.size() > 1)
++                {
++                    if (now - lastCycleMs >= cycleMs)
++                    {
++                        lastCycleMs = now;
++                        currentFlightIndex = (currentFlightIndex + 1) % flights.size();
++                    }
++                }
++                else
++                {
++                    currentFlightIndex = 0;
++                }
++
++                g_display.renderFlight(flights, currentFlightIndex % flights.size());
++            }
++            else
++            {
++                g_display.showLoading();
++            }
++        }
++
++        // Log stack high watermark at verbose level for tuning
++#if LOG_LEVEL >= 3
++        static unsigned long lastStackLogMs = 0;
++        const unsigned long nowMs = millis();
++        if (nowMs - lastStackLogMs >= 30000UL)
++        {
++            lastStackLogMs = nowMs;
++            Serial.println("[DisplayTask] Stack HWM: " + String(uxTaskGetStackHighWaterMark(NULL)) + " bytes");
++        }
++#endif
++
++        // Reset watchdog and yield (~20fps frame rate)
++        esp_task_wdt_reset();
++        vTaskDelay(pdMS_TO_TICKS(50));
++    }
++}
++
++// --- setup() (Task 3) ---
++
++void setup()
++{
++    Serial.begin(115200);
++    delay(200);
++
++    if (!LittleFS.begin(true)) {
++        LOG_E("Main", "LittleFS mount failed");
++    } else {
++        LOG_I("Main", "LittleFS mounted");
++    }
++
++    ConfigManager::init();
++    SystemStatus::init();
++
++    // Display initialization before task creation (setup runs on Core 1)
++    g_display.initialize();
++    g_display.showLoading();
++
++    // Create flight data queue (length 1, stores a pointer)
++    g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData *));
++    if (g_flightQueue == nullptr) {
++        LOG_E("Main", "Failed to create flight data queue");
++    } else {
++        LOG_I("Main", "Flight data queue created");
++    }
++
++    g_displayMessageQueue = xQueueCreate(1, sizeof(DisplayStatusMessage));
++    if (g_displayMessageQueue == nullptr) {
++        LOG_E("Main", "Failed to create display message queue");
++    } else {
++        LOG_I("Main", "Display message queue created");
++    }
++
++    // Register config change callback (sets atomic flag for display task)
++    ConfigManager::onChange([]() {
++        g_configChanged.store(true);
++    });
++    LOG_I("Main", "Config change callback registered");
++
++    // Create display task pinned to Core 0 (priority 1, 8KB stack)
++    BaseType_t taskResult = xTaskCreatePinnedToCore(
++        displayTask,
++        "display",
++        8192,
++        NULL,
++        1,
++        NULL,
++        0
++    );
++    if (taskResult == pdPASS) {
++        LOG_I("Main", "Display task created on Core 0 (8KB stack, priority 1)");
++    } else {
++        LOG_E("Main", "Failed to create display task");
++    }
++
++    // WiFiManager initialization (non-blocking, event-driven)
++    // Per architecture Decision 5: WiFiManager before WebPortal
++    g_wifiManager.init();
++    showInitialWiFiMessage();
++
++    g_wifiManager.onStateChange([](WiFiState oldState, WiFiState newState) {
++        (void)oldState;
++        queueWiFiStateMessage(newState);
++    });
++    queueWiFiStateMessage(g_wifiManager.getState());
++
++    // WebPortal initialization — register routes then start server
++    // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
++    g_webPortal.init(g_webServer, g_wifiManager);
++    g_webPortal.begin();
++    LOG_I("Main", "WebPortal started");
++
++    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
++    if (g_fetcher == nullptr)
++    {
++        LOG_E("Main", "Failed to create FlightDataFetcher");
++    }
++    LOG_I("Main", "Setup complete");
++}
++
++// --- loop() (Task 4) ---
++
++void loop()
++{
++    ConfigManager::tick();
++    g_wifiManager.tick();
++
++    if (g_fetcher == nullptr)
++    {
++        delay(1000);
++        return;
++    }
++
++    const unsigned long intervalMs = ConfigManager::getTiming().fetch_interval * 1000UL;
++    const unsigned long now = millis();
++    if (now - g_lastFetchMs >= intervalMs)
++    {
++        g_lastFetchMs = now;
++
++        std::vector<StateVector> states;
++        std::vector<FlightInfo> flights;
++        size_t enriched = g_fetcher->fetchFlights(states, flights);
++
++        Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
++
++#if LOG_LEVEL >= 3
++        for (const auto &s : states)
++        {
++            Serial.println("[Main] " + s.callsign + " @ " + String(s.distance_km, 1) + "km bearing " + String(s.bearing_deg, 1));
++        }
++
++        for (const auto &f : flights)
++        {
++            Serial.println("[Main] Flight: " + f.ident + " " + f.airline_display_name_full + " " + f.origin.code_icao + "->" + f.destination.code_icao);
++        }
++#endif
++
++        // Write flight data to double buffer and push pointer to queue
++        g_flightBuf[g_writeBuf].flights = flights;
++        FlightDisplayData *ptr = &g_flightBuf[g_writeBuf];
++        if (g_flightQueue != nullptr)
++        {
++            xQueueOverwrite(g_flightQueue, &ptr);
++        }
++        g_writeBuf ^= 1; // swap buffer for next write
++    }
++    // No delay(10) needed — loop() naturally yields via the fetch interval timer
++}
++
++#endif // PIO_UNIT_TESTING
+diff --git a/firmware/data/wizard.html.gz b/firmware/data/wizard.html.gz
+new file mode 100644
+index 0000000..0000000
+Binary files /dev/null and b/firmware/data/wizard.html.gz differ
+diff --git a/firmware/data/dashboard.html.gz b/firmware/data/dashboard.html.gz
+new file mode 100644
+index 0000000..0000000
+Binary files /dev/null and b/firmware/data/dashboard.html.gz differ

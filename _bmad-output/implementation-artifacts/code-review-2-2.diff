@@ -1,0 +1,489 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+new file mode 100644
+index 0000000..bfd0b61
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+@@ -0,0 +1,68 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="dashboard">
++  <header class="dash-header">
++    <h1>FlightWall</h1>
++    <p class="dash-ip" id="device-ip"></p>
++    <nav><a href="/health.html">System Health</a></nav>
++  </header>
++
++  <main class="dash-cards">
++    <!-- Display Settings Card -->
++    <section class="card">
++      <h2>Display</h2>
++
++      <label for="brightness">Brightness</label>
++      <div class="range-row">
++        <input type="range" id="brightness" min="0" max="255" value="128">
++        <span class="range-val" id="brightness-val">128</span>
++      </div>
++
++      <label>Text Color</label>
++      <div class="rgb-row">
++        <div class="rgb-field">
++          <input type="number" id="color-r" min="0" max="255" value="255">
++          <span class="rgb-label">R</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-g" min="0" max="255" value="255">
++          <span class="rgb-label">G</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-b" min="0" max="255" value="255">
++          <span class="rgb-label">B</span>
++        </div>
++      </div>
++      <div class="color-preview" id="color-preview"></div>
++    </section>
++
++    <!-- Timing Card -->
++    <section class="card">
++      <h2>Timing</h2>
++
++      <label for="fetch-interval">Check for flights every: <span id="fetch-label">10 min</span></label>
++      <div class="range-row">
++        <input type="range" id="fetch-interval" min="60" max="3600" step="30" value="600">
++      </div>
++      <p class="estimate-line" id="fetch-estimate"></p>
++      <p class="estimate-note">OpenSky poll estimate; AeroAPI/CDN calls not included.</p>
++
++      <label for="display-cycle">Cycle flights every: <span id="cycle-label">3 s</span></label>
++      <div class="range-row">
++        <input type="range" id="display-cycle" min="1" max="120" step="1" value="3">
++      </div>
++    </section>
++  </main>
++</div>
++
++<script src="/common.js"></script>
++<script src="/dashboard.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+new file mode 100644
+index 0000000..a5b8625
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+@@ -0,0 +1,164 @@
++/* FlightWall Dashboard — Display settings with live LED feedback */
++(function() {
++  'use strict';
++
++  var brightness = document.getElementById('brightness');
++  var brightnessVal = document.getElementById('brightness-val');
++  var colorR = document.getElementById('color-r');
++  var colorG = document.getElementById('color-g');
++  var colorB = document.getElementById('color-b');
++  var colorPreview = document.getElementById('color-preview');
++  var deviceIp = document.getElementById('device-ip');
++
++  var fetchInterval = document.getElementById('fetch-interval');
++  var fetchLabel = document.getElementById('fetch-label');
++  var fetchEstimate = document.getElementById('fetch-estimate');
++  var displayCycle = document.getElementById('display-cycle');
++  var cycleLabel = document.getElementById('cycle-label');
++
++  var debounceTimer = null;
++  var DEBOUNCE_MS = 400;
++  var SECONDS_PER_MONTH = 2592000; // 30 * 24 * 60 * 60
++  var OPENSKY_WARN_THRESHOLD = 4000;
++
++  // Show device IP from browser context
++  deviceIp.textContent = window.location.hostname || '';
++
++  // --- Load current settings ---
++  function loadSettings() {
++    FW.get('/api/settings').then(function(res) {
++      if (!res.body.ok || !res.body.data) {
++        FW.showToast('Failed to load settings', 'error');
++        return;
++      }
++      var d = res.body.data;
++      if (d.brightness !== undefined) {
++        brightness.value = d.brightness;
++        brightnessVal.textContent = d.brightness;
++      }
++      if (d.text_color_r !== undefined) colorR.value = d.text_color_r;
++      if (d.text_color_g !== undefined) colorG.value = d.text_color_g;
++      if (d.text_color_b !== undefined) colorB.value = d.text_color_b;
++      updatePreview();
++      if (d.fetch_interval !== undefined) {
++        fetchInterval.value = d.fetch_interval;
++        fetchLabel.textContent = formatInterval(d.fetch_interval);
++        updateFetchEstimate(d.fetch_interval);
++      }
++      if (d.display_cycle !== undefined) {
++        displayCycle.value = d.display_cycle;
++        updateCycleLabel(d.display_cycle);
++      }
++    }).catch(function() {
++      FW.showToast('Cannot reach device', 'error');
++    });
++  }
++
++  // --- Apply settings to firmware ---
++  function applySettings(payload) {
++    FW.post('/api/settings', payload).then(function(res) {
++      if (res.body.ok) {
++        FW.showToast('Applied', 'success');
++      } else {
++        FW.showToast(res.body.error || 'Save failed', 'error');
++      }
++    }).catch(function() {
++      FW.showToast('Network error', 'error');
++    });
++  }
++
++  function debouncedApply(payload) {
++    clearTimeout(debounceTimer);
++    debounceTimer = setTimeout(function() {
++      applySettings(payload);
++    }, DEBOUNCE_MS);
++  }
++
++  // --- Color preview ---
++  function updatePreview() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorPreview.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
++  }
++
++  function clamp(v) {
++    return Math.max(0, Math.min(255, v));
++  }
++
++  // --- Brightness slider ---
++  brightness.addEventListener('input', function() {
++    brightnessVal.textContent = brightness.value;
++  });
++  brightness.addEventListener('change', function() {
++    applySettings({ brightness: parseInt(brightness.value, 10) });
++  });
++
++  // --- RGB inputs ---
++  function onColorChange() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorR.value = r;
++    colorG.value = g;
++    colorB.value = b;
++    updatePreview();
++    debouncedApply({
++      text_color_r: r,
++      text_color_g: g,
++      text_color_b: b
++    });
++  }
++
++  colorR.addEventListener('change', onColorChange);
++  colorG.addEventListener('change', onColorChange);
++  colorB.addEventListener('change', onColorChange);
++  colorR.addEventListener('input', updatePreview);
++  colorG.addEventListener('input', updatePreview);
++  colorB.addEventListener('input', updatePreview);
++
++  // --- Timing: fetch interval ---
++  function formatInterval(seconds) {
++    var s = parseInt(seconds, 10);
++    var min = Math.floor(s / 60);
++    var rem = s % 60;
++    if (min === 0) return s + ' s';
++    if (rem === 0) return min + ' min';
++    return min + ' min ' + rem + ' s';
++  }
++
++  function updateFetchEstimate(seconds) {
++    var s = parseInt(seconds, 10);
++    if (s <= 0) s = 1;
++    var n = Math.round(SECONDS_PER_MONTH / s);
++    fetchEstimate.textContent = '~' + n.toLocaleString() + ' calls/month';
++    if (n > OPENSKY_WARN_THRESHOLD) {
++      fetchEstimate.classList.add('estimate-warning');
++    } else {
++      fetchEstimate.classList.remove('estimate-warning');
++    }
++  }
++
++  fetchInterval.addEventListener('input', function() {
++    fetchLabel.textContent = formatInterval(fetchInterval.value);
++    updateFetchEstimate(fetchInterval.value);
++  });
++  fetchInterval.addEventListener('change', function() {
++    applySettings({ fetch_interval: parseInt(fetchInterval.value, 10) });
++  });
++
++  // --- Timing: display cycle ---
++  function updateCycleLabel(seconds) {
++    cycleLabel.textContent = parseInt(seconds, 10) + ' s';
++  }
++
++  displayCycle.addEventListener('input', function() {
++    updateCycleLabel(displayCycle.value);
++  });
++  displayCycle.addEventListener('change', function() {
++    applySettings({ display_cycle: parseInt(displayCycle.value, 10) });
++  });
++
++  // --- Init ---
++  loadSettings();
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+new file mode 100644
+index 0000000..fc5b71a
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+@@ -0,0 +1,227 @@
++/* FlightWall shared design tokens and layout */
++*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
++:root{
++  --bg:#0d1117;--surface:#161b22;--border:#30363d;
++  --text:#e6edf3;--text-muted:#8b949e;
++  --primary:#58a6ff;--primary-hover:#79c0ff;
++  --error:#f85149;--success:#3fb950;
++  --radius:8px;--gap:16px;
++}
++html{font-size:16px}
++body{
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
++  background:var(--bg);color:var(--text);
++  min-height:100vh;display:flex;justify-content:center;
++  padding:0;margin:0;
++  -webkit-text-size-adjust:100%;
++}
++
++/* Wizard layout */
++.wizard{
++  width:100%;max-width:480px;min-height:100vh;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
++.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
++.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
++
++.step{display:none}
++.step.active{display:block}
++.step h2{font-size:1.125rem;margin-bottom:8px}
++.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
++.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
++
++/* Form fields */
++.form-fields{display:flex;flex-direction:column;gap:8px}
++.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.form-fields input[type="text"],
++.form-fields input[type="password"]{
++  width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.form-fields input:focus{border-color:var(--primary)}
++.form-fields input.input-error{border-color:var(--error)}
++.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
++
++/* Scan states */
++.scan-status{text-align:center;padding:var(--gap) 0}
++.scan-msg{color:var(--text-muted);margin-bottom:8px}
++.spinner{
++  width:24px;height:24px;margin:0 auto;
++  border:3px solid var(--border);border-top-color:var(--primary);
++  border-radius:50%;animation:spin 0.8s linear infinite;
++}
++@keyframes spin{to{transform:rotate(360deg)}}
++
++/* Scan results */
++.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
++.scan-row{
++  padding:12px;background:var(--surface);
++  border:1px solid var(--border);border-radius:var(--radius);
++  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
++  transition:border-color 0.15s;
++}
++.scan-row:hover,.scan-row:active{border-color:var(--primary)}
++.scan-row .ssid{font-size:0.9375rem}
++.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
++
++/* Link button */
++.link-btn{
++  background:none;border:none;color:var(--primary);
++  font-size:0.875rem;cursor:pointer;padding:8px 0;
++  text-decoration:underline;
++}
++.link-btn:hover{color:var(--primary-hover)}
++
++/* Wizard navigation */
++.wizard-nav{
++  display:flex;justify-content:space-between;
++  padding:var(--gap) 0;flex-shrink:0;
++  border-top:1px solid var(--border);
++}
++.nav-btn{
++  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
++  border:1px solid var(--border);background:var(--surface);
++  color:var(--text);cursor:pointer;min-width:110px;
++  transition:background 0.15s,border-color 0.15s;
++}
++.nav-btn:hover{border-color:var(--text-muted)}
++.nav-btn-primary{
++  background:var(--primary);color:#0d1117;border-color:var(--primary);
++  font-weight:600;
++}
++.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.nav-btn-save{
++  background:var(--success);color:#0d1117;border-color:var(--success);
++  font-weight:600;
++}
++.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
++.nav-btn:disabled{opacity:0.5;cursor:default}
++
++/* Geolocation button (Step 3) */
++.geo-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--primary);
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;margin-bottom:8px;
++  transition:background 0.15s,color 0.15s;
++}
++.geo-btn:hover{background:var(--primary);color:#0d1117}
++.geo-btn:disabled{opacity:0.5;cursor:default}
++.geo-status{font-size:0.8125rem;margin-bottom:8px}
++.geo-ok{color:var(--success)}
++.geo-error{color:var(--text-muted)}
++.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
++
++/* Resolution text (Step 4) */
++.resolution-text{
++  color:var(--primary);font-size:0.9375rem;
++  font-weight:500;margin-top:var(--gap);text-align:center;
++}
++
++/* Review cards (Step 5) */
++.review-sections{display:flex;flex-direction:column;gap:8px}
++.review-card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:12px;cursor:pointer;
++  transition:border-color 0.15s;
++}
++.review-card:hover,.review-card:active{border-color:var(--primary)}
++.review-card-header{
++  display:flex;justify-content:space-between;align-items:center;
++  margin-bottom:8px;
++}
++.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
++.review-edit{color:var(--primary);font-size:0.8125rem}
++.review-item{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:2px 0;font-size:0.875rem;
++}
++.review-label{color:var(--text-muted)}
++.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
++
++/* Dashboard layout */
++.dashboard{
++  width:100%;max-width:480px;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.dash-header{text-align:center;padding:var(--gap) 0}
++.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
++.dash-header nav{margin-top:8px}
++.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
++.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
++.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
++
++/* Cards */
++.card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:var(--gap);
++}
++.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
++.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
++.card label:first-of-type{margin-top:0}
++.card input[type="range"]{width:100%;accent-color:var(--primary)}
++.card .range-row{display:flex;align-items:center;gap:8px}
++.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
++.card .rgb-row{display:flex;gap:8px}
++.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
++.card .rgb-row input[type="number"]{
++  width:100%;padding:8px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;text-align:center;
++  -moz-appearance:textfield;
++}
++.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
++.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
++.card .rgb-row input:focus{border-color:var(--primary)}
++.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
++.color-preview{
++  height:24px;border-radius:4px;margin-top:8px;
++  border:1px solid var(--border);
++}
++
++/* Estimate line */
++.estimate-line{font-size:0.875rem;color:var(--text-muted);margin-top:4px}
++.estimate-warning{color:#d29922;font-weight:600}
++.estimate-note{font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px}
++
++/* Toast system */
++#toast-container{
++  position:fixed;top:16px;left:50%;transform:translateX(-50%);
++  z-index:9999;display:flex;flex-direction:column;gap:8px;
++  width:calc(100% - 32px);max-width:400px;pointer-events:none;
++}
++.toast{
++  padding:12px 16px;border-radius:var(--radius);
++  font-size:0.875rem;font-weight:500;
++  transform:translateY(-20px);opacity:0;
++  transition:transform 0.25s ease,opacity 0.25s ease;
++  pointer-events:auto;
++}
++.toast-visible{transform:translateY(0);opacity:1}
++.toast-exit{transform:translateY(-20px);opacity:0}
++.toast-success{background:var(--success);color:#0d1117}
++.toast-warning{background:#d29922;color:#0d1117}
++.toast-error{background:var(--error);color:#fff}
++
++@media (prefers-reduced-motion:reduce){
++  .toast{transition:none;transform:none}
++  .toast-visible{opacity:1}
++  .toast-exit{opacity:0;transition:opacity 0.15s ease}
++}
++
++/* Handoff screen */
++.handoff{
++  display:flex;flex-direction:column;align-items:center;justify-content:center;
++  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
++}
++.handoff h1{font-size:1.5rem;color:var(--success)}
++.handoff p{font-size:1rem;color:var(--text);max-width:320px}
++.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz
+new file mode 100644
+index 0000000..d0f3f8a
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz
+new file mode 100644
+index 0000000..c184ce8
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz
+new file mode 100644
+index 0000000..615585c
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz differ

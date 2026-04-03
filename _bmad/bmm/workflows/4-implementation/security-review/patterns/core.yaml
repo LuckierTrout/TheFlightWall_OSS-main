@@ -1,0 +1,251 @@
+# Core CWE Security Patterns - Universal (all languages)
+# ~20 entries with concrete vulnerable/safe code examples
+# Tier 1 (HIGH): always loaded. Tier 2 (MEDIUM): if budget allows.
+
+patterns:
+  # ===== TIER 1: HIGH SEVERITY (always loaded) =====
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: SQL Injection
+    vulnerable_example: |
+      query = f"SELECT * FROM users WHERE id = {user_input}"
+    safe_example: |
+      cursor.execute("SELECT * FROM users WHERE id = ?", (user_input,))
+    detection_hint: "string concatenation or f-string in SQL query"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: Cross-Site Scripting (XSS)
+    vulnerable_example: |
+      element.innerHTML = userInput
+    safe_example: |
+      element.textContent = userInput
+    detection_hint: "innerHTML, dangerouslySetInnerHTML, v-html with user data"
+
+  - cwe_id: CWE-22
+    severity: HIGH
+    tier: 1
+    title: Path Traversal
+    vulnerable_example: |
+      filepath = os.path.join(base_dir, user_filename)
+    safe_example: |
+      filepath = os.path.join(base_dir, os.path.basename(user_filename))
+      assert os.path.commonpath([base_dir, filepath]) == base_dir
+    detection_hint: "user input in file paths without basename() or realpath() validation"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: OS Command Injection
+    vulnerable_example: |
+      os.system(f"ping {host}")
+      subprocess.run(f"echo {msg}", shell=True)
+    safe_example: |
+      subprocess.run(["ping", host], shell=False)
+    detection_hint: "shell=True, os.system(), backticks with user input"
+
+  - cwe_id: CWE-287
+    severity: HIGH
+    tier: 1
+    title: Improper Authentication
+    vulnerable_example: |
+      if request.headers.get("X-Admin") == "true": grant_admin()
+    safe_example: |
+      if verify_jwt_token(request.headers.get("Authorization")): grant_admin()
+    detection_hint: "authentication bypass via header/cookie check without crypto verification"
+
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: Deserialization of Untrusted Data
+    vulnerable_example: |
+      data = pickle.loads(user_bytes)
+      obj = yaml.load(user_string)
+    safe_example: |
+      data = json.loads(user_string)
+      obj = yaml.safe_load(user_string)
+    detection_hint: "pickle.loads, yaml.load (not safe_load), ObjectInputStream on untrusted data"
+
+  - cwe_id: CWE-798
+    severity: HIGH
+    tier: 1
+    title: Hardcoded Credentials
+    vulnerable_example: |
+      API_KEY = "sk-live-abc123def456"
+      password = "admin123"
+    safe_example: |
+      API_KEY = os.environ["API_KEY"]
+      password = get_secret("db_password")
+    detection_hint: "literal strings assigned to password/secret/key/token variables"
+
+  - cwe_id: CWE-327
+    severity: HIGH
+    tier: 1
+    title: Use of Broken Cryptographic Algorithm
+    vulnerable_example: |
+      hashlib.md5(password.encode()).hexdigest()
+      hashlib.sha1(data).hexdigest()
+    safe_example: |
+      hashlib.sha256(password.encode()).hexdigest()
+      bcrypt.hashpw(password, bcrypt.gensalt())
+    detection_hint: "md5, sha1 for password hashing or security-sensitive hashing"
+
+  - cwe_id: CWE-330
+    severity: HIGH
+    tier: 1
+    title: Use of Insufficiently Random Values
+    vulnerable_example: |
+      token = random.randint(0, 999999)
+      session_id = str(random.random())
+    safe_example: |
+      token = secrets.token_hex(32)
+      session_id = secrets.token_urlsafe(32)
+    detection_hint: "math/rand or random module for tokens, session IDs, crypto keys"
+
+  - cwe_id: CWE-311
+    severity: HIGH
+    tier: 1
+    title: Missing Encryption of Sensitive Data
+    vulnerable_example: |
+      response.set_cookie("session", token)  # no secure/httponly
+      requests.get("http://api.internal/data")  # plain HTTP
+    safe_example: |
+      response.set_cookie("session", token, secure=True, httponly=True)
+      requests.get("https://api.internal/data")
+    detection_hint: "HTTP (not HTTPS) for sensitive data, cookies without secure flag"
+
+  - cwe_id: CWE-306
+    severity: HIGH
+    tier: 1
+    title: Missing Authentication for Critical Function
+    vulnerable_example: |
+      @app.route("/api/transfer", methods=["POST"])
+      def transfer(): process_transfer(request.json)  # no auth
+    safe_example: |
+      @app.route("/api/transfer", methods=["POST"])
+      @require_auth
+      def transfer(): process_transfer(request.json)
+    detection_hint: "HTTP handler for sensitive operation (transfer, delete, admin) without authentication middleware or token check"
+
+  # ===== TIER 2: MEDIUM SEVERITY (if budget allows) =====
+
+  - cwe_id: CWE-20
+    severity: MEDIUM
+    tier: 2
+    title: Improper Input Validation
+    vulnerable_example: |
+      age = int(request.params["age"])  # no bounds check
+    safe_example: |
+      age = int(request.params["age"])
+      if not (0 <= age <= 150): raise ValueError("Invalid age")
+    detection_hint: "direct use of user input without validation/bounds checking"
+
+  - cwe_id: CWE-200
+    severity: MEDIUM
+    tier: 2
+    title: Exposure of Sensitive Information
+    vulnerable_example: |
+      except Exception as e: return {"error": str(e), "stack": traceback.format_exc()}
+    safe_example: |
+      except Exception: return {"error": "Internal server error"}
+    detection_hint: "stack traces, internal paths, or config in error responses"
+
+  - cwe_id: CWE-400
+    severity: MEDIUM
+    tier: 2
+    title: Uncontrolled Resource Consumption
+    vulnerable_example: |
+      data = request.body.read()  # no size limit
+    safe_example: |
+      data = request.body.read(MAX_BODY_SIZE)
+    detection_hint: "unbounded reads, missing rate limits, no pagination on queries"
+
+  - cwe_id: CWE-532
+    severity: MEDIUM
+    tier: 2
+    title: Insertion of Sensitive Information into Log File
+    vulnerable_example: |
+      logger.info(f"Login attempt: user={username}, password={password}")
+    safe_example: |
+      logger.info(f"Login attempt: user={username}")
+    detection_hint: "password, token, secret, key values in log statements"
+
+  - cwe_id: CWE-284
+    severity: MEDIUM
+    tier: 2
+    title: Improper Access Control
+    vulnerable_example: |
+      @app.route("/admin/delete/<id>")
+      def delete_user(id): db.delete(id)  # no auth check
+    safe_example: |
+      @app.route("/admin/delete/<id>")
+      @require_admin
+      def delete_user(id): db.delete(id)
+    detection_hint: "admin/privileged endpoints without authorization decorator/middleware"
+
+  - cwe_id: CWE-916
+    severity: MEDIUM
+    tier: 2
+    title: Use of Password Hash With Insufficient Computational Effort
+    vulnerable_example: |
+      hashed = hashlib.sha256(password.encode()).hexdigest()
+    safe_example: |
+      hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))
+    detection_hint: "single-round SHA/MD5 for password storage (use bcrypt/scrypt/argon2)"
+
+  - cwe_id: CWE-319
+    severity: MEDIUM
+    tier: 2
+    title: Cleartext Transmission of Sensitive Information
+    vulnerable_example: |
+      smtp = smtplib.SMTP("mail.example.com")  # no TLS
+    safe_example: |
+      smtp = smtplib.SMTP_SSL("mail.example.com", 465)
+    detection_hint: "unencrypted connections (SMTP, FTP, HTTP) for sensitive data"
+
+  - cwe_id: CWE-611
+    severity: MEDIUM
+    tier: 2
+    title: Improper Restriction of XML External Entity Reference
+    vulnerable_example: |
+      tree = etree.parse(user_xml)  # XXE possible
+    safe_example: |
+      parser = etree.XMLParser(resolve_entities=False)
+      tree = etree.parse(user_xml, parser)
+    detection_hint: "XML parsing without disabling external entities"
+
+  - cwe_id: CWE-943
+    severity: MEDIUM
+    tier: 2
+    title: Improper Neutralization of Special Elements in Data Query Logic
+    vulnerable_example: |
+      db.users.find({"username": user_input})  # NoSQL injection
+    safe_example: |
+      db.users.find({"username": str(user_input)})  # ensure string type
+    detection_hint: "MongoDB/NoSQL queries with unvalidated user input (object injection)"
+
+  - cwe_id: CWE-326
+    severity: MEDIUM
+    tier: 2
+    title: Inadequate Encryption Strength
+    vulnerable_example: |
+      key = RSA.generate(1024)
+    safe_example: |
+      key = RSA.generate(2048)  # minimum 2048-bit for RSA
+    detection_hint: "RSA < 2048 bits, AES < 128 bits, DES/3DES usage"
+
+  - cwe_id: CWE-307
+    severity: MEDIUM
+    tier: 2
+    title: Improper Restriction of Excessive Authentication Attempts
+    vulnerable_example: |
+      @app.route("/login", methods=["POST"])
+      def login(): return check_password(request.json)  # no rate limit
+    safe_example: |
+      @app.route("/login", methods=["POST"])
+      @rate_limit(max_attempts=5, window=300)
+      def login(): return check_password(request.json)
+    detection_hint: "login/auth endpoint without rate limiting, account lockout, or backoff"

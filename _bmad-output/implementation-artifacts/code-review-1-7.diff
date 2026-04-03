@@ -1,0 +1,827 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.html
+new file mode 100644
+index 0000000..4e1124e
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.html
+@@ -0,0 +1,103 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall Setup</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="wizard">
++  <header class="wizard-header">
++    <h1>FlightWall Setup</h1>
++    <p id="progress">Step 1 of 5</p>
++  </header>
++
++  <main class="wizard-content">
++    <!-- Step 1: WiFi -->
++    <section id="step-1" class="step active">
++      <h2>WiFi Network</h2>
++      <div id="scan-status" class="scan-status">
++        <p class="scan-msg">Scanning for networks...</p>
++        <div class="spinner"></div>
++      </div>
++      <div id="scan-results" class="scan-results" style="display:none"></div>
++      <button type="button" id="btn-manual" class="link-btn">Enter manually instead</button>
++      <div id="wifi-form" class="form-fields">
++        <label for="wifi-ssid">Network Name (SSID)</label>
++        <input type="text" id="wifi-ssid" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Enter SSID">
++        <label for="wifi-pass">Password</label>
++        <input type="password" id="wifi-pass" autocomplete="off" placeholder="Enter password">
++        <p id="wifi-err" class="field-error" style="display:none">SSID and password are required.</p>
++      </div>
++    </section>
++
++    <!-- Step 2: API Keys -->
++    <section id="step-2" class="step">
++      <h2>API Keys</h2>
++      <p class="step-desc">Enter your API credentials. These are used to fetch live flight data.</p>
++      <div class="form-fields">
++        <label for="os-client-id">OpenSky Client ID</label>
++        <input type="text" id="os-client-id" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client ID">
++        <label for="os-client-sec">OpenSky Client Secret</label>
++        <input type="text" id="os-client-sec" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client secret">
++        <label for="aeroapi-key">AeroAPI Key</label>
++        <input type="text" id="aeroapi-key" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key">
++        <p id="api-err" class="field-error" style="display:none">All three API fields are required.</p>
++      </div>
++    </section>
++
++    <!-- Step 3: Location -->
++    <section id="step-3" class="step">
++      <h2>Location</h2>
++      <p class="step-desc">Set the center point and radius for flight tracking.</p>
++      <button type="button" id="btn-geolocate" class="geo-btn">Use my location</button>
++      <p id="geo-status" class="geo-status" style="display:none"></p>
++      <div class="form-fields">
++        <label for="center-lat">Latitude</label>
++        <input type="text" id="center-lat" inputmode="decimal" autocomplete="off" placeholder="e.g. 37.7749">
++        <label for="center-lon">Longitude</label>
++        <input type="text" id="center-lon" inputmode="decimal" autocomplete="off" placeholder="e.g. -122.4194">
++        <label for="radius-km">Radius (km)</label>
++        <input type="text" id="radius-km" inputmode="decimal" autocomplete="off" placeholder="e.g. 50">
++        <p id="loc-err" class="field-error" style="display:none"></p>
++      </div>
++      <p class="helper-copy">An interactive map is available later in the dashboard.</p>
++    </section>
++
++    <!-- Step 4: Hardware -->
++    <section id="step-4" class="step">
++      <h2>Hardware</h2>
++      <p class="step-desc">Configure your LED matrix dimensions.</p>
++      <div class="form-fields">
++        <label for="tiles-x">Tiles Wide</label>
++        <input type="text" id="tiles-x" inputmode="numeric" autocomplete="off" placeholder="10">
++        <label for="tiles-y">Tiles High</label>
++        <input type="text" id="tiles-y" inputmode="numeric" autocomplete="off" placeholder="2">
++        <label for="tile-pixels">Pixels per Tile</label>
++        <input type="text" id="tile-pixels" inputmode="numeric" autocomplete="off" placeholder="16">
++        <label for="display-pin">Data Pin (GPIO)</label>
++        <input type="text" id="display-pin" inputmode="numeric" autocomplete="off" placeholder="25">
++        <p id="hw-err" class="field-error" style="display:none"></p>
++      </div>
++      <p id="resolution-text" class="resolution-text"></p>
++    </section>
++
++    <!-- Step 5: Review & Connect -->
++    <section id="step-5" class="step">
++      <h2>Review &amp; Connect</h2>
++      <p class="step-desc">Confirm your settings, then save and connect.</p>
++      <div id="review-sections" class="review-sections"></div>
++    </section>
++  </main>
++
++  <nav class="wizard-nav">
++    <button type="button" id="btn-back" class="nav-btn" style="visibility:hidden">&larr; Back</button>
++    <button type="button" id="btn-next" class="nav-btn nav-btn-primary">Next &rarr;</button>
++  </nav>
++</div>
++
++<script src="/common.js"></script>
++<script src="/wizard.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.js
+new file mode 100644
+index 0000000..6d3884f
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/wizard.js
+@@ -0,0 +1,536 @@
++/* FlightWall Setup Wizard — Step navigation, WiFi scan polling, validation, state preservation */
++(function() {
++  'use strict';
++
++  var TOTAL_STEPS = 5;
++  var currentStep = 1;
++
++  // In-memory wizard state using exact firmware config key names
++  var state = {
++    wifi_ssid: '',
++    wifi_password: '',
++    os_client_id: '',
++    os_client_sec: '',
++    aeroapi_key: '',
++    center_lat: '',
++    center_lon: '',
++    radius_km: '',
++    tiles_x: '',
++    tiles_y: '',
++    tile_pixels: '',
++    display_pin: ''
++  };
++
++  // Valid GPIO pins for display_pin (matches ConfigManager validation)
++  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
++
++  // DOM references — Steps 1-2
++  var progress = document.getElementById('progress');
++  var btnBack = document.getElementById('btn-back');
++  var btnNext = document.getElementById('btn-next');
++  var scanStatus = document.getElementById('scan-status');
++  var scanResults = document.getElementById('scan-results');
++  var btnManual = document.getElementById('btn-manual');
++  var wifiSsid = document.getElementById('wifi-ssid');
++  var wifiPass = document.getElementById('wifi-pass');
++  var wifiErr = document.getElementById('wifi-err');
++  var osClientId = document.getElementById('os-client-id');
++  var osClientSec = document.getElementById('os-client-sec');
++  var aeroKey = document.getElementById('aeroapi-key');
++  var apiErr = document.getElementById('api-err');
++
++  // DOM references — Step 3
++  var btnGeolocate = document.getElementById('btn-geolocate');
++  var geoStatus = document.getElementById('geo-status');
++  var centerLat = document.getElementById('center-lat');
++  var centerLon = document.getElementById('center-lon');
++  var radiusKm = document.getElementById('radius-km');
++  var locErr = document.getElementById('loc-err');
++
++  // DOM references — Step 4
++  var tilesX = document.getElementById('tiles-x');
++  var tilesY = document.getElementById('tiles-y');
++  var tilePixels = document.getElementById('tile-pixels');
++  var displayPin = document.getElementById('display-pin');
++  var hwErr = document.getElementById('hw-err');
++  var resolutionText = document.getElementById('resolution-text');
++
++  // DOM references — Step 5
++  var reviewSections = document.getElementById('review-sections');
++
++  // --- Bootstrap: hydrate defaults from firmware ---
++  function hydrateDefaults() {
++    FW.get('/api/settings').then(function(res) {
++      if (!res.body.ok || !res.body.data) return;
++      var d = res.body.data;
++      // Only hydrate Step 3-4 keys if state is still empty (user hasn't typed yet)
++      if (!state.center_lat && d.center_lat !== undefined) state.center_lat = String(d.center_lat);
++      if (!state.center_lon && d.center_lon !== undefined) state.center_lon = String(d.center_lon);
++      if (!state.radius_km && d.radius_km !== undefined) state.radius_km = String(d.radius_km);
++      if (!state.tiles_x && d.tiles_x !== undefined) state.tiles_x = String(d.tiles_x);
++      if (!state.tiles_y && d.tiles_y !== undefined) state.tiles_y = String(d.tiles_y);
++      if (!state.tile_pixels && d.tile_pixels !== undefined) state.tile_pixels = String(d.tile_pixels);
++      if (!state.display_pin && d.display_pin !== undefined) state.display_pin = String(d.display_pin);
++    }).catch(function() {
++      // Settings endpoint unavailable — user will fill manually
++    });
++  }
++
++  // --- WiFi Scan ---
++  var scanTimer = null;
++  var scanStartTime = 0;
++  var SCAN_TIMEOUT_MS = 5000;
++  var SCAN_POLL_MS = 800;
++  var manualMode = false;
++
++  function startScan() {
++    clearTimeout(scanTimer);
++    manualMode = false;
++    scanStatus.style.display = '';
++    scanResults.style.display = 'none';
++    scanStatus.querySelector('.scan-msg').textContent = 'Scanning for networks...';
++    var spinner = scanStatus.querySelector('.spinner');
++    if (spinner) spinner.style.display = '';
++    scanStartTime = Date.now();
++    pollScan();
++  }
++
++  function pollScan() {
++    FW.get('/api/wifi/scan').then(function(res) {
++      if (manualMode) return;
++      var d = res.body;
++      if (d.ok && !d.scanning && d.data && d.data.length > 0) {
++        showScanResults(d.data);
++        return;
++      }
++      if (d.ok && !d.scanning) {
++        showScanEmpty();
++        return;
++      }
++      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
++        showScanEmpty();
++        return;
++      }
++      scanTimer = setTimeout(pollScan, SCAN_POLL_MS);
++    }).catch(function() {
++      if (manualMode) return;
++      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
++        showScanEmpty();
++        return;
++      }
++      scanTimer = setTimeout(pollScan, SCAN_POLL_MS);
++    });
++  }
++
++  function showScanResults(networks) {
++    clearTimeout(scanTimer);
++    scanStatus.style.display = 'none';
++    scanResults.style.display = '';
++    scanResults.innerHTML = '';
++    // Deduplicate by SSID, keep strongest RSSI
++    var seen = {};
++    networks.forEach(function(n) {
++      if (!n.ssid) return;
++      if (!seen[n.ssid] || n.rssi > seen[n.ssid].rssi) {
++        seen[n.ssid] = n;
++      }
++    });
++    var unique = Object.keys(seen).map(function(k) { return seen[k]; });
++    unique.sort(function(a, b) { return b.rssi - a.rssi; });
++
++    unique.forEach(function(n) {
++      var row = document.createElement('div');
++      row.className = 'scan-row';
++      row.innerHTML = '<span class="ssid">' + escHtml(n.ssid) + '</span><span class="rssi">' + rssiLabel(n.rssi) + '</span>';
++      row.addEventListener('click', function() { selectSsid(n.ssid); });
++      scanResults.appendChild(row);
++    });
++  }
++
++  function showScanEmpty() {
++    clearTimeout(scanTimer);
++    scanStatus.querySelector('.scan-msg').textContent = 'No networks found - enter manually';
++    var spinner = scanStatus.querySelector('.spinner');
++    if (spinner) spinner.style.display = 'none';
++    scanResults.style.display = 'none';
++  }
++
++  function selectSsid(ssid) {
++    wifiSsid.value = ssid;
++    state.wifi_ssid = ssid;
++    wifiSsid.focus();
++  }
++
++  function enterManual() {
++    manualMode = true;
++    clearTimeout(scanTimer);
++    scanStatus.style.display = 'none';
++    scanResults.style.display = 'none';
++    wifiSsid.focus();
++  }
++
++  function rssiLabel(rssi) {
++    if (rssi >= -50) return 'Excellent';
++    if (rssi >= -60) return 'Good';
++    if (rssi >= -70) return 'Fair';
++    return 'Weak';
++  }
++
++  function escHtml(s) {
++    var el = document.createElement('span');
++    el.textContent = s;
++    return el.innerHTML;
++  }
++
++  // --- Geolocation (Step 3) ---
++  function requestGeolocation() {
++    if (!navigator.geolocation) {
++      showGeoStatus('Geolocation is not available in this browser. Please enter coordinates manually.', true);
++      return;
++    }
++    btnGeolocate.disabled = true;
++    showGeoStatus('Requesting location...', false);
++    navigator.geolocation.getCurrentPosition(
++      function(pos) {
++        centerLat.value = pos.coords.latitude.toFixed(6);
++        centerLon.value = pos.coords.longitude.toFixed(6);
++        state.center_lat = centerLat.value;
++        state.center_lon = centerLon.value;
++        showGeoStatus('Location detected.', false);
++        btnGeolocate.disabled = false;
++      },
++      function(err) {
++        var msg = 'Could not get location. Please enter coordinates manually.';
++        if (err.code === 1) msg = 'Location permission denied. Please enter coordinates manually.';
++        if (err.code === 2) msg = 'Location unavailable. Please enter coordinates manually.';
++        showGeoStatus(msg, true);
++        btnGeolocate.disabled = false;
++      },
++      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
++    );
++  }
++
++  function showGeoStatus(msg, isError) {
++    geoStatus.textContent = msg;
++    geoStatus.style.display = '';
++    geoStatus.className = 'geo-status' + (isError ? ' geo-error' : ' geo-ok');
++  }
++
++  // --- Hardware resolution text (Step 4) ---
++  function updateResolution() {
++    var tx = parseInt(tilesX.value, 10);
++    var ty = parseInt(tilesY.value, 10);
++    var tp = parseInt(tilePixels.value, 10);
++    if (tx > 0 && ty > 0 && tp > 0) {
++      resolutionText.textContent = 'Your display: ' + (tx * tp) + ' x ' + (ty * tp) + ' pixels';
++    } else {
++      resolutionText.textContent = '';
++    }
++  }
++
++  // --- Review (Step 5) ---
++  function buildReview() {
++    reviewSections.innerHTML = '';
++    var sections = [
++      { title: 'WiFi', step: 1, items: [
++        { label: 'Network', value: state.wifi_ssid },
++        { label: 'Password', value: state.wifi_password ? '\u2022'.repeat(Math.min(state.wifi_password.length, 12)) : '' }
++      ]},
++      { title: 'API Keys', step: 2, items: [
++        { label: 'OpenSky Client ID', value: maskKey(state.os_client_id) },
++        { label: 'OpenSky Secret', value: maskKey(state.os_client_sec) },
++        { label: 'AeroAPI Key', value: maskKey(state.aeroapi_key) }
++      ]},
++      { title: 'Location', step: 3, items: [
++        { label: 'Latitude', value: state.center_lat },
++        { label: 'Longitude', value: state.center_lon },
++        { label: 'Radius', value: state.radius_km + ' km' }
++      ]},
++      { title: 'Hardware', step: 4, items: [
++        { label: 'Display', value: state.tiles_x + ' x ' + state.tiles_y + ' tiles (' + (parseInt(state.tiles_x,10)*parseInt(state.tile_pixels,10)) + ' x ' + (parseInt(state.tiles_y,10)*parseInt(state.tile_pixels,10)) + ' px)' },
++        { label: 'Pixels per tile', value: state.tile_pixels },
++        { label: 'Data pin', value: 'GPIO ' + state.display_pin }
++      ]}
++    ];
++
++    sections.forEach(function(sec) {
++      var card = document.createElement('div');
++      card.className = 'review-card';
++      card.addEventListener('click', function() {
++        showStep(sec.step);
++      });
++      var header = '<div class="review-card-header"><span>' + escHtml(sec.title) + '</span><span class="review-edit">Edit</span></div>';
++      var body = sec.items.map(function(it) {
++        return '<div class="review-item"><span class="review-label">' + escHtml(it.label) + '</span><span class="review-value">' + escHtml(it.value) + '</span></div>';
++      }).join('');
++      card.innerHTML = header + body;
++      reviewSections.appendChild(card);
++    });
++  }
++
++  function maskKey(val) {
++    if (!val || val.length < 6) return val || '';
++    return val.substring(0, 3) + '\u2022'.repeat(Math.min(val.length - 6, 8)) + val.substring(val.length - 3);
++  }
++
++  // --- Navigation ---
++  function showStep(n) {
++    currentStep = n;
++    progress.textContent = 'Step ' + n + ' of ' + TOTAL_STEPS;
++    for (var i = 1; i <= TOTAL_STEPS; i++) {
++      var sec = document.getElementById('step-' + i);
++      if (sec) sec.classList.toggle('active', i === n);
++    }
++    btnBack.style.visibility = n === 1 ? 'hidden' : 'visible';
++
++    if (n < TOTAL_STEPS) {
++      btnNext.textContent = 'Next \u2192';
++      btnNext.className = 'nav-btn nav-btn-primary';
++    } else {
++      btnNext.textContent = 'Save & Connect';
++      btnNext.className = 'nav-btn nav-btn-save';
++    }
++
++    // Rehydrate fields from state when entering a step
++    if (n === 1) {
++      wifiSsid.value = state.wifi_ssid;
++      wifiPass.value = state.wifi_password;
++      wifiErr.style.display = 'none';
++      clearInputErrors([wifiSsid, wifiPass]);
++    }
++    if (n === 2) {
++      osClientId.value = state.os_client_id;
++      osClientSec.value = state.os_client_sec;
++      aeroKey.value = state.aeroapi_key;
++      apiErr.style.display = 'none';
++      clearInputErrors([osClientId, osClientSec, aeroKey]);
++    }
++    if (n === 3) {
++      centerLat.value = state.center_lat;
++      centerLon.value = state.center_lon;
++      radiusKm.value = state.radius_km;
++      locErr.style.display = 'none';
++      clearInputErrors([centerLat, centerLon, radiusKm]);
++    }
++    if (n === 4) {
++      tilesX.value = state.tiles_x;
++      tilesY.value = state.tiles_y;
++      tilePixels.value = state.tile_pixels;
++      displayPin.value = state.display_pin;
++      hwErr.style.display = 'none';
++      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
++      updateResolution();
++    }
++    if (n === 5) {
++      buildReview();
++    }
++  }
++
++  function saveCurrentStepState() {
++    if (currentStep === 1) {
++      state.wifi_ssid = wifiSsid.value.trim();
++      state.wifi_password = wifiPass.value;
++    } else if (currentStep === 2) {
++      state.os_client_id = osClientId.value.trim();
++      state.os_client_sec = osClientSec.value.trim();
++      state.aeroapi_key = aeroKey.value.trim();
++    } else if (currentStep === 3) {
++      state.center_lat = centerLat.value.trim();
++      state.center_lon = centerLon.value.trim();
++      state.radius_km = radiusKm.value.trim();
++    } else if (currentStep === 4) {
++      state.tiles_x = tilesX.value.trim();
++      state.tiles_y = tilesY.value.trim();
++      state.tile_pixels = tilePixels.value.trim();
++      state.display_pin = displayPin.value.trim();
++    }
++  }
++
++  function validateStep(n) {
++    if (n === 1) {
++      state.wifi_ssid = wifiSsid.value.trim();
++      state.wifi_password = wifiPass.value;
++      var missing = [];
++      if (!state.wifi_ssid) missing.push(wifiSsid);
++      if (!state.wifi_password) missing.push(wifiPass);
++      if (missing.length > 0) {
++        wifiErr.style.display = '';
++        markInputErrors(missing);
++        return false;
++      }
++      wifiErr.style.display = 'none';
++      clearInputErrors([wifiSsid, wifiPass]);
++      return true;
++    }
++    if (n === 2) {
++      state.os_client_id = osClientId.value.trim();
++      state.os_client_sec = osClientSec.value.trim();
++      state.aeroapi_key = aeroKey.value.trim();
++      var missing2 = [];
++      if (!state.os_client_id) missing2.push(osClientId);
++      if (!state.os_client_sec) missing2.push(osClientSec);
++      if (!state.aeroapi_key) missing2.push(aeroKey);
++      if (missing2.length > 0) {
++        apiErr.style.display = '';
++        markInputErrors(missing2);
++        return false;
++      }
++      apiErr.style.display = 'none';
++      clearInputErrors([osClientId, osClientSec, aeroKey]);
++      return true;
++    }
++    if (n === 3) {
++      state.center_lat = centerLat.value.trim();
++      state.center_lon = centerLon.value.trim();
++      state.radius_km = radiusKm.value.trim();
++      var errs = [];
++      var lat = parseFloat(state.center_lat);
++      var lon = parseFloat(state.center_lon);
++      var rad = parseFloat(state.radius_km);
++      if (state.center_lat === '' || isNaN(lat) || lat < -90 || lat > 90) errs.push(centerLat);
++      if (state.center_lon === '' || isNaN(lon) || lon < -180 || lon > 180) errs.push(centerLon);
++      if (state.radius_km === '' || isNaN(rad) || rad <= 0) errs.push(radiusKm);
++      if (errs.length > 0) {
++        locErr.textContent = 'Latitude (-90 to 90), longitude (-180 to 180), and a positive radius are required.';
++        locErr.style.display = '';
++        markInputErrors(errs);
++        return false;
++      }
++      locErr.style.display = 'none';
++      clearInputErrors([centerLat, centerLon, radiusKm]);
++      return true;
++    }
++    if (n === 4) {
++      state.tiles_x = tilesX.value.trim();
++      state.tiles_y = tilesY.value.trim();
++      state.tile_pixels = tilePixels.value.trim();
++      state.display_pin = displayPin.value.trim();
++      var errs4 = [];
++      var tx = parseInt(state.tiles_x, 10);
++      var ty = parseInt(state.tiles_y, 10);
++      var tp = parseInt(state.tile_pixels, 10);
++      var dp = parseInt(state.display_pin, 10);
++      if (state.tiles_x === '' || isNaN(tx) || tx <= 0) errs4.push(tilesX);
++      if (state.tiles_y === '' || isNaN(ty) || ty <= 0) errs4.push(tilesY);
++      if (state.tile_pixels === '' || isNaN(tp) || tp <= 0) errs4.push(tilePixels);
++      if (state.display_pin === '' || isNaN(dp) || VALID_PINS.indexOf(dp) === -1) errs4.push(displayPin);
++      if (errs4.length > 0) {
++        var msg = 'All fields must be positive integers.';
++        if (errs4.length === 1 && errs4[0] === displayPin) {
++          msg = 'Invalid GPIO pin. Supported: ' + VALID_PINS.join(', ') + '.';
++        }
++        hwErr.textContent = msg;
++        hwErr.style.display = '';
++        markInputErrors(errs4);
++        return false;
++      }
++      hwErr.style.display = 'none';
++      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
++      return true;
++    }
++    // Step 5: no field validation — review only
++    return true;
++  }
++
++  function markInputErrors(inputs) {
++    inputs.forEach(function(el) { el.classList.add('input-error'); });
++  }
++
++  function clearInputErrors(inputs) {
++    inputs.forEach(function(el) { el.classList.remove('input-error'); });
++  }
++
++  // --- Save & Connect (Step 5 final action) ---
++  function saveAndConnect() {
++    btnNext.disabled = true;
++    btnNext.textContent = 'Saving...';
++
++    var payload = {
++      wifi_ssid: state.wifi_ssid,
++      wifi_password: state.wifi_password,
++      os_client_id: state.os_client_id,
++      os_client_sec: state.os_client_sec,
++      aeroapi_key: state.aeroapi_key,
++      center_lat: parseFloat(state.center_lat),
++      center_lon: parseFloat(state.center_lon),
++      radius_km: parseFloat(state.radius_km),
++      tiles_x: parseInt(state.tiles_x, 10),
++      tiles_y: parseInt(state.tiles_y, 10),
++      tile_pixels: parseInt(state.tile_pixels, 10),
++      display_pin: parseInt(state.display_pin, 10)
++    };
++
++    FW.post('/api/settings', payload).then(function(res) {
++      if (!res.body.ok) {
++        btnNext.disabled = false;
++        btnNext.textContent = 'Save & Connect';
++        showSaveError('Save failed: ' + (res.body.error || 'Unknown error'));
++        return;
++      }
++      // Settings saved — trigger reboot
++      btnNext.textContent = 'Rebooting...';
++      return FW.post('/api/reboot', {});
++    }).then(function() {
++      showHandoff();
++    }).catch(function() {
++      // Network error after reboot request is expected (device is rebooting)
++      showHandoff();
++    });
++  }
++
++  function showSaveError(msg) {
++    // Show error inline in the review section
++    var errEl = document.getElementById('save-err');
++    if (!errEl) {
++      errEl = document.createElement('p');
++      errEl.id = 'save-err';
++      errEl.className = 'field-error';
++      reviewSections.parentNode.appendChild(errEl);
++    }
++    errEl.textContent = msg;
++    errEl.style.display = '';
++  }
++
++  function showHandoff() {
++    // Replace wizard content with handoff message
++    var wizard = document.querySelector('.wizard');
++    wizard.innerHTML =
++      '<div class="handoff">' +
++        '<h1>Configuration Saved</h1>' +
++        '<p>Your FlightWall is rebooting and connecting to <strong>' + escHtml(state.wifi_ssid) + '</strong>.</p>' +
++        '<p>Look at the LED wall for progress.</p>' +
++        '<p class="handoff-note">This page will no longer update because the device is leaving setup mode.</p>' +
++      '</div>';
++  }
++
++  // --- Event Listeners ---
++  btnNext.addEventListener('click', function() {
++    if (!validateStep(currentStep)) return;
++    saveCurrentStepState();
++    if (currentStep < TOTAL_STEPS) {
++      showStep(currentStep + 1);
++    } else {
++      saveAndConnect();
++    }
++  });
++
++  btnBack.addEventListener('click', function() {
++    saveCurrentStepState();
++    if (currentStep > 1) {
++      showStep(currentStep - 1);
++    }
++  });
++
++  btnManual.addEventListener('click', enterManual);
++  btnGeolocate.addEventListener('click', requestGeolocation);
++
++  // Live resolution update on Step 4 inputs
++  tilesX.addEventListener('input', updateResolution);
++  tilesY.addEventListener('input', updateResolution);
++  tilePixels.addEventListener('input', updateResolution);
++
++  // --- Init ---
++  hydrateDefaults();
++  showStep(1);
++  startScan();
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+new file mode 100644
+index 0000000..9a426d7
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+@@ -0,0 +1,154 @@
++/* FlightWall shared design tokens and layout */
++*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
++:root{
++  --bg:#0d1117;--surface:#161b22;--border:#30363d;
++  --text:#e6edf3;--text-muted:#8b949e;
++  --primary:#58a6ff;--primary-hover:#79c0ff;
++  --error:#f85149;--success:#3fb950;
++  --radius:8px;--gap:16px;
++}
++html{font-size:16px}
++body{
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
++  background:var(--bg);color:var(--text);
++  min-height:100vh;display:flex;justify-content:center;
++  padding:0;margin:0;
++  -webkit-text-size-adjust:100%;
++}
++
++/* Wizard layout */
++.wizard{
++  width:100%;max-width:480px;min-height:100vh;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
++.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
++.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
++
++.step{display:none}
++.step.active{display:block}
++.step h2{font-size:1.125rem;margin-bottom:8px}
++.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
++.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
++
++/* Form fields */
++.form-fields{display:flex;flex-direction:column;gap:8px}
++.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.form-fields input[type="text"],
++.form-fields input[type="password"]{
++  width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.form-fields input:focus{border-color:var(--primary)}
++.form-fields input.input-error{border-color:var(--error)}
++.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
++
++/* Scan states */
++.scan-status{text-align:center;padding:var(--gap) 0}
++.scan-msg{color:var(--text-muted);margin-bottom:8px}
++.spinner{
++  width:24px;height:24px;margin:0 auto;
++  border:3px solid var(--border);border-top-color:var(--primary);
++  border-radius:50%;animation:spin 0.8s linear infinite;
++}
++@keyframes spin{to{transform:rotate(360deg)}}
++
++/* Scan results */
++.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
++.scan-row{
++  padding:12px;background:var(--surface);
++  border:1px solid var(--border);border-radius:var(--radius);
++  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
++  transition:border-color 0.15s;
++}
++.scan-row:hover,.scan-row:active{border-color:var(--primary)}
++.scan-row .ssid{font-size:0.9375rem}
++.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
++
++/* Link button */
++.link-btn{
++  background:none;border:none;color:var(--primary);
++  font-size:0.875rem;cursor:pointer;padding:8px 0;
++  text-decoration:underline;
++}
++.link-btn:hover{color:var(--primary-hover)}
++
++/* Wizard navigation */
++.wizard-nav{
++  display:flex;justify-content:space-between;
++  padding:var(--gap) 0;flex-shrink:0;
++  border-top:1px solid var(--border);
++}
++.nav-btn{
++  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
++  border:1px solid var(--border);background:var(--surface);
++  color:var(--text);cursor:pointer;min-width:110px;
++  transition:background 0.15s,border-color 0.15s;
++}
++.nav-btn:hover{border-color:var(--text-muted)}
++.nav-btn-primary{
++  background:var(--primary);color:#0d1117;border-color:var(--primary);
++  font-weight:600;
++}
++.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.nav-btn-save{
++  background:var(--success);color:#0d1117;border-color:var(--success);
++  font-weight:600;
++}
++.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
++.nav-btn:disabled{opacity:0.5;cursor:default}
++
++/* Geolocation button (Step 3) */
++.geo-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--primary);
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;margin-bottom:8px;
++  transition:background 0.15s,color 0.15s;
++}
++.geo-btn:hover{background:var(--primary);color:#0d1117}
++.geo-btn:disabled{opacity:0.5;cursor:default}
++.geo-status{font-size:0.8125rem;margin-bottom:8px}
++.geo-ok{color:var(--success)}
++.geo-error{color:var(--text-muted)}
++.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
++
++/* Resolution text (Step 4) */
++.resolution-text{
++  color:var(--primary);font-size:0.9375rem;
++  font-weight:500;margin-top:var(--gap);text-align:center;
++}
++
++/* Review cards (Step 5) */
++.review-sections{display:flex;flex-direction:column;gap:8px}
++.review-card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:12px;cursor:pointer;
++  transition:border-color 0.15s;
++}
++.review-card:hover,.review-card:active{border-color:var(--primary)}
++.review-card-header{
++  display:flex;justify-content:space-between;align-items:center;
++  margin-bottom:8px;
++}
++.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
++.review-edit{color:var(--primary);font-size:0.8125rem}
++.review-item{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:2px 0;font-size:0.875rem;
++}
++.review-label{color:var(--text-muted)}
++.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
++
++/* Handoff screen */
++.handoff{
++  display:flex;flex-direction:column;align-items:center;justify-content:center;
++  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
++}
++.handoff h1{font-size:1.5rem;color:var(--success)}
++.handoff p{font-size:1rem;color:var(--text);max-width:320px}
++.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.html.gz
+new file mode 100644
+index 0000000..74f79e3
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.js.gz
+new file mode 100644
+index 0000000..7f66b4a
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/wizard.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz
+new file mode 100644
+index 0000000..aead730
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz
+new file mode 100644
+index 0000000..6aec69c
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz differ

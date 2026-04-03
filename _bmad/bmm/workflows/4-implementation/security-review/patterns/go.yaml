@@ -1,0 +1,150 @@
+# Go-specific CWE Security Patterns
+# ~12 entries with concrete Go vulnerable/safe code examples
+
+patterns:
+  - cwe_id: CWE-330
+    severity: HIGH
+    tier: 1
+    title: "Go: math/rand for security-sensitive values"
+    vulnerable_example: |
+      import "math/rand"
+      token := rand.Intn(1000000)
+    safe_example: |
+      import "crypto/rand"
+      b := make([]byte, 32)
+      crypto_rand.Read(b)
+    detection_hint: "math/rand import in security context (tokens, IDs, keys)"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "Go: SQL injection via fmt.Sprintf"
+    vulnerable_example: |
+      query := fmt.Sprintf("SELECT * FROM users WHERE id = '%s'", userID)
+      db.Query(query)
+    safe_example: |
+      db.Query("SELECT * FROM users WHERE id = $1", userID)
+    detection_hint: "fmt.Sprintf in SQL query string passed to db.Query/db.Exec"
+
+  - cwe_id: CWE-295
+    severity: HIGH
+    tier: 1
+    title: "Go: TLS certificate verification disabled"
+    vulnerable_example: |
+      tlsConfig := &tls.Config{InsecureSkipVerify: true}
+    safe_example: |
+      tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+    detection_hint: "InsecureSkipVerify: true"
+
+  - cwe_id: CWE-732
+    severity: MEDIUM
+    tier: 2
+    title: "Go: overly permissive file permissions"
+    vulnerable_example: |
+      os.MkdirAll(path, 0777)
+      os.WriteFile(path, data, 0666)
+    safe_example: |
+      os.MkdirAll(path, 0750)
+      os.WriteFile(path, data, 0600)
+    detection_hint: "0777, 0666, 0755 permissions on sensitive files/directories"
+
+  - cwe_id: CWE-22
+    severity: HIGH
+    tier: 1
+    title: "Go: path traversal via filepath.Join"
+    vulnerable_example: |
+      path := filepath.Join(baseDir, userInput)
+    safe_example: |
+      path := filepath.Join(baseDir, filepath.Base(userInput))
+      if !strings.HasPrefix(path, baseDir) { return err }
+    detection_hint: "filepath.Join with user input without filepath.Base or prefix check"
+
+  - cwe_id: CWE-703
+    severity: MEDIUM
+    tier: 2
+    title: "Go: ignored error return values"
+    vulnerable_example: |
+      file, _ := os.Open(path)  // error silently ignored
+      json.Unmarshal(data, &obj)  // error not checked
+    safe_example: |
+      file, err := os.Open(path)
+      if err != nil { return fmt.Errorf("open: %w", err) }
+    detection_hint: "_ used to discard error from security-sensitive operations"
+
+  - cwe_id: CWE-362
+    severity: MEDIUM
+    tier: 2
+    title: "Go: race condition in shared state"
+    vulnerable_example: |
+      var counter int
+      go func() { counter++ }()
+      go func() { counter++ }()
+    safe_example: |
+      var counter atomic.Int64
+      go func() { counter.Add(1) }()
+    detection_hint: "shared variable accessed from multiple goroutines without sync"
+
+  - cwe_id: CWE-770
+    severity: MEDIUM
+    tier: 2
+    title: "Go: unbounded goroutine creation"
+    vulnerable_example: |
+      for _, item := range items {
+          go process(item)  // no limit on concurrency
+      }
+    safe_example: |
+      sem := make(chan struct{}, maxWorkers)
+      for _, item := range items {
+          sem <- struct{}{}
+          go func(i Item) { defer func() { <-sem }(); process(i) }(item)
+      }
+    detection_hint: "go keyword in loop without semaphore or worker pool"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "Go: command injection via exec.Command"
+    vulnerable_example: |
+      cmd := exec.Command("sh", "-c", "echo " + userInput)
+    safe_example: |
+      cmd := exec.Command("echo", userInput)
+    detection_hint: "exec.Command with sh -c and string concatenation"
+
+  - cwe_id: CWE-918
+    severity: HIGH
+    tier: 1
+    title: "Go: Server-Side Request Forgery (SSRF)"
+    vulnerable_example: |
+      resp, _ := http.Get(userProvidedURL)
+    safe_example: |
+      parsed, _ := url.Parse(userProvidedURL)
+      if !isAllowedHost(parsed.Host) { return errForbidden }
+    detection_hint: "http.Get/http.Post with user-provided URL without allowlist"
+
+  - cwe_id: CWE-306
+    severity: HIGH
+    tier: 1
+    title: "Go: Missing Authentication for Critical Function"
+    vulnerable_example: |
+      func handleTransfer(w http.ResponseWriter, r *http.Request) {
+          // No auth check — processes request directly
+          processTransfer(r.Body)
+      }
+    safe_example: |
+      func handleTransfer(w http.ResponseWriter, r *http.Request) {
+          user, err := authenticate(r)
+          if err != nil { http.Error(w, "Unauthorized", 401); return }
+          processTransfer(r.Body)
+      }
+    detection_hint: "HTTP handler for sensitive operation without auth middleware or token verification"
+
+  - cwe_id: CWE-200
+    severity: MEDIUM
+    tier: 2
+    title: "Go: sensitive data in error messages"
+    vulnerable_example: |
+      http.Error(w, fmt.Sprintf("DB error: %v", err), 500)
+    safe_example: |
+      log.Printf("DB error: %v", err)
+      http.Error(w, "Internal server error", 500)
+    detection_hint: "internal errors exposed via http.Error or JSON response"

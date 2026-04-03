@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FlightWall</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="dashboard">
+  <header class="dash-header">
+    <h1>FlightWall</h1>
+    <p class="dash-ip" id="device-ip"></p>
+    <nav><a href="/health.html">System Health</a></nav>
+  </header>
+
+  <main class="dash-cards">
+    <!-- Display Settings Card -->
+    <section class="card">
+      <h2>Display</h2>
+
+      <label for="brightness">Brightness</label>
+      <div class="range-row">
+        <input type="range" id="brightness" min="0" max="255" value="128">
+        <span class="range-val" id="brightness-val">128</span>
+      </div>
+
+      <label>Text Color</label>
+      <div class="rgb-row">
+        <div class="rgb-field">
+          <input type="number" id="color-r" min="0" max="255" value="255">
+          <span class="rgb-label">R</span>
+        </div>
+        <div class="rgb-field">
+          <input type="number" id="color-g" min="0" max="255" value="255">
+          <span class="rgb-label">G</span>
+        </div>
+        <div class="rgb-field">
+          <input type="number" id="color-b" min="0" max="255" value="255">
+          <span class="rgb-label">B</span>
+        </div>
+      </div>
+      <div class="color-preview" id="color-preview"></div>
+    </section>
+
+    <!-- Timing Card -->
+    <section class="card">
+      <h2>Timing</h2>
+
+      <label for="fetch-interval">Check for flights every: <span id="fetch-label">10 min</span></label>
+      <div class="range-row">
+        <input type="range" id="fetch-interval" min="30" max="3600" step="30" value="600">
+      </div>
+      <p class="estimate-line" id="fetch-estimate"></p>
+      <p class="estimate-note">OpenSky poll estimate; AeroAPI/CDN calls not included.</p>
+
+      <label for="display-cycle">Cycle flights every: <span id="cycle-label">3 s</span></label>
+      <div class="range-row">
+        <input type="range" id="display-cycle" min="1" max="120" step="1" value="3">
+      </div>
+    </section>
+
+    <!-- Network & API Card -->
+    <section class="card">
+      <h2>Network &amp; API</h2>
+      <div class="form-fields">
+        <label for="d-wifi-ssid">WiFi Network</label>
+        <div class="scan-row-inline" id="d-scan-area" style="display:none">
+          <button type="button" class="link-btn" id="d-btn-scan">Scan for networks</button>
+          <div id="d-scan-results" class="scan-results" style="display:none"></div>
+        </div>
+        <input type="text" id="d-wifi-ssid" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-wifi-pass">WiFi Password</label>
+        <input type="password" id="d-wifi-pass" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-os-client-id">OpenSky Client ID</label>
+        <input type="text" id="d-os-client-id" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-os-client-sec">OpenSky Client Secret</label>
+        <input type="password" id="d-os-client-sec" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-aeroapi-key">AeroAPI Key</label>
+        <input type="password" id="d-aeroapi-key" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+      <button type="button" class="apply-btn" id="btn-apply-network">Apply</button>
+    </section>
+
+    <!-- Hardware Card -->
+    <section class="card">
+      <h2>Hardware</h2>
+      <div class="form-fields">
+        <label for="d-tiles-x">Tiles X</label>
+        <input type="number" id="d-tiles-x" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-tiles-y">Tiles Y</label>
+        <input type="number" id="d-tiles-y" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-tile-pixels">Pixels per tile</label>
+        <input type="number" id="d-tile-pixels" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-display-pin">Display data pin (GPIO)</label>
+        <input type="number" id="d-display-pin" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-origin-corner">Origin corner</label>
+        <input type="number" id="d-origin-corner" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-scan-dir">Scan direction</label>
+        <input type="number" id="d-scan-dir" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-zigzag">Zigzag</label>
+        <input type="number" id="d-zigzag" inputmode="numeric" min="0" step="1" autocomplete="off">
+      </div>
+      <p class="resolution-text" id="d-resolution-text"></p>
+      <button type="button" class="apply-btn" id="btn-apply-hardware">Apply</button>
+    </section>
+
+    <!-- System / Danger Zone Card -->
+    <section class="card card-danger">
+      <h2>System</h2>
+      <div id="reset-default" class="reset-row">
+        <button type="button" class="btn-danger" id="btn-reset">Reset to Defaults</button>
+      </div>
+      <div id="reset-confirm" class="reset-row" style="display:none">
+        <p class="reset-warning">All settings will be erased and the device will restart in setup mode.</p>
+        <div class="reset-actions">
+          <button type="button" class="btn-danger" id="btn-reset-confirm">Confirm</button>
+          <button type="button" class="btn-cancel" id="btn-reset-cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="/common.js"></script>
+<script src="/dashboard.js"></script>
+</body>
+</html>

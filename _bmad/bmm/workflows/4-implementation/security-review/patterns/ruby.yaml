@@ -1,0 +1,92 @@
+# Ruby-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-94
+    severity: HIGH
+    tier: 1
+    title: "Ruby: code injection via ERB.new with user input"
+    vulnerable_example: |
+      template = ERB.new(params[:template])
+      result = template.result(binding)  # attacker controls ERB template
+    safe_example: |
+      template = ERB.new(ALLOWED_TEMPLATES[params[:template_name]])
+      result = template.result_with_hash(name: params[:name])
+    detection_hint: "ERB.new() with user-controlled string or params"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "Ruby: command injection via system()/exec()/backticks"
+    vulnerable_example: |
+      system("convert #{params[:filename]} output.png")
+      result = `ls #{user_input}`
+    safe_example: |
+      system("convert", "--", sanitized_filename, "output.png")
+      # Or use Open3 for safe subprocess execution
+      stdout, status = Open3.capture2("ls", user_input)
+    detection_hint: "system(), exec(), or backticks with string interpolation of user input"
+
+  - cwe_id: CWE-915
+    severity: HIGH
+    tier: 1
+    title: "Ruby: mass assignment without strong parameters"
+    vulnerable_example: |
+      User.new(params[:user])  # attacker can set is_admin=true
+      @user.update(params[:user])
+    safe_example: |
+      User.new(user_params)
+      def user_params
+        params.require(:user).permit(:name, :email)
+      end
+    detection_hint: "Model.new(params[]) or update(params[]) without permit()"
+
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "Ruby: unsafe YAML deserialization"
+    vulnerable_example: |
+      data = YAML.load(user_input)  # can instantiate arbitrary Ruby objects
+    safe_example: |
+      data = YAML.safe_load(user_input, permitted_classes: [Date, Time])
+    detection_hint: "YAML.load() instead of YAML.safe_load() with untrusted input"
+
+  - cwe_id: CWE-470
+    severity: HIGH
+    tier: 1
+    title: "Ruby: unsafe reflection via send() with user input"
+    vulnerable_example: |
+      method_name = params[:action]
+      @service.send(method_name, params[:data])  # attacker calls any method
+    safe_example: |
+      ALLOWED_ACTIONS = %w[create update delete].freeze
+      method_name = params[:action]
+      raise "Forbidden" unless ALLOWED_ACTIONS.include?(method_name)
+      @service.public_send(method_name, params[:data])
+    detection_hint: "send() or public_send() with user-controlled method name"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "Ruby: XSS via raw/html_safe on user input"
+    vulnerable_example: |
+      <%= raw(user_comment) %>
+      <%= user_input.html_safe %>
+    safe_example: |
+      <%= sanitize(user_comment) %>
+      <%= user_input %>  <%# Rails auto-escapes by default %>
+    detection_hint: "raw() or .html_safe on user-controlled content in ERB templates"
+
+  - cwe_id: CWE-22
+    severity: HIGH
+    tier: 1
+    title: "Ruby: path traversal via unsanitized file access"
+    vulnerable_example: |
+      filename = params[:file]
+      send_file(Rails.root.join("uploads", filename))  # ../../etc/passwd
+    safe_example: |
+      filename = File.basename(params[:file])
+      path = Rails.root.join("uploads", filename)
+      raise "Invalid" unless path.to_s.start_with?(Rails.root.join("uploads").to_s)
+      send_file(path)
+    detection_hint: "File.read, send_file, or IO.read with params[] in path without basename"

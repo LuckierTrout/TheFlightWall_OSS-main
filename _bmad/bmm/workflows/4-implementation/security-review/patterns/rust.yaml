@@ -1,0 +1,111 @@
+# Rust-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-787
+    severity: HIGH
+    tier: 1
+    title: "Rust: unsafe block with raw pointer dereference"
+    vulnerable_example: |
+      unsafe {
+          let ptr = data.as_ptr();
+          let val = *ptr.offset(index as isize);  // no bounds check
+      }
+    safe_example: |
+      let val = data.get(index).ok_or(Error::OutOfBounds)?;
+    detection_hint: "unsafe block with raw pointer dereference (*ptr) without bounds validation"
+
+  - cwe_id: CWE-252
+    severity: HIGH
+    tier: 1
+    title: "Rust: .unwrap() on user input in request handlers"
+    vulnerable_example: |
+      async fn handler(req: Request) -> Response {
+          let id: i64 = req.param("id").unwrap().parse().unwrap();
+          let user = db.find(id).unwrap();
+          // panics crash the handler, potential DoS
+      }
+    safe_example: |
+      async fn handler(req: Request) -> Result<Response, AppError> {
+          let id: i64 = req.param("id")
+              .ok_or(AppError::BadRequest("missing id"))?
+              .parse()
+              .map_err(|_| AppError::BadRequest("invalid id"))?;
+          let user = db.find(id).await?;
+      }
+    detection_hint: ".unwrap() in async handler or route function, especially on parse()"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "Rust: SQL injection via format! in raw queries"
+    vulnerable_example: |
+      let query = format!("SELECT * FROM users WHERE name = '{}'", user_input);
+      sqlx::query(&query).fetch_one(&pool).await?;
+    safe_example: |
+      sqlx::query("SELECT * FROM users WHERE name = $1")
+          .bind(&user_input)
+          .fetch_one(&pool)
+          .await?;
+    detection_hint: "format!() or format_args!() in SQL query string passed to sqlx/diesel"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "Rust: command injection via std::process::Command"
+    vulnerable_example: |
+      Command::new("sh")
+          .arg("-c")
+          .arg(format!("echo {}", user_input))
+          .output()?;
+    safe_example: |
+      Command::new("echo")
+          .arg(&user_input)  // passed as single argument, no shell interpretation
+          .output()?;
+    detection_hint: "Command::new(\"sh\").arg(\"-c\") with format!() containing user input"
+
+  - cwe_id: CWE-416
+    severity: HIGH
+    tier: 1
+    title: "Rust: use-after-free in unsafe code"
+    vulnerable_example: |
+      unsafe {
+          let ptr = Box::into_raw(Box::new(42));
+          drop(Box::from_raw(ptr));
+          println!("{}", *ptr);  // use-after-free
+      }
+    safe_example: |
+      let value = Box::new(42);
+      println!("{}", value);
+      // Box automatically freed when it goes out of scope
+    detection_hint: "Box::from_raw() followed by dereference of same raw pointer in unsafe block"
+
+  - cwe_id: CWE-362
+    severity: HIGH
+    tier: 1
+    title: "Rust: data race via unsafe mutable static"
+    vulnerable_example: |
+      static mut COUNTER: u64 = 0;
+      fn increment() {
+          unsafe { COUNTER += 1; }  // data race across threads
+      }
+    safe_example: |
+      use std::sync::atomic::{AtomicU64, Ordering};
+      static COUNTER: AtomicU64 = AtomicU64::new(0);
+      fn increment() {
+          COUNTER.fetch_add(1, Ordering::SeqCst);
+      }
+    detection_hint: "static mut accessed from multiple threads or in unsafe without synchronization"
+
+  - cwe_id: CWE-120
+    severity: HIGH
+    tier: 1
+    title: "Rust: buffer overflow via unsafe slice construction"
+    vulnerable_example: |
+      unsafe {
+          let slice = std::slice::from_raw_parts(ptr, len);  // len not validated
+      }
+    safe_example: |
+      assert!(len <= buffer.len(), "length exceeds buffer size");
+      let slice = &buffer[..len];
+    detection_hint: "std::slice::from_raw_parts with unchecked length in unsafe block"

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FlightWall — System Health</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="dashboard">
+  <header class="dash-header">
+    <h1>System Health</h1>
+    <nav><a href="/">&larr; Dashboard</a></nav>
+  </header>
+
+  <main class="dash-cards">
+
+    <section class="card" id="wifi-card">
+      <h2>WiFi</h2>
+      <div id="wifi-body"><p class="health-loading">Loading...</p></div>
+    </section>
+
+    <section class="card" id="apis-card">
+      <h2>APIs</h2>
+      <div id="apis-body"><p class="health-loading">Loading...</p></div>
+    </section>
+
+    <section class="card" id="quota-card">
+      <h2>API Quota</h2>
+      <div id="quota-body"><p class="health-loading">Loading...</p></div>
+    </section>
+
+    <section class="card" id="device-card">
+      <h2>Device</h2>
+      <div id="device-body"><p class="health-loading">Loading...</p></div>
+    </section>
+
+    <section class="card" id="flight-card">
+      <h2>Flight Data</h2>
+      <div id="flight-body"><p class="health-loading">Loading...</p></div>
+    </section>
+
+    <button class="apply-btn" id="refresh-btn">Refresh</button>
+
+  </main>
+</div>
+
+<script src="/common.js"></script>
+<script src="/health.js"></script>
+</body>
+</html>

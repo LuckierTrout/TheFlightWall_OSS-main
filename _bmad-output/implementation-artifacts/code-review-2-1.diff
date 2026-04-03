@@ -1,0 +1,915 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+new file mode 100644
+index 0000000..a7f303e
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+@@ -0,0 +1,51 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="dashboard">
++  <header class="dash-header">
++    <h1>FlightWall</h1>
++    <p class="dash-ip" id="device-ip"></p>
++    <nav><a href="/health.html">System Health</a></nav>
++  </header>
++
++  <main class="dash-cards">
++    <!-- Display Settings Card -->
++    <section class="card">
++      <h2>Display</h2>
++
++      <label for="brightness">Brightness</label>
++      <div class="range-row">
++        <input type="range" id="brightness" min="0" max="255" value="128">
++        <span class="range-val" id="brightness-val">128</span>
++      </div>
++
++      <label>Text Color</label>
++      <div class="rgb-row">
++        <div class="rgb-field">
++          <input type="number" id="color-r" min="0" max="255" value="255">
++          <span class="rgb-label">R</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-g" min="0" max="255" value="255">
++          <span class="rgb-label">G</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-b" min="0" max="255" value="255">
++          <span class="rgb-label">B</span>
++        </div>
++      </div>
++      <div class="color-preview" id="color-preview"></div>
++    </section>
++  </main>
++</div>
++
++<script src="/common.js"></script>
++<script src="/dashboard.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+new file mode 100644
+index 0000000..9fd022f
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+@@ -0,0 +1,105 @@
++/* FlightWall Dashboard — Display settings with live LED feedback */
++(function() {
++  'use strict';
++
++  var brightness = document.getElementById('brightness');
++  var brightnessVal = document.getElementById('brightness-val');
++  var colorR = document.getElementById('color-r');
++  var colorG = document.getElementById('color-g');
++  var colorB = document.getElementById('color-b');
++  var colorPreview = document.getElementById('color-preview');
++  var deviceIp = document.getElementById('device-ip');
++
++  var debounceTimer = null;
++  var DEBOUNCE_MS = 400;
++
++  // Show device IP from browser context
++  deviceIp.textContent = window.location.hostname || '';
++
++  // --- Load current settings ---
++  function loadSettings() {
++    FW.get('/api/settings').then(function(res) {
++      if (!res.body.ok || !res.body.data) {
++        FW.showToast('Failed to load settings', 'error');
++        return;
++      }
++      var d = res.body.data;
++      if (d.brightness !== undefined) {
++        brightness.value = d.brightness;
++        brightnessVal.textContent = d.brightness;
++      }
++      if (d.text_color_r !== undefined) colorR.value = d.text_color_r;
++      if (d.text_color_g !== undefined) colorG.value = d.text_color_g;
++      if (d.text_color_b !== undefined) colorB.value = d.text_color_b;
++      updatePreview();
++    }).catch(function() {
++      FW.showToast('Cannot reach device', 'error');
++    });
++  }
++
++  // --- Apply settings to firmware ---
++  function applySettings(payload) {
++    FW.post('/api/settings', payload).then(function(res) {
++      if (res.body.ok) {
++        FW.showToast('Applied', 'success');
++      } else {
++        FW.showToast(res.body.error || 'Save failed', 'error');
++      }
++    }).catch(function() {
++      FW.showToast('Network error', 'error');
++    });
++  }
++
++  function debouncedApply(payload) {
++    clearTimeout(debounceTimer);
++    debounceTimer = setTimeout(function() {
++      applySettings(payload);
++    }, DEBOUNCE_MS);
++  }
++
++  // --- Color preview ---
++  function updatePreview() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorPreview.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
++  }
++
++  function clamp(v) {
++    return Math.max(0, Math.min(255, v));
++  }
++
++  // --- Brightness slider ---
++  brightness.addEventListener('input', function() {
++    brightnessVal.textContent = brightness.value;
++  });
++  brightness.addEventListener('change', function() {
++    applySettings({ brightness: parseInt(brightness.value, 10) });
++  });
++
++  // --- RGB inputs ---
++  function onColorChange() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorR.value = r;
++    colorG.value = g;
++    colorB.value = b;
++    updatePreview();
++    debouncedApply({
++      text_color_r: r,
++      text_color_g: g,
++      text_color_b: b
++    });
++  }
++
++  colorR.addEventListener('change', onColorChange);
++  colorG.addEventListener('change', onColorChange);
++  colorB.addEventListener('change', onColorChange);
++  colorR.addEventListener('input', updatePreview);
++  colorG.addEventListener('input', updatePreview);
++  colorB.addEventListener('input', updatePreview);
++
++  // --- Init ---
++  loadSettings();
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html
+new file mode 100644
+index 0000000..8ef7f05
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.html
+@@ -0,0 +1,28 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall — System Health</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="dashboard">
++  <header class="dash-header">
++    <h1>System Health</h1>
++    <nav><a href="/">&larr; Dashboard</a></nav>
++  </header>
++
++  <main class="dash-cards">
++    <section class="card" id="health-card">
++      <h2>Subsystems</h2>
++      <p id="health-loading" style="color:var(--text-muted);font-size:0.875rem">Loading status...</p>
++      <div id="health-list"></div>
++    </section>
++  </main>
++</div>
++
++<script src="/common.js"></script>
++<script src="/health.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js
+new file mode 100644
+index 0000000..5b2e96b
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/health.js
+@@ -0,0 +1,35 @@
++/* FlightWall System Health — minimal status page (Story 2.4 will expand) */
++(function() {
++  'use strict';
++
++  var healthList = document.getElementById('health-list');
++  var healthLoading = document.getElementById('health-loading');
++
++  function levelColor(level) {
++    if (level === 'ok') return 'var(--success)';
++    if (level === 'warning') return '#d29922';
++    return 'var(--error)';
++  }
++
++  FW.get('/api/status').then(function(res) {
++    healthLoading.style.display = 'none';
++    if (!res.body.ok || !res.body.data) {
++      FW.showToast('Failed to load status', 'error');
++      return;
++    }
++    var data = res.body.data;
++    var html = '';
++    var keys = Object.keys(data);
++    keys.forEach(function(name) {
++      var s = data[name];
++      html += '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--border)">';
++      html += '<span style="font-size:0.875rem;text-transform:capitalize">' + name + '</span>';
++      html += '<span style="font-size:0.8125rem;color:' + levelColor(s.level) + '">' + s.level.toUpperCase() + '</span>';
++      html += '</div>';
++    });
++    healthList.innerHTML = html;
++  }).catch(function() {
++    healthLoading.textContent = 'Cannot reach device';
++    healthLoading.style.color = 'var(--error)';
++  });
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/common.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/common.js
+new file mode 100644
+index 0000000..5d81b1b
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/common.js
+@@ -0,0 +1,58 @@
++/* FlightWall shared HTTP helpers */
++var FW = (function() {
++  'use strict';
++
++  function fetchJson(url, opts) {
++    return fetch(url, opts || {}).then(function(res) {
++      return res.json().then(function(body) {
++        return { status: res.status, body: body };
++      });
++    });
++  }
++
++  function get(url) {
++    return fetchJson(url);
++  }
++
++  function post(url, data) {
++    return fetchJson(url, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify(data)
++    });
++  }
++
++  /* Toast notification system */
++  var toastContainer = null;
++
++  function ensureToastContainer() {
++    if (toastContainer) return toastContainer;
++    toastContainer = document.getElementById('toast-container');
++    if (!toastContainer) {
++      toastContainer = document.createElement('div');
++      toastContainer.id = 'toast-container';
++      document.body.appendChild(toastContainer);
++    }
++    return toastContainer;
++  }
++
++  function showToast(message, severity) {
++    var container = ensureToastContainer();
++    var toast = document.createElement('div');
++    toast.className = 'toast toast-' + (severity || 'success');
++    toast.textContent = message;
++    container.appendChild(toast);
++    // Trigger reflow for animation
++    toast.offsetHeight;
++    toast.classList.add('toast-visible');
++    setTimeout(function() {
++      toast.classList.remove('toast-visible');
++      toast.classList.add('toast-exit');
++      setTimeout(function() {
++        if (toast.parentNode) toast.parentNode.removeChild(toast);
++      }, 300);
++    }, 2500);
++  }
++
++  return { get: get, post: post, showToast: showToast };
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+new file mode 100644
+index 0000000..dd100da
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+@@ -0,0 +1,222 @@
++/* FlightWall shared design tokens and layout */
++*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
++:root{
++  --bg:#0d1117;--surface:#161b22;--border:#30363d;
++  --text:#e6edf3;--text-muted:#8b949e;
++  --primary:#58a6ff;--primary-hover:#79c0ff;
++  --error:#f85149;--success:#3fb950;
++  --radius:8px;--gap:16px;
++}
++html{font-size:16px}
++body{
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
++  background:var(--bg);color:var(--text);
++  min-height:100vh;display:flex;justify-content:center;
++  padding:0;margin:0;
++  -webkit-text-size-adjust:100%;
++}
++
++/* Wizard layout */
++.wizard{
++  width:100%;max-width:480px;min-height:100vh;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
++.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
++.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
++
++.step{display:none}
++.step.active{display:block}
++.step h2{font-size:1.125rem;margin-bottom:8px}
++.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
++.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
++
++/* Form fields */
++.form-fields{display:flex;flex-direction:column;gap:8px}
++.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.form-fields input[type="text"],
++.form-fields input[type="password"]{
++  width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.form-fields input:focus{border-color:var(--primary)}
++.form-fields input.input-error{border-color:var(--error)}
++.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
++
++/* Scan states */
++.scan-status{text-align:center;padding:var(--gap) 0}
++.scan-msg{color:var(--text-muted);margin-bottom:8px}
++.spinner{
++  width:24px;height:24px;margin:0 auto;
++  border:3px solid var(--border);border-top-color:var(--primary);
++  border-radius:50%;animation:spin 0.8s linear infinite;
++}
++@keyframes spin{to{transform:rotate(360deg)}}
++
++/* Scan results */
++.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
++.scan-row{
++  padding:12px;background:var(--surface);
++  border:1px solid var(--border);border-radius:var(--radius);
++  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
++  transition:border-color 0.15s;
++}
++.scan-row:hover,.scan-row:active{border-color:var(--primary)}
++.scan-row .ssid{font-size:0.9375rem}
++.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
++
++/* Link button */
++.link-btn{
++  background:none;border:none;color:var(--primary);
++  font-size:0.875rem;cursor:pointer;padding:8px 0;
++  text-decoration:underline;
++}
++.link-btn:hover{color:var(--primary-hover)}
++
++/* Wizard navigation */
++.wizard-nav{
++  display:flex;justify-content:space-between;
++  padding:var(--gap) 0;flex-shrink:0;
++  border-top:1px solid var(--border);
++}
++.nav-btn{
++  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
++  border:1px solid var(--border);background:var(--surface);
++  color:var(--text);cursor:pointer;min-width:110px;
++  transition:background 0.15s,border-color 0.15s;
++}
++.nav-btn:hover{border-color:var(--text-muted)}
++.nav-btn-primary{
++  background:var(--primary);color:#0d1117;border-color:var(--primary);
++  font-weight:600;
++}
++.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.nav-btn-save{
++  background:var(--success);color:#0d1117;border-color:var(--success);
++  font-weight:600;
++}
++.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
++.nav-btn:disabled{opacity:0.5;cursor:default}
++
++/* Geolocation button (Step 3) */
++.geo-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--primary);
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;margin-bottom:8px;
++  transition:background 0.15s,color 0.15s;
++}
++.geo-btn:hover{background:var(--primary);color:#0d1117}
++.geo-btn:disabled{opacity:0.5;cursor:default}
++.geo-status{font-size:0.8125rem;margin-bottom:8px}
++.geo-ok{color:var(--success)}
++.geo-error{color:var(--text-muted)}
++.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
++
++/* Resolution text (Step 4) */
++.resolution-text{
++  color:var(--primary);font-size:0.9375rem;
++  font-weight:500;margin-top:var(--gap);text-align:center;
++}
++
++/* Review cards (Step 5) */
++.review-sections{display:flex;flex-direction:column;gap:8px}
++.review-card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:12px;cursor:pointer;
++  transition:border-color 0.15s;
++}
++.review-card:hover,.review-card:active{border-color:var(--primary)}
++.review-card-header{
++  display:flex;justify-content:space-between;align-items:center;
++  margin-bottom:8px;
++}
++.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
++.review-edit{color:var(--primary);font-size:0.8125rem}
++.review-item{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:2px 0;font-size:0.875rem;
++}
++.review-label{color:var(--text-muted)}
++.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
++
++/* Dashboard layout */
++.dashboard{
++  width:100%;max-width:480px;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.dash-header{text-align:center;padding:var(--gap) 0}
++.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
++.dash-header nav{margin-top:8px}
++.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
++.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
++.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
++
++/* Cards */
++.card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:var(--gap);
++}
++.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
++.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
++.card label:first-of-type{margin-top:0}
++.card input[type="range"]{width:100%;accent-color:var(--primary)}
++.card .range-row{display:flex;align-items:center;gap:8px}
++.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
++.card .rgb-row{display:flex;gap:8px}
++.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
++.card .rgb-row input[type="number"]{
++  width:100%;padding:8px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;text-align:center;
++  -moz-appearance:textfield;
++}
++.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
++.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
++.card .rgb-row input:focus{border-color:var(--primary)}
++.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
++.color-preview{
++  height:24px;border-radius:4px;margin-top:8px;
++  border:1px solid var(--border);
++}
++
++/* Toast system */
++#toast-container{
++  position:fixed;top:16px;left:50%;transform:translateX(-50%);
++  z-index:9999;display:flex;flex-direction:column;gap:8px;
++  width:calc(100% - 32px);max-width:400px;pointer-events:none;
++}
++.toast{
++  padding:12px 16px;border-radius:var(--radius);
++  font-size:0.875rem;font-weight:500;
++  transform:translateY(-20px);opacity:0;
++  transition:transform 0.25s ease,opacity 0.25s ease;
++  pointer-events:auto;
++}
++.toast-visible{transform:translateY(0);opacity:1}
++.toast-exit{transform:translateY(-20px);opacity:0}
++.toast-success{background:var(--success);color:#0d1117}
++.toast-warning{background:#d29922;color:#0d1117}
++.toast-error{background:var(--error);color:#fff}
++
++@media (prefers-reduced-motion:reduce){
++  .toast{transition:none;transform:none}
++  .toast-visible{opacity:1}
++  .toast-exit{opacity:0;transition:opacity 0.15s ease}
++}
++
++/* Handoff screen */
++.handoff{
++  display:flex;flex-direction:column;align-items:center;justify-content:center;
++  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
++}
++.handoff h1{font-size:1.5rem;color:var(--success)}
++.handoff p{font-size:1rem;color:var(--text);max-width:320px}
++.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+new file mode 100644
+index 0000000..599d12b
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+@@ -0,0 +1,350 @@
++/*
++Purpose: Web server adapter serving gzipped HTML pages and REST API endpoints.
++Responsibilities:
++- Serve wizard.html.gz in AP mode, dashboard.html.gz in STA mode via GET /.
++- Expose JSON API: GET/POST /api/settings, GET /api/status, POST /api/reboot, GET /api/wifi/scan.
++- Use consistent JSON envelope: { "ok": bool, "data": ..., "error": "...", "code": "..." }.
++Architecture: ESPAsyncWebServer (mathieucarbou fork) — non-blocking, runs on AsyncTCP task.
++
++JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
++  Display:   brightness, text_color_r, text_color_g, text_color_b
++  Location:  center_lat, center_lon, radius_km
++  Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
++  Timing:    fetch_interval, display_cycle
++  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
++*/
++#include "adapters/WebPortal.h"
++#include <LittleFS.h>
++#include <ArduinoJson.h>
++#include <WiFi.h>
++#include <vector>
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "utils/Log.h"
++
++namespace {
++struct PendingRequestBody {
++    AsyncWebServerRequest* request;
++    String body;
++};
++
++std::vector<PendingRequestBody> g_pendingBodies;
++constexpr size_t MAX_SETTINGS_BODY_BYTES = 4096;
++
++PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
++    for (auto& pending : g_pendingBodies) {
++        if (pending.request == request) {
++            return &pending;
++        }
++    }
++    return nullptr;
++}
++
++void clearPendingBody(AsyncWebServerRequest* request) {
++    for (auto it = g_pendingBodies.begin(); it != g_pendingBodies.end(); ++it) {
++        if (it->request == request) {
++            g_pendingBodies.erase(it);
++            return;
++        }
++    }
++}
++} // namespace
++
++void WebPortal::init(AsyncWebServer& server, WiFiManager& wifiMgr) {
++    _server = &server;
++    _wifiMgr = &wifiMgr;
++    _registerRoutes();
++    LOG_I("WebPortal", "Routes registered");
++}
++
++void WebPortal::begin() {
++    if (!_server) return;
++    _server->begin();
++    LOG_I("WebPortal", "Server started on port 80");
++}
++
++void WebPortal::onReboot(RebootCallback callback) {
++    _rebootCallback = callback;
++}
++
++void WebPortal::_registerRoutes() {
++    // GET / — serve wizard or dashboard based on WiFi mode
++    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleRoot(request);
++    });
++
++    // GET /api/settings
++    _server->on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetSettings(request);
++    });
++
++    // POST /api/settings — uses body handler for JSON parsing
++    _server->on("/api/settings", HTTP_POST,
++        // request handler (called after body is received)
++        [](AsyncWebServerRequest* request) {
++            // no-op: response sent in body handler
++        },
++        nullptr, // upload handler
++        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
++            if (data == nullptr || total == 0) {
++                clearPendingBody(request);
++                _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++                return;
++            }
++
++            if (total > MAX_SETTINGS_BODY_BYTES) {
++                clearPendingBody(request);
++                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
++                return;
++            }
++
++            if (index == 0) {
++                clearPendingBody(request);
++                PendingRequestBody pending{request, String()};
++                pending.body.reserve(total);
++                g_pendingBodies.push_back(pending);
++            }
++
++            PendingRequestBody* pending = findPendingBody(request);
++            if (pending == nullptr) {
++                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
++                return;
++            }
++
++            for (size_t i = 0; i < len; ++i) {
++                pending->body += static_cast<char>(data[i]);
++            }
++
++            if (index + len == total) {
++                _handlePostSettings(
++                    request,
++                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
++                    pending->body.length()
++                );
++                clearPendingBody(request);
++            }
++        }
++    );
++
++    // GET /api/status
++    _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetStatus(request);
++    });
++
++    // POST /api/reboot
++    _server->on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
++        _handlePostReboot(request);
++    });
++
++    // GET /api/wifi/scan
++    _server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetWifiScan(request);
++    });
++
++    // Shared static assets (gzipped on LittleFS)
++    _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/style.css.gz", "text/css");
++    });
++    _server->on("/common.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/common.js.gz", "application/javascript");
++    });
++    _server->on("/wizard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/wizard.js.gz", "application/javascript");
++    });
++    _server->on("/dashboard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/dashboard.js.gz", "application/javascript");
++    });
++    _server->on("/health.html", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/health.html.gz", "text/html");
++    });
++    _server->on("/health.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/health.js.gz", "application/javascript");
++    });
++}
++
++void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
++    WiFiState state = _wifiMgr->getState();
++    const char* file;
++    if (state == WiFiState::AP_SETUP || state == WiFiState::AP_FALLBACK) {
++        file = "/wizard.html.gz";
++    } else {
++        // STA_CONNECTED, CONNECTING, STA_RECONNECTING — serve dashboard
++        file = "/dashboard.html.gz";
++    }
++
++    if (!LittleFS.exists(file)) {
++        _sendJsonError(request, 404, "Asset not found", "ASSET_MISSING");
++        return;
++    }
++
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, file, "text/html");
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_handleGetSettings(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    ConfigManager::dumpSettingsJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
++    JsonDocument doc;
++    DeserializationError err = deserializeJson(doc, data, len);
++    if (err) {
++        _sendJsonError(request, 400, "Invalid JSON", "PARSE_ERROR");
++        return;
++    }
++
++    if (!doc.is<JsonObject>()) {
++        _sendJsonError(request, 400, "Expected JSON object", "INVALID_PAYLOAD");
++        return;
++    }
++
++    JsonObject settings = doc.as<JsonObject>();
++    if (settings.size() == 0) {
++        _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++        return;
++    }
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++    if (result.applied.size() != settings.size()) {
++        _sendJsonError(request, 400, "Unknown or invalid settings key", "INVALID_SETTING");
++        return;
++    }
++
++    JsonDocument respDoc;
++    JsonObject resp = respDoc.to<JsonObject>();
++    resp["ok"] = true;
++    JsonArray applied = resp["applied"].to<JsonArray>();
++    for (const String& key : result.applied) {
++        applied.add(key);
++    }
++    resp["reboot_required"] = result.reboot_required;
++
++    String output;
++    serializeJson(respDoc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    SystemStatus::toJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostReboot(AsyncWebServerRequest* request) {
++    // Flush all pending NVS writes before restart
++    ConfigManager::persistAllNow();
++
++    // Notify main coordinator to show "Saving config..." on LED
++    if (_rebootCallback) {
++        _rebootCallback();
++    }
++
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["message"] = "Rebooting...";
++
++    String output;
++    serializeJson(doc, output);
++
++    // Send response first, then schedule restart
++    request->send(200, "application/json", output);
++
++    // Delay restart slightly so the HTTP response can be sent
++    // Use a one-shot timer to avoid blocking the async callback
++    static esp_timer_handle_t rebootTimer = nullptr;
++    if (!rebootTimer) {
++        esp_timer_create_args_t args = {};
++        args.callback = [](void*) { ESP.restart(); };
++        args.name = "reboot";
++        esp_timer_create(&args, &rebootTimer);
++    }
++    esp_timer_start_once(rebootTimer, 1000000); // 1 second in microseconds
++}
++
++void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
++    int16_t scanResult = WiFi.scanComplete();
++
++    if (scanResult == WIFI_SCAN_FAILED) {
++        // No scan running — kick off an async scan
++        WiFi.scanNetworks(true); // async=true
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    if (scanResult == WIFI_SCAN_RUNNING) {
++        // Scan still in progress
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    // Scan complete — return results
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["scanning"] = false;
++    JsonArray data = root["data"].to<JsonArray>();
++
++    for (int i = 0; i < scanResult; i++) {
++        JsonObject net = data.add<JsonObject>();
++        net["ssid"] = WiFi.SSID(i);
++        net["rssi"] = WiFi.RSSI(i);
++    }
++
++    // Free scan memory for next scan
++    WiFi.scanDelete();
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType) {
++    if (!LittleFS.exists(path)) {
++        request->send(404, "text/plain", "Not found");
++        return;
++    }
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, contentType);
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = false;
++    root["error"] = error;
++    root["code"] = code;
++    String output;
++    serializeJson(doc, output);
++    request->send(httpCode, "application/json", output);
++}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz
+new file mode 100644
+index 0000000..1a7ec64
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz
+new file mode 100644
+index 0000000..df87fd9
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz
+new file mode 100644
+index 0000000..3675fe5
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz
+new file mode 100644
+index 0000000..f440ea7
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/health.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz
+new file mode 100644
+index 0000000..0329f64
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/common.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz
+new file mode 100644
+index 0000000..913a93c
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz differ

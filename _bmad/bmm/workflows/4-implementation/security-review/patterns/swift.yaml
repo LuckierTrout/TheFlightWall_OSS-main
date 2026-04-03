@@ -1,0 +1,120 @@
+# Swift-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-922
+    severity: HIGH
+    tier: 1
+    title: "Swift: secrets stored in UserDefaults"
+    vulnerable_example: |
+      UserDefaults.standard.set(apiKey, forKey: "api_key")
+      UserDefaults.standard.set(authToken, forKey: "auth_token")
+    safe_example: |
+      let query: [String: Any] = [
+          kSecClass as String: kSecClassGenericPassword,
+          kSecAttrAccount as String: "auth_token",
+          kSecValueData as String: token.data(using: .utf8)!
+      ]
+      SecItemAdd(query as CFDictionary, nil)
+    detection_hint: "UserDefaults.standard.set with keys containing token, key, secret, password"
+
+  - cwe_id: CWE-295
+    severity: HIGH
+    tier: 1
+    title: "Swift: URLSession without certificate pinning"
+    vulnerable_example: |
+      func urlSession(_ session: URLSession,
+                      didReceive challenge: URLAuthenticationChallenge,
+                      completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+          completionHandler(.useCredential,
+              URLCredential(trust: challenge.protectionSpace.serverTrust!))
+      }
+    safe_example: |
+      func urlSession(_ session: URLSession,
+                      didReceive challenge: URLAuthenticationChallenge,
+                      completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+          guard let trust = challenge.protectionSpace.serverTrust,
+                let cert = SecTrustGetCertificateAtIndex(trust, 0) else {
+              completionHandler(.cancelAuthenticationChallenge, nil); return
+          }
+          let pinnedCertData = SecCertificateCopyData(pinnedCert) as Data
+          let serverCertData = SecCertificateCopyData(cert) as Data
+          if pinnedCertData == serverCertData {
+              completionHandler(.useCredential, URLCredential(trust: trust))
+          } else {
+              completionHandler(.cancelAuthenticationChallenge, nil)
+          }
+      }
+    detection_hint: "completionHandler(.useCredential) without certificate comparison in URLSession delegate"
+
+  - cwe_id: CWE-252
+    severity: HIGH
+    tier: 1
+    title: "Swift: force unwrap on user-controlled data"
+    vulnerable_example: |
+      let userId = request.queryParams["id"]!
+      let count = Int(userInput)!
+      let data = try! JSONDecoder().decode(User.self, from: body)
+    safe_example: |
+      guard let userId = request.queryParams["id"] else {
+          return Response(status: .badRequest)
+      }
+      guard let count = Int(userInput) else {
+          return Response(status: .badRequest)
+      }
+      let data = try JSONDecoder().decode(User.self, from: body)
+    detection_hint: "force unwrap (!) on values from request params, user input, or network data"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "Swift: JavaScript injection via WKWebView evaluateJavaScript"
+    vulnerable_example: |
+      let script = "document.getElementById('name').innerHTML = '\(userInput)'"
+      webView.evaluateJavaScript(script)
+    safe_example: |
+      let sanitized = userInput
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "'", with: "\\'")
+          .replacingOccurrences(of: "<", with: "&lt;")
+      let script = "document.getElementById('name').textContent = '\(sanitized)'"
+      webView.evaluateJavaScript(script)
+    detection_hint: "evaluateJavaScript with string interpolation of user-controlled data"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "Swift: SQL injection via string interpolation"
+    vulnerable_example: |
+      let query = "SELECT * FROM users WHERE name = '\(userName)'"
+      try db.execute(query)
+    safe_example: |
+      let stmt = try db.prepare("SELECT * FROM users WHERE name = ?")
+      let rows = try stmt.run(userName)
+    detection_hint: "db.execute or db.run with string interpolation in SQL query"
+
+  - cwe_id: CWE-311
+    severity: HIGH
+    tier: 1
+    title: "Swift: sensitive data transmitted without encryption"
+    vulnerable_example: |
+      var request = URLRequest(url: URL(string: "http://api.example.com/login")!)
+      request.httpBody = try JSONEncoder().encode(credentials)
+    safe_example: |
+      guard let url = URL(string: "https://api.example.com/login") else { return }
+      var request = URLRequest(url: url)
+      request.httpBody = try JSONEncoder().encode(credentials)
+    detection_hint: "URLRequest with http:// URL containing sensitive data (login, password, token)"
+
+  - cwe_id: CWE-532
+    severity: HIGH
+    tier: 1
+    title: "Swift: sensitive data written to system log"
+    vulnerable_example: |
+      print("User token: \(authToken)")
+      NSLog("Password: %@", password)
+      os_log("API key: %{public}s", apiKey)
+    safe_example: |
+      os_log("Authentication attempt for user: %{public}s", userId)
+      os_log("Token hash: %{private}s", tokenHash)
+    detection_hint: "print(), NSLog(), or os_log() with tokens, passwords, keys, or credentials"

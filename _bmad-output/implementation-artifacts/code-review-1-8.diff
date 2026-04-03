@@ -1,0 +1,967 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+new file mode 100644
+index 0000000..be6ab68
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+@@ -0,0 +1,577 @@
++/*
++Purpose: Firmware entry point for ESP32.
++Responsibilities:
++- Initialize serial, connect to Wi-Fi, and construct fetchers and display.
++- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
++- Display task on Core 0 reads queue and renders to LED matrix independently.
++Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
++Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
++*/
++#include <vector>
++#include <atomic>
++#include <WiFi.h>
++#include <HTTPClient.h>
++#include <WiFiClientSecure.h>
++#include <LittleFS.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <freertos/queue.h>
++#include "esp_task_wdt.h"
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "adapters/OpenSkyFetcher.h"
++#include "adapters/AeroAPIFetcher.h"
++#include "core/FlightDataFetcher.h"
++#include "adapters/NeoMatrixDisplay.h"
++#include "adapters/WiFiManager.h"
++#include "adapters/WebPortal.h"
++
++#ifndef PIO_UNIT_TESTING
++
++// --- Shared data structures (Task 1) ---
++
++struct FlightDisplayData {
++    std::vector<FlightInfo> flights;
++};
++
++struct DisplayStatusMessage {
++    char text[64];
++    uint32_t durationMs;
++};
++
++// Double buffer for safe cross-core data transfer (no memcpy of String/vector)
++static FlightDisplayData g_flightBuf[2];
++static uint8_t g_writeBuf = 0;
++
++// FreeRTOS queue holding a pointer to the current read buffer
++static QueueHandle_t g_flightQueue = nullptr;
++static QueueHandle_t g_displayMessageQueue = nullptr;
++
++// Atomic flag for config change notification (Core 1 sets, Core 0 reads)
++static std::atomic<bool> g_configChanged(false);
++
++// --- Startup progress coordinator (Story 1.8) ---
++// Owns the ordered LED status sequence during post-wizard startup.
++// Advances intentionally through phases; the single-entry overwrite queue
++// means only one message is active at a time, so we drive transitions
++// from loop() as each real event completes.
++
++enum class StartupPhase : uint8_t {
++    IDLE,               // Normal operation — coordinator inactive
++    SAVING_CONFIG,      // "Saving config..." (set by reboot callback)
++    CONNECTING_WIFI,    // "Connecting to WiFi..."
++    WIFI_CONNECTED,     // "WiFi Connected ✓" then "IP: x.x.x.x"
++    WIFI_FAILED,        // WiFi did not connect — fallback to AP/setup
++    AUTHENTICATING,     // "Authenticating APIs..."
++    FETCHING_FLIGHTS,   // "Fetching flights..."
++    COMPLETE            // First flight data ready — hand off to normal rendering
++};
++
++static StartupPhase g_startupPhase = StartupPhase::IDLE;
++static unsigned long g_phaseEnteredMs = 0;
++static bool g_firstFetchDone = false;  // One-shot flag: first fetch after startup
++
++static void enterPhase(StartupPhase phase)
++{
++    g_startupPhase = phase;
++    g_phaseEnteredMs = millis();
++}
++
++// --- Existing globals ---
++
++static OpenSkyFetcher g_openSky;
++static AeroAPIFetcher g_aeroApi;
++static FlightDataFetcher *g_fetcher = nullptr;
++static NeoMatrixDisplay g_display;
++static WiFiManager g_wifiManager;
++static AsyncWebServer g_webServer(80);
++static WebPortal g_webPortal;
++
++static unsigned long g_lastFetchMs = 0;
++
++static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
++{
++    if (g_displayMessageQueue == nullptr)
++    {
++        return;
++    }
++
++    DisplayStatusMessage statusMessage = {};
++    snprintf(statusMessage.text, sizeof(statusMessage.text), "%s", message.c_str());
++    statusMessage.durationMs = durationMs;
++    xQueueOverwrite(g_displayMessageQueue, &statusMessage);
++}
++
++static void showInitialWiFiMessage()
++{
++    switch (g_wifiManager.getState())
++    {
++        case WiFiState::AP_SETUP:
++            g_display.displayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            g_display.displayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            g_display.displayMessage(String("IP: ") + g_wifiManager.getLocalIP());
++            break;
++        case WiFiState::STA_RECONNECTING:
++            g_display.displayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            g_display.displayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static void queueWiFiStateMessage(WiFiState state)
++{
++    // During startup progress, the coordinator drives display messages
++    // so we intercept WiFi events to advance the progress sequence
++    if (g_startupPhase != StartupPhase::IDLE &&
++        g_startupPhase != StartupPhase::COMPLETE)
++    {
++        switch (state)
++        {
++            case WiFiState::STA_CONNECTED:
++                enterPhase(StartupPhase::WIFI_CONNECTED);
++                queueDisplayMessage(String("WiFi Connected"), 2000);
++                LOG_I("Main", "Startup: WiFi connected");
++                return;
++            case WiFiState::AP_FALLBACK:
++                enterPhase(StartupPhase::WIFI_FAILED);
++                queueDisplayMessage(String("WiFi Failed - Reopen Setup"));
++                LOG_I("Main", "Startup: WiFi failed, returning to setup");
++                return;
++            case WiFiState::CONNECTING:
++            case WiFiState::STA_RECONNECTING:
++                // Already showing connecting message — don't overwrite
++                return;
++            default:
++                break;
++        }
++    }
++
++    // Normal (non-startup) WiFi state messages
++    switch (state)
++    {
++        case WiFiState::AP_SETUP:
++            queueDisplayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            queueDisplayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 3000);
++            break;
++        case WiFiState::STA_RECONNECTING:
++            queueDisplayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            queueDisplayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
++{
++    return lhs.tiles_x != rhs.tiles_x ||
++           lhs.tiles_y != rhs.tiles_y ||
++           lhs.tile_pixels != rhs.tile_pixels ||
++           lhs.display_pin != rhs.display_pin ||
++           lhs.origin_corner != rhs.origin_corner ||
++           lhs.scan_dir != rhs.scan_dir ||
++           lhs.zigzag != rhs.zigzag;
++}
++
++// --- Display task (Task 2) ---
++
++void displayTask(void *pvParameters)
++{
++    LOG_I("DisplayTask", "Display task started");
++
++    // Read initial config as local copies
++    DisplayConfig localDisp = ConfigManager::getDisplay();
++    HardwareConfig localHw = ConfigManager::getHardware();
++    TimingConfig localTiming = ConfigManager::getTiming();
++
++    // Flight cycling state (owned by display task)
++    size_t currentFlightIndex = 0;
++    unsigned long lastCycleMs = millis();
++    bool statusMessageVisible = false;
++    unsigned long statusMessageUntilMs = 0;
++
++    // Subscribe to task watchdog
++    esp_task_wdt_add(NULL);
++
++    for (;;)
++    {
++        // Check for config changes (atomic flag from Core 1)
++        if (g_configChanged.exchange(false))
++        {
++            DisplayConfig newDisp = ConfigManager::getDisplay();
++            HardwareConfig newHw = ConfigManager::getHardware();
++            TimingConfig newTiming = ConfigManager::getTiming();
++
++            if (hardwareConfigChanged(localHw, newHw))
++            {
++                localHw = newHw;
++                LOG_I("DisplayTask", "Hardware config changed; restarting to apply layout");
++                ConfigManager::persistAllNow();
++                delay(50);
++                ESP.restart();
++            }
++
++            localDisp = newDisp;
++            localTiming = newTiming;
++            g_display.updateBrightness(localDisp.brightness);
++            LOG_I("DisplayTask", "Config change detected, display settings updated");
++        }
++
++        DisplayStatusMessage statusMessage = {};
++        if (g_displayMessageQueue != nullptr &&
++            xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
++        {
++            statusMessageVisible = true;
++            statusMessageUntilMs = statusMessage.durationMs == 0
++                ? 0
++                : millis() + statusMessage.durationMs;
++            g_display.displayMessage(String(statusMessage.text));
++        }
++
++        if (statusMessageVisible)
++        {
++            if (statusMessageUntilMs == 0 || millis() < statusMessageUntilMs)
++            {
++                esp_task_wdt_reset();
++                vTaskDelay(pdMS_TO_TICKS(50));
++                continue;
++            }
++
++            statusMessageVisible = false;
++        }
++
++        // Read latest flight data from queue (peek, don't remove)
++        FlightDisplayData *ptr = nullptr;
++        if (g_flightQueue != nullptr && xQueuePeek(g_flightQueue, &ptr, 0) == pdTRUE && ptr != nullptr)
++        {
++            const auto &flights = ptr->flights;
++
++            if (!flights.empty())
++            {
++                const unsigned long now = millis();
++                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
++
++                if (flights.size() > 1)
++                {
++                    if (now - lastCycleMs >= cycleMs)
++                    {
++                        lastCycleMs = now;
++                        currentFlightIndex = (currentFlightIndex + 1) % flights.size();
++                    }
++                }
++                else
++                {
++                    currentFlightIndex = 0;
++                }
++
++                g_display.renderFlight(flights, currentFlightIndex % flights.size());
++            }
++            else
++            {
++                g_display.showLoading();
++            }
++        }
++
++        // Log stack high watermark at verbose level for tuning
++#if LOG_LEVEL >= 3
++        static unsigned long lastStackLogMs = 0;
++        const unsigned long nowMs = millis();
++        if (nowMs - lastStackLogMs >= 30000UL)
++        {
++            lastStackLogMs = nowMs;
++            Serial.println("[DisplayTask] Stack HWM: " + String(uxTaskGetStackHighWaterMark(NULL)) + " bytes");
++        }
++#endif
++
++        // Reset watchdog and yield (~20fps frame rate)
++        esp_task_wdt_reset();
++        vTaskDelay(pdMS_TO_TICKS(50));
++    }
++}
++
++// --- setup() (Task 3) ---
++
++void setup()
++{
++    Serial.begin(115200);
++    delay(200);
++
++    if (!LittleFS.begin(true)) {
++        LOG_E("Main", "LittleFS mount failed");
++    } else {
++        LOG_I("Main", "LittleFS mounted");
++    }
++
++    ConfigManager::init();
++    SystemStatus::init();
++
++    // Display initialization before task creation (setup runs on Core 1)
++    g_display.initialize();
++    g_display.showLoading();
++
++    // Create flight data queue (length 1, stores a pointer)
++    g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData *));
++    if (g_flightQueue == nullptr) {
++        LOG_E("Main", "Failed to create flight data queue");
++    } else {
++        LOG_I("Main", "Flight data queue created");
++    }
++
++    g_displayMessageQueue = xQueueCreate(1, sizeof(DisplayStatusMessage));
++    if (g_displayMessageQueue == nullptr) {
++        LOG_E("Main", "Failed to create display message queue");
++    } else {
++        LOG_I("Main", "Display message queue created");
++    }
++
++    // Register config change callback (sets atomic flag for display task)
++    ConfigManager::onChange([]() {
++        g_configChanged.store(true);
++    });
++    LOG_I("Main", "Config change callback registered");
++
++    // Create display task pinned to Core 0 (priority 1, 8KB stack)
++    BaseType_t taskResult = xTaskCreatePinnedToCore(
++        displayTask,
++        "display",
++        8192,
++        NULL,
++        1,
++        NULL,
++        0
++    );
++    if (taskResult == pdPASS) {
++        LOG_I("Main", "Display task created on Core 0 (8KB stack, priority 1)");
++    } else {
++        LOG_E("Main", "Failed to create display task");
++    }
++
++    // WiFiManager initialization (non-blocking, event-driven)
++    // Per architecture Decision 5: WiFiManager before WebPortal
++    g_wifiManager.init();
++
++    // Activate startup progress coordinator when WiFi credentials exist
++    // (i.e. this is a post-setup boot, not first-time AP mode)
++    if (g_wifiManager.getState() == WiFiState::CONNECTING)
++    {
++        enterPhase(StartupPhase::CONNECTING_WIFI);
++        queueDisplayMessage(String("Connecting to WiFi..."));
++        LOG_I("Main", "Startup progress active: connecting to WiFi");
++    }
++    else
++    {
++        showInitialWiFiMessage();
++    }
++
++    g_wifiManager.onStateChange([](WiFiState oldState, WiFiState newState) {
++        (void)oldState;
++        queueWiFiStateMessage(newState);
++    });
++
++    // WebPortal initialization — register routes then start server
++    // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
++    g_webPortal.init(g_webServer, g_wifiManager);
++
++    // Register reboot callback so "Saving config..." shows on LED before restart
++    g_webPortal.onReboot([]() {
++        enterPhase(StartupPhase::SAVING_CONFIG);
++        queueDisplayMessage(String("Saving config..."));
++        LOG_I("Main", "Startup: saving config before reboot");
++    });
++
++    g_webPortal.begin();
++    LOG_I("Main", "WebPortal started");
++
++    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
++    if (g_fetcher == nullptr)
++    {
++        LOG_E("Main", "Failed to create FlightDataFetcher");
++    }
++    LOG_I("Main", "Setup complete");
++}
++
++// --- Startup progress coordinator tick (Story 1.8) ---
++// Drives the progress state machine from loop() on Core 1.
++// Each phase transition waits for a real event (WiFi connect, fetch complete)
++// rather than blasting the queue. Returns true if a first-fetch should run now.
++
++static bool tickStartupProgress()
++{
++    if (g_startupPhase == StartupPhase::IDLE ||
++        g_startupPhase == StartupPhase::COMPLETE)
++    {
++        return false;
++    }
++
++    const unsigned long elapsed = millis() - g_phaseEnteredMs;
++
++    switch (g_startupPhase)
++    {
++        case StartupPhase::SAVING_CONFIG:
++            // Display persists until reboot — no transition needed here
++            break;
++
++        case StartupPhase::CONNECTING_WIFI:
++            // Waiting for WiFi callback to advance to WIFI_CONNECTED or WIFI_FAILED
++            break;
++
++        case StartupPhase::WIFI_CONNECTED:
++            // Show "WiFi Connected ✓" briefly, then IP, then move to auth
++            if (elapsed < 2000)
++            {
++                // Still showing "WiFi Connected"
++            }
++            else if (elapsed < 4000)
++            {
++                // Show IP address for discovery (use phase time to gate, not a flag)
++                if (elapsed >= 2000 && elapsed < 2100)
++                {
++                    queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 2000);
++                }
++            }
++            else
++            {
++                // Advance to authentication phase
++                enterPhase(StartupPhase::AUTHENTICATING);
++                queueDisplayMessage(String("Authenticating APIs..."));
++                LOG_I("Main", "Startup: authenticating APIs");
++                return true; // Signal loop() to trigger first fetch
++            }
++            break;
++
++        case StartupPhase::WIFI_FAILED:
++            // Terminal state — device returns to AP/setup mode
++            // WiFiManager handles the AP fallback; message stays visible
++            if (elapsed >= 5000)
++            {
++                // After showing failure message, return to idle
++                // (device is now in AP mode, user must re-run wizard)
++                enterPhase(StartupPhase::IDLE);
++            }
++            break;
++
++        case StartupPhase::AUTHENTICATING:
++            // Waiting for first fetch to begin — transition driven by loop()
++            break;
++
++        case StartupPhase::FETCHING_FLIGHTS:
++            // Waiting for fetch to complete — transition driven by loop()
++            break;
++
++        default:
++            break;
++    }
++
++    return false;
++}
++
++// --- loop() (Task 4) ---
++
++void loop()
++{
++    ConfigManager::tick();
++    g_wifiManager.tick();
++
++    if (g_fetcher == nullptr)
++    {
++        delay(1000);
++        return;
++    }
++
++    // Drive startup progress coordinator
++    bool triggerFirstFetch = tickStartupProgress();
++
++    // Determine if we should fetch now
++    const unsigned long intervalMs = ConfigManager::getTiming().fetch_interval * 1000UL;
++    const unsigned long now = millis();
++    bool normalFetchDue = (now - g_lastFetchMs >= intervalMs);
++
++    // First-fetch one-shot: when startup coordinator says go, fetch immediately
++    // regardless of the normal interval timer
++    if (triggerFirstFetch && !g_firstFetchDone)
++    {
++        normalFetchDue = true;
++        LOG_I("Main", "Startup: triggering first fetch immediately");
++    }
++
++    if (normalFetchDue)
++    {
++        g_lastFetchMs = now;
++
++        // Show "Fetching flights..." during startup progress
++        if (g_startupPhase == StartupPhase::AUTHENTICATING ||
++            g_startupPhase == StartupPhase::FETCHING_FLIGHTS)
++        {
++            if (g_startupPhase == StartupPhase::AUTHENTICATING)
++            {
++                enterPhase(StartupPhase::FETCHING_FLIGHTS);
++                queueDisplayMessage(String("Fetching flights..."));
++                LOG_I("Main", "Startup: fetching flights");
++            }
++        }
++
++        std::vector<StateVector> states;
++        std::vector<FlightInfo> flights;
++        size_t enriched = g_fetcher->fetchFlights(states, flights);
++
++        Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
++
++#if LOG_LEVEL >= 3
++        for (const auto &s : states)
++        {
++            Serial.println("[Main] " + s.callsign + " @ " + String(s.distance_km, 1) + "km bearing " + String(s.bearing_deg, 1));
++        }
++
++        for (const auto &f : flights)
++        {
++            Serial.println("[Main] Flight: " + f.ident + " " + f.airline_display_name_full + " " + f.origin.code_icao + "->" + f.destination.code_icao);
++        }
++#endif
++
++        // Write flight data to double buffer and push pointer to queue
++        g_flightBuf[g_writeBuf].flights = flights;
++        FlightDisplayData *ptr = &g_flightBuf[g_writeBuf];
++        if (g_flightQueue != nullptr)
++        {
++            xQueueOverwrite(g_flightQueue, &ptr);
++        }
++        g_writeBuf ^= 1; // swap buffer for next write
++
++        // Complete startup progress after first fetch
++        if (!g_firstFetchDone &&
++            (g_startupPhase == StartupPhase::FETCHING_FLIGHTS ||
++             g_startupPhase == StartupPhase::AUTHENTICATING))
++        {
++            g_firstFetchDone = true;
++            enterPhase(StartupPhase::COMPLETE);
++
++            if (!flights.empty())
++            {
++                // Clear progress message so display task renders flight data
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: first flight data ready");
++            }
++            else
++            {
++                // No flights available — fall back to normal loading screen
++                // (display task will show showLoading() when flight list is empty)
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: no flights yet, showing loading");
++            }
++        }
++    }
++}
++
++#endif // PIO_UNIT_TESTING
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+new file mode 100644
+index 0000000..b9d4ee8
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.cpp
+@@ -0,0 +1,341 @@
++/*
++Purpose: Web server adapter serving gzipped HTML pages and REST API endpoints.
++Responsibilities:
++- Serve wizard.html.gz in AP mode, dashboard.html.gz in STA mode via GET /.
++- Expose JSON API: GET/POST /api/settings, GET /api/status, POST /api/reboot, GET /api/wifi/scan.
++- Use consistent JSON envelope: { "ok": bool, "data": ..., "error": "...", "code": "..." }.
++Architecture: ESPAsyncWebServer (mathieucarbou fork) — non-blocking, runs on AsyncTCP task.
++
++JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
++  Display:   brightness, text_color_r, text_color_g, text_color_b
++  Location:  center_lat, center_lon, radius_km
++  Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
++  Timing:    fetch_interval, display_cycle
++  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
++*/
++#include "adapters/WebPortal.h"
++#include <LittleFS.h>
++#include <ArduinoJson.h>
++#include <WiFi.h>
++#include <vector>
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "utils/Log.h"
++
++namespace {
++struct PendingRequestBody {
++    AsyncWebServerRequest* request;
++    String body;
++};
++
++std::vector<PendingRequestBody> g_pendingBodies;
++constexpr size_t MAX_SETTINGS_BODY_BYTES = 4096;
++
++PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
++    for (auto& pending : g_pendingBodies) {
++        if (pending.request == request) {
++            return &pending;
++        }
++    }
++    return nullptr;
++}
++
++void clearPendingBody(AsyncWebServerRequest* request) {
++    for (auto it = g_pendingBodies.begin(); it != g_pendingBodies.end(); ++it) {
++        if (it->request == request) {
++            g_pendingBodies.erase(it);
++            return;
++        }
++    }
++}
++} // namespace
++
++void WebPortal::init(AsyncWebServer& server, WiFiManager& wifiMgr) {
++    _server = &server;
++    _wifiMgr = &wifiMgr;
++    _registerRoutes();
++    LOG_I("WebPortal", "Routes registered");
++}
++
++void WebPortal::begin() {
++    if (!_server) return;
++    _server->begin();
++    LOG_I("WebPortal", "Server started on port 80");
++}
++
++void WebPortal::onReboot(RebootCallback callback) {
++    _rebootCallback = callback;
++}
++
++void WebPortal::_registerRoutes() {
++    // GET / — serve wizard or dashboard based on WiFi mode
++    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleRoot(request);
++    });
++
++    // GET /api/settings
++    _server->on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetSettings(request);
++    });
++
++    // POST /api/settings — uses body handler for JSON parsing
++    _server->on("/api/settings", HTTP_POST,
++        // request handler (called after body is received)
++        [](AsyncWebServerRequest* request) {
++            // no-op: response sent in body handler
++        },
++        nullptr, // upload handler
++        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
++            if (data == nullptr || total == 0) {
++                clearPendingBody(request);
++                _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++                return;
++            }
++
++            if (total > MAX_SETTINGS_BODY_BYTES) {
++                clearPendingBody(request);
++                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
++                return;
++            }
++
++            if (index == 0) {
++                clearPendingBody(request);
++                PendingRequestBody pending{request, String()};
++                pending.body.reserve(total);
++                g_pendingBodies.push_back(pending);
++            }
++
++            PendingRequestBody* pending = findPendingBody(request);
++            if (pending == nullptr) {
++                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
++                return;
++            }
++
++            for (size_t i = 0; i < len; ++i) {
++                pending->body += static_cast<char>(data[i]);
++            }
++
++            if (index + len == total) {
++                _handlePostSettings(
++                    request,
++                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
++                    pending->body.length()
++                );
++                clearPendingBody(request);
++            }
++        }
++    );
++
++    // GET /api/status
++    _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetStatus(request);
++    });
++
++    // POST /api/reboot
++    _server->on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
++        _handlePostReboot(request);
++    });
++
++    // GET /api/wifi/scan
++    _server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
++        _handleGetWifiScan(request);
++    });
++
++    // Shared static assets (gzipped on LittleFS)
++    _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/style.css.gz", "text/css");
++    });
++    _server->on("/common.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/common.js.gz", "application/javascript");
++    });
++    _server->on("/wizard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
++        _serveGzAsset(request, "/wizard.js.gz", "application/javascript");
++    });
++}
++
++void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
++    WiFiState state = _wifiMgr->getState();
++    const char* file;
++    if (state == WiFiState::AP_SETUP || state == WiFiState::AP_FALLBACK) {
++        file = "/wizard.html.gz";
++    } else {
++        // STA_CONNECTED, CONNECTING, STA_RECONNECTING — serve dashboard
++        file = "/dashboard.html.gz";
++    }
++
++    if (!LittleFS.exists(file)) {
++        _sendJsonError(request, 404, "Asset not found", "ASSET_MISSING");
++        return;
++    }
++
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, file, "text/html");
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_handleGetSettings(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    ConfigManager::dumpSettingsJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
++    JsonDocument doc;
++    DeserializationError err = deserializeJson(doc, data, len);
++    if (err) {
++        _sendJsonError(request, 400, "Invalid JSON", "PARSE_ERROR");
++        return;
++    }
++
++    if (!doc.is<JsonObject>()) {
++        _sendJsonError(request, 400, "Expected JSON object", "INVALID_PAYLOAD");
++        return;
++    }
++
++    JsonObject settings = doc.as<JsonObject>();
++    if (settings.size() == 0) {
++        _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
++        return;
++    }
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++    if (result.applied.size() != settings.size()) {
++        _sendJsonError(request, 400, "Unknown or invalid settings key", "INVALID_SETTING");
++        return;
++    }
++
++    JsonDocument respDoc;
++    JsonObject resp = respDoc.to<JsonObject>();
++    resp["ok"] = true;
++    JsonArray applied = resp["applied"].to<JsonArray>();
++    for (const String& key : result.applied) {
++        applied.add(key);
++    }
++    resp["reboot_required"] = result.reboot_required;
++
++    String output;
++    serializeJson(respDoc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    JsonObject data = root["data"].to<JsonObject>();
++    SystemStatus::toJson(data);
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_handlePostReboot(AsyncWebServerRequest* request) {
++    // Flush all pending NVS writes before restart
++    ConfigManager::persistAllNow();
++
++    // Notify main coordinator to show "Saving config..." on LED
++    if (_rebootCallback) {
++        _rebootCallback();
++    }
++
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["message"] = "Rebooting...";
++
++    String output;
++    serializeJson(doc, output);
++
++    // Send response first, then schedule restart
++    request->send(200, "application/json", output);
++
++    // Delay restart slightly so the HTTP response can be sent
++    // Use a one-shot timer to avoid blocking the async callback
++    static esp_timer_handle_t rebootTimer = nullptr;
++    if (!rebootTimer) {
++        esp_timer_create_args_t args = {};
++        args.callback = [](void*) { ESP.restart(); };
++        args.name = "reboot";
++        esp_timer_create(&args, &rebootTimer);
++    }
++    esp_timer_start_once(rebootTimer, 1000000); // 1 second in microseconds
++}
++
++void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
++    int16_t scanResult = WiFi.scanComplete();
++
++    if (scanResult == WIFI_SCAN_FAILED) {
++        // No scan running — kick off an async scan
++        WiFi.scanNetworks(true); // async=true
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    if (scanResult == WIFI_SCAN_RUNNING) {
++        // Scan still in progress
++        JsonDocument doc;
++        JsonObject root = doc.to<JsonObject>();
++        root["ok"] = true;
++        root["scanning"] = true;
++        root["data"].to<JsonArray>();
++        String output;
++        serializeJson(doc, output);
++        request->send(200, "application/json", output);
++        return;
++    }
++
++    // Scan complete — return results
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = true;
++    root["scanning"] = false;
++    JsonArray data = root["data"].to<JsonArray>();
++
++    for (int i = 0; i < scanResult; i++) {
++        JsonObject net = data.add<JsonObject>();
++        net["ssid"] = WiFi.SSID(i);
++        net["rssi"] = WiFi.RSSI(i);
++    }
++
++    // Free scan memory for next scan
++    WiFi.scanDelete();
++
++    String output;
++    serializeJson(doc, output);
++    request->send(200, "application/json", output);
++}
++
++void WebPortal::_serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType) {
++    if (!LittleFS.exists(path)) {
++        request->send(404, "text/plain", "Not found");
++        return;
++    }
++    AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, contentType);
++    response->addHeader("Content-Encoding", "gzip");
++    request->send(response);
++}
++
++void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {
++    JsonDocument doc;
++    JsonObject root = doc.to<JsonObject>();
++    root["ok"] = false;
++    root["error"] = error;
++    root["code"] = code;
++    String output;
++    serializeJson(doc, output);
++    request->send(httpCode, "application/json", output);
++}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.h b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.h
+new file mode 100644
+index 0000000..68757f8
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/adapters/WebPortal.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++#include <Arduino.h>
++#include <ESPAsyncWebServer.h>
++#include <functional>
++#include "adapters/WiFiManager.h"
++
++class WebPortal {
++public:
++    using RebootCallback = std::function<void()>;
++
++    void init(AsyncWebServer& server, WiFiManager& wifiMgr);
++    void begin();
++    void onReboot(RebootCallback callback);
++
++private:
++    AsyncWebServer* _server = nullptr;
++    WiFiManager* _wifiMgr = nullptr;
++    RebootCallback _rebootCallback = nullptr;
++
++    void _registerRoutes();
++    void _handleRoot(AsyncWebServerRequest* request);
++    void _handleGetSettings(AsyncWebServerRequest* request);
++    void _handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len);
++    void _handleGetStatus(AsyncWebServerRequest* request);
++    void _handlePostReboot(AsyncWebServerRequest* request);
++    void _handleGetWifiScan(AsyncWebServerRequest* request);
++
++    static void _serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType);
++    void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);
++};

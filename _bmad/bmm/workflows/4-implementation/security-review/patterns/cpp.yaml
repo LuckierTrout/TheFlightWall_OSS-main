@@ -1,0 +1,114 @@
+# C/C++-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-120
+    severity: HIGH
+    tier: 1
+    title: "C/C++: buffer overflow via strcpy/strcat/sprintf"
+    vulnerable_example: |
+      char buf[64];
+      strcpy(buf, user_input);       // no bounds check
+      strcat(buf, suffix);           // can overflow
+      sprintf(buf, "Hello %s", name); // no size limit
+    safe_example: |
+      char buf[64];
+      strncpy(buf, user_input, sizeof(buf) - 1);
+      buf[sizeof(buf) - 1] = '\0';
+      strncat(buf, suffix, sizeof(buf) - strlen(buf) - 1);
+      snprintf(buf, sizeof(buf), "Hello %s", name);
+    detection_hint: "strcpy(), strcat(), sprintf() without size-bounded alternatives"
+
+  - cwe_id: CWE-401
+    severity: HIGH
+    tier: 1
+    title: "C/C++: memory leak from malloc without free"
+    vulnerable_example: |
+      void process() {
+          char *buf = (char *)malloc(1024);
+          if (error_condition) return;  // buf leaked
+          // ... use buf ...
+          free(buf);
+      }
+    safe_example: |
+      void process() {
+          std::unique_ptr<char[]> buf(new char[1024]);
+          if (error_condition) return;  // automatically freed
+          // ... use buf.get() ...
+      }
+    detection_hint: "malloc()/calloc() with early return paths before corresponding free()"
+
+  - cwe_id: CWE-134
+    severity: HIGH
+    tier: 1
+    title: "C/C++: format string vulnerability"
+    vulnerable_example: |
+      printf(user_input);            // attacker controls format string
+      fprintf(stderr, user_message); // can read/write stack memory
+      syslog(LOG_ERR, error_msg);    // format string injection
+    safe_example: |
+      printf("%s", user_input);
+      fprintf(stderr, "%s", user_message);
+      syslog(LOG_ERR, "%s", error_msg);
+    detection_hint: "printf(), fprintf(), syslog() with variable as format string (no format specifier)"
+
+  - cwe_id: CWE-242
+    severity: HIGH
+    tier: 1
+    title: "C/C++: use of inherently dangerous gets()"
+    vulnerable_example: |
+      char buf[256];
+      gets(buf);  // no way to limit input length, always exploitable
+    safe_example: |
+      char buf[256];
+      if (fgets(buf, sizeof(buf), stdin) != NULL) {
+          buf[strcspn(buf, "\n")] = '\0';  // remove trailing newline
+      }
+    detection_hint: "gets() function call (removed in C11, always a vulnerability)"
+
+  - cwe_id: CWE-190
+    severity: HIGH
+    tier: 1
+    title: "C/C++: integer overflow without bounds check"
+    vulnerable_example: |
+      size_t total = count * sizeof(struct item);  // overflow if count is large
+      void *buf = malloc(total);  // allocates too-small buffer
+      int result = a + b;  // signed overflow is undefined behavior
+    safe_example: |
+      if (count > SIZE_MAX / sizeof(struct item)) { return -EINVAL; }
+      size_t total = count * sizeof(struct item);
+      void *buf = malloc(total);
+      // Or use compiler builtins:
+      if (__builtin_add_overflow(a, b, &result)) { return -EOVERFLOW; }
+    detection_hint: "multiplication used in malloc size argument without overflow check"
+
+  - cwe_id: CWE-416
+    severity: HIGH
+    tier: 1
+    title: "C/C++: use-after-free"
+    vulnerable_example: |
+      char *ptr = (char *)malloc(128);
+      free(ptr);
+      strcpy(ptr, "data");  // use-after-free
+    safe_example: |
+      char *ptr = (char *)malloc(128);
+      free(ptr);
+      ptr = NULL;  // prevent accidental reuse
+    detection_hint: "pointer dereference or use after free() without setting to NULL"
+
+  - cwe_id: CWE-676
+    severity: HIGH
+    tier: 1
+    title: "C/C++: use of dangerous string functions"
+    vulnerable_example: |
+      char dst[64];
+      memcpy(dst, src, len);   // len not validated against dst size
+      strtok(shared_buf, ","); // not thread-safe, modifies input
+    safe_example: |
+      char dst[64];
+      if (len > sizeof(dst)) { return -1; }
+      memcpy(dst, src, len);
+      // Use strtok_r for thread safety
+      char *saveptr;
+      char *token = strtok_r(local_buf, ",", &saveptr);
+    detection_hint: "memcpy() with unchecked length or strtok() in multi-threaded context"

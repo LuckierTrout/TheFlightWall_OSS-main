@@ -1,0 +1,403 @@
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+new file mode 100644
+index 0000000..cf7b4af
+--- /dev/null
++++ b/firmware/src/main.cpp
+@@ -0,0 +1,255 @@
++/*
++Purpose: Firmware entry point for ESP32.
++Responsibilities:
++- Initialize serial, connect to Wi-Fi, and construct fetchers and display.
++- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
++- Display task on Core 0 reads queue and renders to LED matrix independently.
++Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
++Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
++*/
++#include <vector>
++#include <atomic>
++#include <WiFi.h>
++#include <HTTPClient.h>
++#include <WiFiClientSecure.h>
++#include <LittleFS.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <freertos/queue.h>
++#include "esp_task_wdt.h"
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "adapters/OpenSkyFetcher.h"
++#include "adapters/AeroAPIFetcher.h"
++#include "core/FlightDataFetcher.h"
++#include "adapters/NeoMatrixDisplay.h"
++#include "adapters/WiFiManager.h"
++
++#ifndef PIO_UNIT_TESTING
++
++// --- Shared data structures (Task 1) ---
++
++struct FlightDisplayData {
++    std::vector<FlightInfo> flights;
++};
++
++// Double buffer for safe cross-core data transfer (no memcpy of String/vector)
++static FlightDisplayData g_flightBuf[2];
++static uint8_t g_writeBuf = 0;
++
++// FreeRTOS queue holding a pointer to the current read buffer
++static QueueHandle_t g_flightQueue = nullptr;
++
++// Atomic flag for config change notification (Core 1 sets, Core 0 reads)
++static std::atomic<bool> g_configChanged(false);
++
++// --- Existing globals ---
++
++static OpenSkyFetcher g_openSky;
++static AeroAPIFetcher g_aeroApi;
++static FlightDataFetcher *g_fetcher = nullptr;
++static NeoMatrixDisplay g_display;
++static WiFiManager g_wifiManager;
++
++static unsigned long g_lastFetchMs = 0;
++
++// --- Display task (Task 2) ---
++
++void displayTask(void *pvParameters)
++{
++    LOG_I("DisplayTask", "Display task started");
++
++    // Read initial config as local copies
++    DisplayConfig localDisp = ConfigManager::getDisplay();
++    TimingConfig localTiming = ConfigManager::getTiming();
++
++    // Flight cycling state (owned by display task)
++    size_t currentFlightIndex = 0;
++    unsigned long lastCycleMs = millis();
++
++    // Subscribe to task watchdog
++    esp_task_wdt_add(NULL);
++
++    for (;;)
++    {
++        // AC3: Check config change atomic flag each frame
++        if (g_configChanged.exchange(false))
++        {
++            LOG_I("DisplayTask", "Config change detected");
++            localDisp = ConfigManager::getDisplay();
++            localTiming = ConfigManager::getTiming();
++
++            // Apply brightness update immediately
++            g_display.updateBrightness(localDisp.brightness);
++        }
++
++        // AC2: Peek latest flight data without removing from queue
++        FlightDisplayData *displayData = nullptr;
++        if (xQueuePeek(g_flightQueue, &displayData, 0) == pdTRUE && displayData != nullptr)
++        {
++            const std::vector<FlightInfo> &flights = displayData->flights;
++
++            if (!flights.empty())
++            {
++                // Flight cycling logic owned by display task
++                const unsigned long now = millis();
++                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
++
++                if (flights.size() > 1 && now - lastCycleMs >= cycleMs)
++                {
++                    lastCycleMs = now;
++                    currentFlightIndex = (currentFlightIndex + 1) % flights.size();
++                }
++                else if (flights.size() == 1)
++                {
++                    currentFlightIndex = 0;
++                }
++
++                // Render single flight (display task owns rendering)
++                g_display.renderFlight(flights[currentFlightIndex]);
++            }
++            else
++            {
++                g_display.showLoading();
++            }
++        }
++        else
++        {
++            // No data yet — show loading screen
++            g_display.showLoading();
++        }
++
++#if LOG_LEVEL >= 3
++        static unsigned long lastStackLogMs = 0;
++        if (millis() - lastStackLogMs > 30000)  // log every 30s
++        {
++            lastStackLogMs = millis();
++            Serial.print("[DisplayTask] Stack high watermark: ");
++            Serial.println(uxTaskGetStackHighWaterMark(NULL));
++        }
++#endif
++
++        // Reset watchdog and yield (~20fps)
++        esp_task_wdt_reset();
++        vTaskDelay(pdMS_TO_TICKS(50));
++    }
++}
++
++void setup()
++{
++    Serial.begin(115200);
++    delay(200);
++
++    if (!LittleFS.begin(true)) {
++        LOG_E("Main", "LittleFS mount failed");
++    } else {
++        LOG_I("Main", "LittleFS mounted");
++    }
++
++    ConfigManager::init();
++    SystemStatus::init();
++
++    // Register config change callback — Core 1 sets atomic, Core 0 reads it
++    ConfigManager::onChange([]() {
++        g_configChanged = true;
++    });
++
++    // Initialize queue (mailbox semantics: 1 slot, latest data wins)
++    g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData*));
++    if (g_flightQueue == nullptr)
++    {
++        LOG_E("Main", "Failed to create flight queue");
++    }
++    else
++    {
++        LOG_I("Main", "Flight queue created");
++    }
++
++    // Display init happens before task creation
++    g_display.initialize();
++    g_display.showLoading();
++
++    // Create display task on Core 0
++    BaseType_t taskOk = xTaskCreatePinnedToCore(
++        displayTask,
++        "display",
++        8192,      // 8KB stack (bytes on ESP32)
++        NULL,
++        1,         // priority 1
++        NULL,
++        0          // Core 0
++    );
++    if (taskOk != pdPASS)
++    {
++        LOG_E("Main", "Failed to create display task");
++    }
++    else
++    {
++        LOG_I("Main", "Display task created on Core 0");
++    }
++
++    // WiFi setup remains in setup() — WiFiManager is now story 1.4
++    bool wifiOk = g_wifiManager.connect();
++    if (!wifiOk)
++    {
++        LOG_E("Main", "WiFi connection failed");
++        g_display.displayMessage(String("WiFi FAIL"));
++    }
++
++    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
++}
++
++void loop()
++{
++    // AC1: loop() stays on Core 1 and continues ConfigManager::tick()
++    ConfigManager::tick();
++
++    const unsigned long intervalMs = ConfigManager::getTiming().fetch_interval * 1000UL;
++    const unsigned long now = millis();
++    if (now - g_lastFetchMs >= intervalMs)
++    {
++        g_lastFetchMs = now;
++
++        std::vector<StateVector> states;
++        std::vector<FlightInfo> flights;
++        size_t enriched = g_fetcher->fetchFlights(states, flights);
++
++        LOG_I("Main", "Flight fetch cycle complete");
++#if LOG_LEVEL >= 3
++        Serial.print("[Main] OpenSky state vectors: ");
++        Serial.println((int)states.size());
++        Serial.print("[Main] AeroAPI enriched flights: ");
++        Serial.println((int)enriched);
++#endif
++
++        // AC2: Pack results into double buffer and overwrite queue with pointer
++        g_flightBuf[g_writeBuf].flights = flights;
++        FlightDisplayData *ptr = &g_flightBuf[g_writeBuf];
++        xQueueOverwrite(g_flightQueue, &ptr);
++        g_writeBuf ^= 1;  // swap buffers
++
++        LOG_V("Main", "Flight data queued for display task");
++    }
++
++    // No delay() — loop naturally yields via fetch interval timer
++}
++
++#endif // PIO_UNIT_TESTING
+diff --git a/firmware/adapters/NeoMatrixDisplay.h b/firmware/adapters/NeoMatrixDisplay.h
+new file mode 100644
+index 0000000..0caab66
+--- /dev/null
++++ b/firmware/adapters/NeoMatrixDisplay.h
+@@ -0,0 +1,36 @@
++#pragma once
++
++#include <stdint.h>
++#include <vector>
++#include "interfaces/BaseDisplay.h"
++
++class FastLED_NeoMatrix;
++struct CRGB;
++
++class NeoMatrixDisplay : public BaseDisplay
++{
++public:
++    NeoMatrixDisplay();
++    ~NeoMatrixDisplay() override;
++
++    bool initialize() override;
++    void clear() override;
++    void displayFlights(const std::vector<FlightInfo> &flights) override;
++    void displayMessage(const String &message);
++    void showLoading();
++
++    // Story 1.3: task-safe display task methods
++    void updateBrightness(uint8_t brightness);
++    void renderFlight(const FlightInfo &flight);
++
++private:
++    FastLED_NeoMatrix *_matrix = nullptr;
++    CRGB *_leds = nullptr;
++
++    uint16_t _matrixWidth = 0;
++    uint16_t _matrixHeight = 0;
++    uint32_t _numPixels = 0;
++
++    void drawTextLine(int16_t x, int16_t y, const String &text, uint16_t color);
++    String makeFlightLine(const FlightInfo &f);
++    String truncateToColumns(const String &text, int maxColumns);
++    void displaySingleFlightCard(const FlightInfo &f);
++    void displayLoadingScreen();
++};
+diff --git a/firmware/adapters/NeoMatrixDisplay.cpp b/firmware/adapters/NeoMatrixDisplay.cpp
+new file mode 100644
+index 0000000..6ea0988
+--- /dev/null
++++ b/firmware/adapters/NeoMatrixDisplay.cpp
+@@ -0,0 +1,103 @@
++/*
++Purpose: Render flight info on a WS2812B NeoPixel matrix via FastLED_NeoMatrix.
++Responsibilities:
++- Initialize LED matrix based on HardwareConfiguration and user display settings.
++- Render a bordered, three-line flight “card” and a minimal loading screen.
++- Cycle through multiple flights at a configurable interval.
++Inputs: FlightInfo list; ConfigManager for colors/brightness/timing/hardware.
++Outputs: Visual output to LED matrix using FastLED.
++*/
++#include "adapters/NeoMatrixDisplay.h"
++
++#include <Adafruit_GFX.h>
++#include <FastLED_NeoMatrix.h>
++#include <FastLED.h>
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++
++NeoMatrixDisplay::NeoMatrixDisplay() {}
++
++NeoMatrixDisplay::~NeoMatrixDisplay()
++{
++    if (_leds)
++    {
++        delete[] _leds;
++        _leds = nullptr;
++    }
++    if (_matrix)
++    {
++        delete _matrix;
++        _matrix = nullptr;
++    }
++}
++
++bool NeoMatrixDisplay::initialize()
++{
++    HardwareConfig hw = ConfigManager::getHardware();
++    DisplayConfig disp = ConfigManager::getDisplay();
++
++    _matrixWidth = hw.tile_pixels * hw.tiles_x;
++    _matrixHeight = hw.tile_pixels * hw.tiles_y;
++    _numPixels = (uint32_t)_matrixWidth * (uint32_t)_matrixHeight;
++
++    _leds = new CRGB[_numPixels];
++
++    _matrix = new FastLED_NeoMatrix(
++        _leds,
++        hw.tile_pixels,
++        hw.tile_pixels,
++        hw.tiles_x,
++        hw.tiles_y,
++        NEO_MATRIX_BOTTOM + NEO_MATRIX_RIGHT +
++            NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG +
++            NEO_TILE_TOP + NEO_TILE_RIGHT + NEO_TILE_COLUMNS + NEO_TILE_ZIGZAG);
++
++    // Story 1.2: display_pin handled via runtime-to-template mapping
++    configureStripForPin(hw.display_pin, _leds, _numPixels);
++    _matrix->setTextWrap(false);
++    _matrix->setTextSize(1);
++    _matrix->setBrightness(disp.brightness);
++    clear();
++    return true;
++}
++
++void NeoMatrixDisplay::updateBrightness(uint8_t brightness)
++{
++    if (_matrix)
++    {
++        _matrix->setBrightness(brightness);
++        FastLED.show();
++    }
++}
++
++void NeoMatrixDisplay::renderFlight(const FlightInfo &flight)
++{
++    if (_matrix == nullptr)
++        return;
++
++    _matrix->fillScreen(0);
++    displaySingleFlightCard(flight);
++    FastLED.show();
++}
++
++void NeoMatrixDisplay::clear()
++{
++    if (_matrix)
++    {
++        _matrix->fillScreen(0);
++        FastLED.show();
++    }
++}
++
++void NeoMatrixDisplay::displayFlights(const std::vector<FlightInfo> &flights)
++{
++    // Retained for BaseDisplay compatibility; display task uses renderFlight()
++    if (!flights.empty())
++    {
++        renderFlight(flights[0]);
++    }
++    else
++    {
++        showLoading();
++    }
++}
++
++void NeoMatrixDisplay::showLoading()
++{
++    displayLoadingScreen();
++}

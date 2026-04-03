@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TheFlightWall — UX Design Direction</title>
+<style>
+  /* === DESIGN TOKENS === */
+  :root {
+    --bg-primary: #1a1a2e;
+    --bg-surface: #222240;
+    --bg-input: #2a2a4a;
+    --text-primary: #e0e0e0;
+    --text-secondary: #b0b0c0;
+    --accent: #4fc3f7;
+    --accent-dim: #2a6a8a;
+    --success: #66bb6a;
+    --warning: #ffa726;
+    --error: #ef5350;
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
+    --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-size-sm: 0.85rem;
+    --font-size-md: 1rem;
+    --font-size-lg: 1.25rem;
+    --radius: 6px;
+    --max-width: 480px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    line-height: 1.5;
+    color: var(--text-primary);
+    background: #111;
+  }
+
+  /* === SHOWCASE LAYOUT === */
+  .showcase-header {
+    text-align: center;
+    padding: var(--space-xl) var(--space-md);
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--accent-dim);
+  }
+  .showcase-header h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: var(--space-sm); }
+  .showcase-header p { color: var(--text-secondary); font-size: var(--font-size-sm); }
+
+  .showcase-nav {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--accent-dim);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .showcase-nav button {
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--accent-dim);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius);
+    font-family: var(--font-family);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .showcase-nav button:hover, .showcase-nav button.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+  }
+
+  .mockup-container {
+    display: flex;
+    justify-content: center;
+    padding: var(--space-xl) var(--space-md);
+    min-height: calc(100vh - 140px);
+  }
+
+  /* === PHONE FRAME === */
+  .phone-frame {
+    width: 390px;
+    max-width: 100%;
+    min-height: 700px;
+    background: var(--bg-primary);
+    border-radius: 24px;
+    border: 2px solid var(--accent-dim);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* === SHARED STYLES (mirrors actual design system) === */
+  .page { flex: 1; overflow-y: auto; padding: var(--space-md); }
+  .page-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    margin-bottom: var(--space-lg);
+    text-align: center;
+  }
+  .card {
+    background: var(--bg-surface);
+    border-radius: var(--radius);
+    padding: var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+  .card-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    margin-bottom: var(--space-md);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .field { margin-bottom: var(--space-md); }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    display: block;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--space-xs);
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .field input:focus, .field select:focus {
+    border-color: var(--accent);
+  }
+  .field .helper {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-top: var(--space-xs);
+  }
+
+  .btn-primary {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: var(--radius);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .btn-primary:hover { opacity: 0.9; }
+
+  .btn-secondary {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    cursor: pointer;
+  }
+
+  .btn-danger {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: var(--radius);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    cursor: pointer;
+  }
+
+  /* === WIZARD-SPECIFIC === */
+  .wizard-progress {
+    background: var(--bg-surface);
+    padding: var(--space-sm) var(--space-md);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    border-bottom: 1px solid var(--accent-dim);
+  }
+  .wizard-progress .step-text {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .wizard-progress .bar {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-input);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .wizard-progress .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+  .wizard-nav {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--space-md);
+    background: var(--bg-surface);
+    border-top: 1px solid var(--accent-dim);
+  }
+  .wizard-nav button {
+    padding: 10px 20px;
+    border-radius: var(--radius);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+    cursor: pointer;
+    border: none;
+  }
+  .wizard-nav .back {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--accent-dim);
+  }
+  .wizard-nav .next {
+    background: var(--accent);
+    color: var(--bg-primary);
+    font-weight: 600;
+  }
+
+  /* === DASHBOARD-SPECIFIC === */
+  .dash-header {
+    background: var(--bg-surface);
+    padding: var(--space-md);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--accent-dim);
+  }
+  .dash-header h1 { font-size: var(--font-size-lg); font-weight: 600; }
+
+  .status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: var(--space-xs);
+  }
+  .status-dot.green { background: var(--success); }
+  .status-dot.amber { background: var(--warning); }
+  .status-dot.red { background: var(--error); }
+
+  .health-row {
+    display: flex;
+    justify-content: space-between;
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-size: var(--font-size-sm);
+  }
+  .health-row:last-child { border-bottom: none; }
+  .health-row .label { color: var(--text-secondary); }
+  .health-row .value { color: var(--text-primary); font-weight: 500; }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .slider-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+    height: 6px;
+  }
+  .slider-row .value {
+    min-width: 48px;
+    text-align: right;
+    font-size: var(--font-size-sm);
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* Canvas preview placeholder */
+  .canvas-preview {
+    background: #0a0a18;
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius);
+    padding: var(--space-md);
+    text-align: center;
+    margin-bottom: var(--space-md);
+  }
+  .canvas-preview .matrix {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 2px;
+    margin-bottom: var(--space-sm);
+  }
+  .canvas-preview .tile {
+    aspect-ratio: 1;
+    background: var(--bg-input);
+    border-radius: 2px;
+    font-size: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+  }
+  .canvas-preview .tile.logo { background: var(--accent-dim); }
+  .canvas-preview .tile.flight { background: #2a2a4a; }
+  .canvas-preview .tile.telemetry { background: #1e1e3a; }
+  .canvas-preview .legend {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-md);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+  .canvas-preview .legend span::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .canvas-preview .legend .l-logo::before { background: var(--accent-dim); }
+  .canvas-preview .legend .l-flight::before { background: #2a2a4a; }
+  .canvas-preview .legend .l-telemetry::before { background: #1e1e3a; }
+
+  /* Map placeholder */
+  .map-placeholder {
+    background: #1a2a1a;
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius);
+    height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--space-md);
+    position: relative;
+  }
+  .map-circle {
+    width: 100px;
+    height: 100px;
+    border: 2px dashed var(--accent);
+    border-radius: 50%;
+    position: absolute;
+    opacity: 0.5;
+  }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    top: 160px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--success);
+    color: var(--bg-primary);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    z-index: 200;
+    animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s;
+    opacity: 0;
+  }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+  @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
+
+  .hidden { display: none; }
+
+  /* Annotations */
+  .annotation {
+    background: rgba(79, 195, 247, 0.1);
+    border-left: 3px solid var(--accent);
+    padding: var(--space-sm) var(--space-md);
+    margin: var(--space-md) 0;
+    font-size: var(--font-size-sm);
+    color: var(--accent);
+  }
+</style>
+</head>
+<body>
+
+<div class="showcase-header">
+  <h1>TheFlightWall — UX Design Direction</h1>
+  <p>Dark theme, single-column cards, phone-first. Click between views to explore.</p>
+</div>
+
+<div class="showcase-nav">
+  <button class="active" onclick="showView('wizard')">Setup Wizard</button>
+  <button onclick="showView('dashboard')">Config Dashboard</button>
+  <button onclick="showView('health')">System Health</button>
+</div>
+
+<!-- ==================== WIZARD VIEW ==================== -->
+<div class="mockup-container" id="view-wizard">
+  <div class="phone-frame">
+    <div class="wizard-progress">
+      <span class="step-text">Step 3 of 5</span>
+      <div class="bar"><div class="bar-fill" style="width: 60%"></div></div>
+    </div>
+
+    <div class="page">
+      <div class="page-title">Location</div>
+
+      <div class="annotation">Geolocation button is prominent — one tap to auto-fill coordinates</div>
+
+      <button class="btn-primary" style="margin-bottom: var(--space-lg);">
+        📍 Use My Location
+      </button>
+
+      <div style="text-align: center; color: var(--text-secondary); font-size: var(--font-size-sm); margin-bottom: var(--space-lg);">— or enter manually —</div>
+
+      <div class="card">
+        <div class="field">
+          <label>Latitude</label>
+          <input type="text" value="37.7749" placeholder="e.g. 37.7749">
+        </div>
+        <div class="field">
+          <label>Longitude</label>
+          <input type="text" value="-122.4194" placeholder="e.g. -122.4194">
+        </div>
+        <div class="field">
+          <label>Search Radius (km)</label>
+          <input type="number" value="10" min="1" max="100">
+          <div class="helper">Fine-tune with the interactive map in the dashboard after setup</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="wizard-nav">
+      <button class="back">← Back</button>
+      <button class="next">Next →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== DASHBOARD VIEW ==================== -->
+<div class="mockup-container hidden" id="view-dashboard">
+  <div class="phone-frame">
+    <div class="dash-header">
+      <h1>FlightWall</h1>
+      <span style="font-size: var(--font-size-sm); color: var(--text-secondary);">192.168.1.47</span>
+    </div>
+
+    <div class="page">
+
+      <!-- Display Settings Card -->
+      <div class="card">
+        <div class="card-title">🎨 Display</div>
+        <div class="field">
+          <label>Brightness</label>
+          <div class="slider-row">
+            <input type="range" min="1" max="255" value="25">
+            <span class="value">25</span>
+          </div>
+          <div class="helper">Changes apply instantly to the LED wall</div>
+        </div>
+        <div class="field">
+          <label>Text Color</label>
+          <div style="display: flex; gap: var(--space-sm);">
+            <input type="text" value="255" style="width: 60px; text-align: center;" placeholder="R">
+            <input type="text" value="255" style="width: 60px; text-align: center;" placeholder="G">
+            <input type="text" value="255" style="width: 60px; text-align: center;" placeholder="B">
+          </div>
+        </div>
+      </div>
+
+      <div class="annotation">Hot-reload — slider changes hit the wall in &lt;1 second. No save button needed.</div>
+
+      <!-- Timing Card -->
+      <div class="card">
+        <div class="card-title">⏱️ Timing</div>
+        <div class="field">
+          <label>Check for flights every</label>
+          <div class="slider-row">
+            <input type="range" min="1" max="5" value="2">
+            <span class="value">2 min</span>
+          </div>
+          <div class="helper" style="color: var(--warning);">~2,160 calls/month (limit: 4,000)</div>
+        </div>
+        <div class="field">
+          <label>Show each flight for</label>
+          <div class="slider-row">
+            <input type="range" min="3" max="30" value="5">
+            <span class="value">5 sec</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Location Card -->
+      <div class="card">
+        <div class="card-title">📍 Location</div>
+        <div class="map-placeholder">
+          <div class="map-circle"></div>
+          <span style="z-index:1">Interactive map loads here<br>(Leaflet — lazy loaded)</span>
+        </div>
+        <div class="field">
+          <label>Radius</label>
+          <div class="slider-row">
+            <input type="range" min="1" max="100" value="10">
+            <span class="value">10 km</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Canvas Preview Card -->
+      <div class="card">
+        <div class="card-title">🖥️ Layout Preview</div>
+        <div class="canvas-preview">
+          <div class="matrix">
+            <div class="tile logo"></div><div class="tile logo"></div>
+            <div class="tile flight"></div><div class="tile flight"></div><div class="tile flight"></div><div class="tile flight"></div>
+            <div class="tile telemetry"></div><div class="tile telemetry"></div><div class="tile telemetry"></div><div class="tile telemetry"></div>
+            <div class="tile logo"></div><div class="tile logo"></div>
+            <div class="tile flight"></div><div class="tile flight"></div><div class="tile flight"></div><div class="tile flight"></div>
+            <div class="tile telemetry"></div><div class="tile telemetry"></div><div class="tile telemetry"></div><div class="tile telemetry"></div>
+          </div>
+          <div class="legend">
+            <span class="l-logo">Logo</span>
+            <span class="l-flight">Flight Card</span>
+            <span class="l-telemetry">Telemetry</span>
+          </div>
+        </div>
+        <div class="helper" style="text-align: center;">Canvas updates as you change tile settings</div>
+      </div>
+
+      <!-- Hardware Card -->
+      <div class="card">
+        <div class="card-title">🔧 Hardware</div>
+        <div style="display: flex; gap: var(--space-sm);">
+          <div class="field" style="flex:1">
+            <label>Tiles X</label>
+            <input type="number" value="10">
+          </div>
+          <div class="field" style="flex:1">
+            <label>Tiles Y</label>
+            <input type="number" value="2">
+          </div>
+          <div class="field" style="flex:1">
+            <label>Tile px</label>
+            <input type="number" value="16">
+          </div>
+        </div>
+        <div class="helper">Resolution: 160 × 32 pixels</div>
+      </div>
+
+      <!-- Danger Zone -->
+      <div class="card" style="border: 1px solid rgba(239,83,80,0.3);">
+        <div class="card-title" style="color: var(--error);">⚠️ System</div>
+        <button class="btn-danger" style="margin-bottom: var(--space-sm);">Reset to Defaults</button>
+        <div class="helper" style="text-align: center;">Erases all settings and returns to setup mode</div>
+      </div>
+
+      <div style="height: var(--space-xl);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== HEALTH VIEW ==================== -->
+<div class="mockup-container hidden" id="view-health">
+  <div class="phone-frame">
+    <div class="dash-header">
+      <h1>System Health</h1>
+      <button style="background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--accent-dim); padding: 6px 12px; border-radius: var(--radius); font-size: var(--font-size-sm); cursor: pointer;">Refresh</button>
+    </div>
+
+    <div class="page">
+      <div class="card">
+        <div class="card-title"><span class="status-dot green"></span> WiFi</div>
+        <div class="health-row"><span class="label">Network</span><span class="value">HomeNetwork-5G</span></div>
+        <div class="health-row"><span class="label">Signal</span><span class="value">-52 dBm (Excellent)</span></div>
+        <div class="health-row"><span class="label">IP Address</span><span class="value">192.168.1.47</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="status-dot green"></span> APIs</div>
+        <div class="health-row"><span class="label">OpenSky</span><span class="value" style="color: var(--success);">Authenticated ✓</span></div>
+        <div class="health-row"><span class="label">AeroAPI</span><span class="value" style="color: var(--success);">Connected ✓</span></div>
+        <div class="health-row"><span class="label">FlightWall CDN</span><span class="value" style="color: var(--success);">Reachable ✓</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="status-dot amber"></span> API Quota</div>
+        <div class="health-row"><span class="label">Monthly calls used</span><span class="value">1,247 / 4,000</span></div>
+        <div class="health-row"><span class="label">Current rate</span><span class="value">~2,160/month</span></div>
+        <div class="health-row"><span class="label">Budget status</span><span class="value" style="color: var(--warning);">On pace to exceed</span></div>
+        <div class="annotation">Amber because current fetch rate would exceed monthly limit. User should increase interval or reduce radius.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📊 Device</div>
+        <div class="health-row"><span class="label">Uptime</span><span class="value">14d 7h 32m</span></div>
+        <div class="health-row"><span class="label">Free heap</span><span class="value">142 KB</span></div>
+        <div class="health-row"><span class="label">Max alloc block</span><span class="value">68 KB</span></div>
+        <div class="health-row"><span class="label">LittleFS used</span><span class="value">847 KB / 2048 KB</span></div>
+        <div class="health-row"><span class="label">Logos stored</span><span class="value">28 files</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">✈️ Flight Data</div>
+        <div class="health-row"><span class="label">Last fetch</span><span class="value">12s ago</span></div>
+        <div class="health-row"><span class="label">Flights in range</span><span class="value">4</span></div>
+        <div class="health-row"><span class="label">Enriched</span><span class="value">3 / 4</span></div>
+        <div class="health-row"><span class="label">Logos matched</span><span class="value">2 / 3</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showView(view) {
+  document.querySelectorAll('.mockup-container').forEach(el => el.classList.add('hidden'));
+  document.getElementById('view-' + view).classList.remove('hidden');
+  document.querySelectorAll('.showcase-nav button').forEach(btn => btn.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+// Interactive sliders
+document.querySelectorAll('.slider-row').forEach(row => {
+  const input = row.querySelector('input[type="range"]');
+  const value = row.querySelector('.value');
+  if (input && value) {
+    input.addEventListener('input', () => {
+      const label = row.closest('.field')?.querySelector('label')?.textContent || '';
+      if (label.includes('Brightness')) value.textContent = input.value;
+      else if (label.includes('flights every')) value.textContent = input.value + ' min';
+      else if (label.includes('each flight')) value.textContent = input.value + ' sec';
+      else if (label.includes('Radius')) value.textContent = input.value + ' km';
+      else value.textContent = input.value;
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+id: security-review
+type: security
+name: Security Review Agent
+description: CWE-based security vulnerability analysis running in parallel with code reviewers
+
+instructions: instructions.xml
+
+variables:
+  - security_patterns
+  - detected_languages
+
+context_files:
+  - git-diff
+  - security-patterns

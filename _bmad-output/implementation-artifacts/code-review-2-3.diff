@@ -1,0 +1,2214 @@
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+new file mode 100644
+index 0000000..d1f22f1
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.html
+@@ -0,0 +1,123 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
++<title>FlightWall</title>
++<link rel="stylesheet" href="/style.css">
++</head>
++<body>
++<div class="dashboard">
++  <header class="dash-header">
++    <h1>FlightWall</h1>
++    <p class="dash-ip" id="device-ip"></p>
++    <nav><a href="/health.html">System Health</a></nav>
++  </header>
++
++  <main class="dash-cards">
++    <!-- Display Settings Card -->
++    <section class="card">
++      <h2>Display</h2>
++
++      <label for="brightness">Brightness</label>
++      <div class="range-row">
++        <input type="range" id="brightness" min="0" max="255" value="128">
++        <span class="range-val" id="brightness-val">128</span>
++      </div>
++
++      <label>Text Color</label>
++      <div class="rgb-row">
++        <div class="rgb-field">
++          <input type="number" id="color-r" min="0" max="255" value="255">
++          <span class="rgb-label">R</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-g" min="0" max="255" value="255">
++          <span class="rgb-label">G</span>
++        </div>
++        <div class="rgb-field">
++          <input type="number" id="color-b" min="0" max="255" value="255">
++          <span class="rgb-label">B</span>
++        </div>
++      </div>
++      <div class="color-preview" id="color-preview"></div>
++    </section>
++
++    <!-- Timing Card -->
++    <section class="card">
++      <h2>Timing</h2>
++
++      <label for="fetch-interval">Check for flights every: <span id="fetch-label">10 min</span></label>
++      <div class="range-row">
++        <input type="range" id="fetch-interval" min="30" max="3600" step="30" value="600">
++      </div>
++      <p class="estimate-line" id="fetch-estimate"></p>
++      <p class="estimate-note">OpenSky poll estimate; AeroAPI/CDN calls not included.</p>
++
++      <label for="display-cycle">Cycle flights every: <span id="cycle-label">3 s</span></label>
++      <div class="range-row">
++        <input type="range" id="display-cycle" min="1" max="120" step="1" value="3">
++      </div>
++    </section>
++
++    <!-- Network & API Card -->
++    <section class="card">
++      <h2>Network &amp; API</h2>
++      <div class="form-fields">
++        <label for="d-wifi-ssid">WiFi Network</label>
++        <div class="scan-row-inline" id="d-scan-area" style="display:none">
++          <button type="button" class="link-btn" id="d-btn-scan">Scan for networks</button>
++          <div id="d-scan-results" class="scan-results" style="display:none"></div>
++        </div>
++        <input type="text" id="d-wifi-ssid" autocomplete="off" autocapitalize="off" spellcheck="false">
++
++        <label for="d-wifi-pass">WiFi Password</label>
++        <input type="password" id="d-wifi-pass" autocomplete="off" autocapitalize="off" spellcheck="false">
++
++        <label for="d-os-client-id">OpenSky Client ID</label>
++        <input type="text" id="d-os-client-id" autocomplete="off" autocapitalize="off" spellcheck="false">
++
++        <label for="d-os-client-sec">OpenSky Client Secret</label>
++        <input type="password" id="d-os-client-sec" autocomplete="off" autocapitalize="off" spellcheck="false">
++
++        <label for="d-aeroapi-key">AeroAPI Key</label>
++        <input type="password" id="d-aeroapi-key" autocomplete="off" autocapitalize="off" spellcheck="false">
++      </div>
++      <button type="button" class="apply-btn" id="btn-apply-network">Apply</button>
++    </section>
++
++    <!-- Hardware Card -->
++    <section class="card">
++      <h2>Hardware</h2>
++      <div class="form-fields">
++        <label for="d-tiles-x">Tiles X</label>
++        <input type="text" id="d-tiles-x" inputmode="numeric" autocomplete="off">
++
++        <label for="d-tiles-y">Tiles Y</label>
++        <input type="text" id="d-tiles-y" inputmode="numeric" autocomplete="off">
++
++        <label for="d-tile-pixels">Pixels per tile</label>
++        <input type="text" id="d-tile-pixels" inputmode="numeric" autocomplete="off">
++
++        <label for="d-display-pin">Display data pin (GPIO)</label>
++        <input type="text" id="d-display-pin" inputmode="numeric" autocomplete="off">
++
++        <label for="d-origin-corner">Origin corner</label>
++        <input type="text" id="d-origin-corner" inputmode="numeric" autocomplete="off">
++
++        <label for="d-scan-dir">Scan direction</label>
++        <input type="text" id="d-scan-dir" inputmode="numeric" autocomplete="off">
++
++        <label for="d-zigzag">Zigzag</label>
++        <input type="text" id="d-zigzag" inputmode="numeric" autocomplete="off">
++      </div>
++      <p class="resolution-text" id="d-resolution-text"></p>
++      <button type="button" class="apply-btn" id="btn-apply-hardware">Apply</button>
++    </section>
++  </main>
++</div>
++
++<script src="/common.js"></script>
++<script src="/dashboard.js"></script>
++</body>
++</html>
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+new file mode 100644
+index 0000000..d52c89a
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/dashboard.js
+@@ -0,0 +1,389 @@
++/* FlightWall Dashboard — Display, Timing, Network/API, and Hardware settings */
++(function() {
++  'use strict';
++
++  // --- Display card DOM ---
++  var brightness = document.getElementById('brightness');
++  var brightnessVal = document.getElementById('brightness-val');
++  var colorR = document.getElementById('color-r');
++  var colorG = document.getElementById('color-g');
++  var colorB = document.getElementById('color-b');
++  var colorPreview = document.getElementById('color-preview');
++  var deviceIp = document.getElementById('device-ip');
++
++  // --- Timing card DOM ---
++  var fetchInterval = document.getElementById('fetch-interval');
++  var fetchLabel = document.getElementById('fetch-label');
++  var fetchEstimate = document.getElementById('fetch-estimate');
++  var displayCycle = document.getElementById('display-cycle');
++  var cycleLabel = document.getElementById('cycle-label');
++
++  // --- Network & API card DOM ---
++  var dWifiSsid = document.getElementById('d-wifi-ssid');
++  var dWifiPass = document.getElementById('d-wifi-pass');
++  var dOsClientId = document.getElementById('d-os-client-id');
++  var dOsClientSec = document.getElementById('d-os-client-sec');
++  var dAeroKey = document.getElementById('d-aeroapi-key');
++  var btnApplyNetwork = document.getElementById('btn-apply-network');
++  var dBtnScan = document.getElementById('d-btn-scan');
++  var dScanArea = document.getElementById('d-scan-area');
++  var dScanResults = document.getElementById('d-scan-results');
++
++  // --- Hardware card DOM ---
++  var dTilesX = document.getElementById('d-tiles-x');
++  var dTilesY = document.getElementById('d-tiles-y');
++  var dTilePixels = document.getElementById('d-tile-pixels');
++  var dDisplayPin = document.getElementById('d-display-pin');
++  var dOriginCorner = document.getElementById('d-origin-corner');
++  var dScanDir = document.getElementById('d-scan-dir');
++  var dZigzag = document.getElementById('d-zigzag');
++  var dResText = document.getElementById('d-resolution-text');
++  var btnApplyHardware = document.getElementById('btn-apply-hardware');
++
++  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
++
++  var debounceTimer = null;
++  var DEBOUNCE_MS = 400;
++  var SECONDS_PER_MONTH = 2592000;
++  var OPENSKY_WARN_THRESHOLD = 4000;
++
++  deviceIp.textContent = window.location.hostname || '';
++
++  // --- Load current settings ---
++  function loadSettings() {
++    FW.get('/api/settings').then(function(res) {
++      if (!res.body.ok || !res.body.data) {
++        FW.showToast('Failed to load settings', 'error');
++        return;
++      }
++      var d = res.body.data;
++
++      // Display
++      if (d.brightness !== undefined) {
++        brightness.value = d.brightness;
++        brightnessVal.textContent = d.brightness;
++      }
++      if (d.text_color_r !== undefined) colorR.value = d.text_color_r;
++      if (d.text_color_g !== undefined) colorG.value = d.text_color_g;
++      if (d.text_color_b !== undefined) colorB.value = d.text_color_b;
++      updatePreview();
++
++      // Timing
++      if (d.fetch_interval !== undefined) {
++        fetchInterval.value = d.fetch_interval;
++        fetchLabel.textContent = formatInterval(d.fetch_interval);
++        updateFetchEstimate(d.fetch_interval);
++      }
++      if (d.display_cycle !== undefined) {
++        displayCycle.value = d.display_cycle;
++        updateCycleLabel(d.display_cycle);
++      }
++
++      // Network & API
++      if (d.wifi_ssid !== undefined) dWifiSsid.value = d.wifi_ssid;
++      if (d.wifi_password !== undefined) dWifiPass.value = d.wifi_password;
++      if (d.os_client_id !== undefined) dOsClientId.value = d.os_client_id;
++      if (d.os_client_sec !== undefined) dOsClientSec.value = d.os_client_sec;
++      if (d.aeroapi_key !== undefined) dAeroKey.value = d.aeroapi_key;
++
++      // Hardware
++      if (d.tiles_x !== undefined) dTilesX.value = d.tiles_x;
++      if (d.tiles_y !== undefined) dTilesY.value = d.tiles_y;
++      if (d.tile_pixels !== undefined) dTilePixels.value = d.tile_pixels;
++      if (d.display_pin !== undefined) dDisplayPin.value = d.display_pin;
++      if (d.origin_corner !== undefined) dOriginCorner.value = d.origin_corner;
++      if (d.scan_dir !== undefined) dScanDir.value = d.scan_dir;
++      if (d.zigzag !== undefined) dZigzag.value = d.zigzag;
++      updateHwResolution();
++
++      // Show scan button now that we're in STA mode
++      dScanArea.style.display = '';
++    }).catch(function() {
++      FW.showToast('Cannot reach device', 'error');
++    });
++  }
++
++  // --- Apply settings (hot-reload, no reboot) ---
++  function applySettings(payload) {
++    FW.post('/api/settings', payload).then(function(res) {
++      if (res.body.ok) {
++        FW.showToast('Applied', 'success');
++      } else {
++        FW.showToast(res.body.error || 'Save failed', 'error');
++      }
++    }).catch(function() {
++      FW.showToast('Network error', 'error');
++    });
++  }
++
++  // --- Apply settings with reboot awareness ---
++  function applyWithReboot(payload, btn, originalText) {
++    btn.disabled = true;
++    btn.textContent = 'Applying...';
++    var rebootSent = false;
++
++    FW.post('/api/settings', payload).then(function(res) {
++      if (!res.body.ok) {
++        FW.showToast(res.body.error || 'Save failed', 'error');
++        btn.disabled = false;
++        btn.textContent = originalText;
++        return;
++      }
++      if (res.body.reboot_required) {
++        FW.showToast('Rebooting to apply changes...', 'warning');
++        rebootSent = true;
++        return FW.post('/api/reboot', {});
++      }
++      FW.showToast('Applied', 'success');
++      btn.disabled = false;
++      btn.textContent = originalText;
++    }).then(function(res) {
++      if (!rebootSent) return;
++      // Reboot response received — device will restart
++      btn.textContent = 'Rebooting...';
++    }).catch(function() {
++      if (rebootSent) {
++        // Connection loss after reboot request is expected
++        btn.textContent = 'Rebooting...';
++        return;
++      }
++      FW.showToast('Network error', 'error');
++      btn.disabled = false;
++      btn.textContent = originalText;
++    });
++  }
++
++  function debouncedApply(payload) {
++    clearTimeout(debounceTimer);
++    debounceTimer = setTimeout(function() {
++      applySettings(payload);
++    }, DEBOUNCE_MS);
++  }
++
++  // --- Color preview ---
++  function updatePreview() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorPreview.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
++  }
++
++  function clamp(v) {
++    return Math.max(0, Math.min(255, v));
++  }
++
++  // --- Brightness slider ---
++  brightness.addEventListener('input', function() {
++    brightnessVal.textContent = brightness.value;
++  });
++  brightness.addEventListener('change', function() {
++    applySettings({ brightness: parseInt(brightness.value, 10) });
++  });
++
++  // --- RGB inputs ---
++  function onColorChange() {
++    var r = clamp(parseInt(colorR.value, 10) || 0);
++    var g = clamp(parseInt(colorG.value, 10) || 0);
++    var b = clamp(parseInt(colorB.value, 10) || 0);
++    colorR.value = r;
++    colorG.value = g;
++    colorB.value = b;
++    updatePreview();
++    debouncedApply({
++      text_color_r: r,
++      text_color_g: g,
++      text_color_b: b
++    });
++  }
++
++  colorR.addEventListener('change', onColorChange);
++  colorG.addEventListener('change', onColorChange);
++  colorB.addEventListener('change', onColorChange);
++  colorR.addEventListener('input', updatePreview);
++  colorG.addEventListener('input', updatePreview);
++  colorB.addEventListener('input', updatePreview);
++
++  // --- Timing: fetch interval ---
++  function formatInterval(seconds) {
++    var s = parseInt(seconds, 10);
++    var min = Math.floor(s / 60);
++    var rem = s % 60;
++    if (min === 0) return s + ' s';
++    if (rem === 0) return min + ' min';
++    return min + ' min ' + rem + ' s';
++  }
++
++  function updateFetchEstimate(seconds) {
++    var s = parseInt(seconds, 10);
++    if (s <= 0) s = 1;
++    var n = Math.round(SECONDS_PER_MONTH / s);
++    fetchEstimate.textContent = '~' + n.toLocaleString() + ' calls/month';
++    if (n > OPENSKY_WARN_THRESHOLD) {
++      fetchEstimate.classList.add('estimate-warning');
++    } else {
++      fetchEstimate.classList.remove('estimate-warning');
++    }
++  }
++
++  fetchInterval.addEventListener('input', function() {
++    fetchLabel.textContent = formatInterval(fetchInterval.value);
++    updateFetchEstimate(fetchInterval.value);
++  });
++  fetchInterval.addEventListener('change', function() {
++    applySettings({ fetch_interval: parseInt(fetchInterval.value, 10) });
++  });
++
++  // --- Timing: display cycle ---
++  function updateCycleLabel(seconds) {
++    cycleLabel.textContent = parseInt(seconds, 10) + ' s';
++  }
++
++  displayCycle.addEventListener('input', function() {
++    updateCycleLabel(displayCycle.value);
++  });
++  displayCycle.addEventListener('change', function() {
++    applySettings({ display_cycle: parseInt(displayCycle.value, 10) });
++  });
++
++  // --- Network & API: Apply ---
++  btnApplyNetwork.addEventListener('click', function() {
++    var payload = {
++      wifi_ssid: dWifiSsid.value,
++      wifi_password: dWifiPass.value,
++      os_client_id: dOsClientId.value.trim(),
++      os_client_sec: dOsClientSec.value.trim(),
++      aeroapi_key: dAeroKey.value.trim()
++    };
++    applyWithReboot(payload, btnApplyNetwork, 'Apply');
++  });
++
++  // --- Hardware: Resolution text ---
++  function updateHwResolution() {
++    var tx = parseInt(dTilesX.value, 10);
++    var ty = parseInt(dTilesY.value, 10);
++    var tp = parseInt(dTilePixels.value, 10);
++    if (tx > 0 && ty > 0 && tp > 0) {
++      dResText.textContent = 'Display: ' + (tx * tp) + ' x ' + (ty * tp) + ' pixels';
++    } else {
++      dResText.textContent = '';
++    }
++  }
++
++  dTilesX.addEventListener('input', updateHwResolution);
++  dTilesY.addEventListener('input', updateHwResolution);
++  dTilePixels.addEventListener('input', updateHwResolution);
++
++  // --- Hardware: Apply ---
++  btnApplyHardware.addEventListener('click', function() {
++    var dp = parseInt(dDisplayPin.value, 10);
++    if (isNaN(dp) || VALID_PINS.indexOf(dp) === -1) {
++      FW.showToast('Invalid GPIO pin. Supported: ' + VALID_PINS.join(', '), 'error');
++      return;
++    }
++    var payload = {
++      tiles_x: parseInt(dTilesX.value, 10),
++      tiles_y: parseInt(dTilesY.value, 10),
++      tile_pixels: parseInt(dTilePixels.value, 10),
++      display_pin: dp,
++      origin_corner: parseInt(dOriginCorner.value, 10) || 0,
++      scan_dir: parseInt(dScanDir.value, 10) || 0,
++      zigzag: parseInt(dZigzag.value, 10) || 0
++    };
++    applyWithReboot(payload, btnApplyHardware, 'Apply');
++  });
++
++  // --- WiFi Scan (Task 3 — optional SSID picker) ---
++  var scanTimer = null;
++  var scanStartTime = 0;
++  var SCAN_TIMEOUT_MS = 5000;
++  var SCAN_POLL_MS = 800;
++
++  function escHtml(s) {
++    var el = document.createElement('span');
++    el.textContent = s;
++    return el.innerHTML;
++  }
++
++  function rssiLabel(rssi) {
++    if (rssi >= -50) return 'Excellent';
++    if (rssi >= -60) return 'Good';
++    if (rssi >= -70) return 'Fair';
++    return 'Weak';
++  }
++
++  function startWifiScan() {
++    clearTimeout(scanTimer);
++    dBtnScan.disabled = true;
++    dBtnScan.textContent = 'Scanning...';
++    dScanResults.style.display = 'none';
++    dScanResults.innerHTML = '';
++    scanStartTime = Date.now();
++    pollWifiScan();
++  }
++
++  function pollWifiScan() {
++    FW.get('/api/wifi/scan').then(function(res) {
++      var d = res.body;
++      if (d.ok && !d.scanning && d.data && d.data.length > 0) {
++        showWifiResults(d.data);
++        return;
++      }
++      if (d.ok && !d.scanning) {
++        finishScan('No networks found');
++        return;
++      }
++      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
++        finishScan('Scan timed out');
++        return;
++      }
++      scanTimer = setTimeout(pollWifiScan, SCAN_POLL_MS);
++    }).catch(function() {
++      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
++        finishScan('Scan failed');
++        return;
++      }
++      scanTimer = setTimeout(pollWifiScan, SCAN_POLL_MS);
++    });
++  }
++
++  function showWifiResults(networks) {
++    clearTimeout(scanTimer);
++    dBtnScan.disabled = false;
++    dBtnScan.textContent = 'Scan for networks';
++    dScanResults.style.display = '';
++    dScanResults.innerHTML = '';
++
++    var seen = {};
++    networks.forEach(function(n) {
++      if (!n.ssid) return;
++      if (!seen[n.ssid] || n.rssi > seen[n.ssid].rssi) {
++        seen[n.ssid] = n;
++      }
++    });
++    var unique = Object.keys(seen).map(function(k) { return seen[k]; });
++    unique.sort(function(a, b) { return b.rssi - a.rssi; });
++
++    unique.forEach(function(n) {
++      var row = document.createElement('div');
++      row.className = 'scan-row';
++      row.innerHTML = '<span class="ssid">' + escHtml(n.ssid) + '</span><span class="rssi">' + rssiLabel(n.rssi) + '</span>';
++      row.addEventListener('click', function() {
++        dWifiSsid.value = n.ssid;
++        dScanResults.style.display = 'none';
++      });
++      dScanResults.appendChild(row);
++    });
++  }
++
++  function finishScan(msg) {
++    clearTimeout(scanTimer);
++    dBtnScan.disabled = false;
++    dBtnScan.textContent = 'Scan for networks';
++    if (msg) FW.showToast(msg, 'warning');
++  }
++
++  dBtnScan.addEventListener('click', startWifiScan);
++
++  // --- Init ---
++  loadSettings();
++})();
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+new file mode 100644
+index 0000000..f404361
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data-src/style.css
+@@ -0,0 +1,255 @@
++/* FlightWall shared design tokens and layout */
++*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
++:root{
++  --bg:#0d1117;--surface:#161b22;--border:#30363d;
++  --text:#e6edf3;--text-muted:#8b949e;
++  --primary:#58a6ff;--primary-hover:#79c0ff;
++  --error:#f85149;--success:#3fb950;
++  --radius:8px;--gap:16px;
++}
++html{font-size:16px}
++body{
++  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
++  background:var(--bg);color:var(--text);
++  min-height:100vh;display:flex;justify-content:center;
++  padding:0;margin:0;
++  -webkit-text-size-adjust:100%;
++}
++
++/* Wizard layout */
++.wizard{
++  width:100%;max-width:480px;min-height:100vh;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
++.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
++.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
++
++.step{display:none}
++.step.active{display:block}
++.step h2{font-size:1.125rem;margin-bottom:8px}
++.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
++.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
++
++/* Form fields */
++.form-fields{display:flex;flex-direction:column;gap:8px}
++.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.form-fields input[type="text"],
++.form-fields input[type="password"]{
++  width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.form-fields input:focus{border-color:var(--primary)}
++.form-fields input.input-error{border-color:var(--error)}
++.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
++
++/* Scan states */
++.scan-status{text-align:center;padding:var(--gap) 0}
++.scan-msg{color:var(--text-muted);margin-bottom:8px}
++.spinner{
++  width:24px;height:24px;margin:0 auto;
++  border:3px solid var(--border);border-top-color:var(--primary);
++  border-radius:50%;animation:spin 0.8s linear infinite;
++}
++@keyframes spin{to{transform:rotate(360deg)}}
++
++/* Scan results */
++.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
++.scan-row{
++  padding:12px;background:var(--surface);
++  border:1px solid var(--border);border-radius:var(--radius);
++  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
++  transition:border-color 0.15s;
++}
++.scan-row:hover,.scan-row:active{border-color:var(--primary)}
++.scan-row .ssid{font-size:0.9375rem}
++.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
++
++/* Link button */
++.link-btn{
++  background:none;border:none;color:var(--primary);
++  font-size:0.875rem;cursor:pointer;padding:8px 0;
++  text-decoration:underline;
++}
++.link-btn:hover{color:var(--primary-hover)}
++
++/* Wizard navigation */
++.wizard-nav{
++  display:flex;justify-content:space-between;
++  padding:var(--gap) 0;flex-shrink:0;
++  border-top:1px solid var(--border);
++}
++.nav-btn{
++  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
++  border:1px solid var(--border);background:var(--surface);
++  color:var(--text);cursor:pointer;min-width:110px;
++  transition:background 0.15s,border-color 0.15s;
++}
++.nav-btn:hover{border-color:var(--text-muted)}
++.nav-btn-primary{
++  background:var(--primary);color:#0d1117;border-color:var(--primary);
++  font-weight:600;
++}
++.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.nav-btn-save{
++  background:var(--success);color:#0d1117;border-color:var(--success);
++  font-weight:600;
++}
++.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
++.nav-btn:disabled{opacity:0.5;cursor:default}
++
++/* Geolocation button (Step 3) */
++.geo-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  background:var(--surface);color:var(--primary);
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;margin-bottom:8px;
++  transition:background 0.15s,color 0.15s;
++}
++.geo-btn:hover{background:var(--primary);color:#0d1117}
++.geo-btn:disabled{opacity:0.5;cursor:default}
++.geo-status{font-size:0.8125rem;margin-bottom:8px}
++.geo-ok{color:var(--success)}
++.geo-error{color:var(--text-muted)}
++.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
++
++/* Resolution text (Step 4) */
++.resolution-text{
++  color:var(--primary);font-size:0.9375rem;
++  font-weight:500;margin-top:var(--gap);text-align:center;
++}
++
++/* Review cards (Step 5) */
++.review-sections{display:flex;flex-direction:column;gap:8px}
++.review-card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:12px;cursor:pointer;
++  transition:border-color 0.15s;
++}
++.review-card:hover,.review-card:active{border-color:var(--primary)}
++.review-card-header{
++  display:flex;justify-content:space-between;align-items:center;
++  margin-bottom:8px;
++}
++.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
++.review-edit{color:var(--primary);font-size:0.8125rem}
++.review-item{
++  display:flex;justify-content:space-between;align-items:baseline;
++  padding:2px 0;font-size:0.875rem;
++}
++.review-label{color:var(--text-muted)}
++.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
++
++/* Dashboard layout */
++.dashboard{
++  width:100%;max-width:480px;
++  display:flex;flex-direction:column;
++  padding:var(--gap);
++}
++.dash-header{text-align:center;padding:var(--gap) 0}
++.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
++.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
++.dash-header nav{margin-top:8px}
++.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
++.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
++.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
++
++/* Cards */
++.card{
++  background:var(--surface);border:1px solid var(--border);
++  border-radius:var(--radius);padding:var(--gap);
++}
++.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
++.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
++.card label:first-of-type{margin-top:0}
++.card input[type="range"]{width:100%;accent-color:var(--primary)}
++.card .range-row{display:flex;align-items:center;gap:8px}
++.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
++.card .rgb-row{display:flex;gap:8px}
++.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
++.card .rgb-row input[type="number"]{
++  width:100%;padding:8px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;text-align:center;
++  -moz-appearance:textfield;
++}
++.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
++.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
++.card .rgb-row input:focus{border-color:var(--primary)}
++.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
++.color-preview{
++  height:24px;border-radius:4px;margin-top:8px;
++  border:1px solid var(--border);
++}
++
++/* Apply button (dashboard cards) */
++.apply-btn{
++  display:block;width:100%;padding:12px;font-size:1rem;
++  margin-top:var(--gap);
++  background:var(--primary);color:#0d1117;
++  border:1px solid var(--primary);border-radius:var(--radius);
++  cursor:pointer;font-weight:600;
++  transition:background 0.15s,border-color 0.15s;
++}
++.apply-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
++.apply-btn:disabled{opacity:0.5;cursor:default}
++
++/* Card form fields (dashboard) */
++.card .form-fields{display:flex;flex-direction:column;gap:4px}
++.card .form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
++.card .form-fields label:first-child{margin-top:0}
++.card .form-fields input[type="text"],
++.card .form-fields input[type="password"]{
++  width:100%;padding:10px;font-size:1rem;
++  background:var(--surface);color:var(--text);
++  border:1px solid var(--border);border-radius:var(--radius);
++  outline:none;transition:border-color 0.15s;
++}
++.card .form-fields input:focus{border-color:var(--primary)}
++
++/* Scan inline (dashboard WiFi) */
++.scan-row-inline{margin-bottom:4px}
++
++/* Estimate line */
++.estimate-line{font-size:0.875rem;color:var(--text-muted);margin-top:4px}
++.estimate-warning{color:#d29922;font-weight:600}
++.estimate-note{font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px}
++
++/* Toast system */
++#toast-container{
++  position:fixed;top:16px;left:50%;transform:translateX(-50%);
++  z-index:9999;display:flex;flex-direction:column;gap:8px;
++  width:calc(100% - 32px);max-width:400px;pointer-events:none;
++}
++.toast{
++  padding:12px 16px;border-radius:var(--radius);
++  font-size:0.875rem;font-weight:500;
++  transform:translateY(-20px);opacity:0;
++  transition:transform 0.25s ease,opacity 0.25s ease;
++  pointer-events:auto;
++}
++.toast-visible{transform:translateY(0);opacity:1}
++.toast-exit{transform:translateY(-20px);opacity:0}
++.toast-success{background:var(--success);color:#0d1117}
++.toast-warning{background:#d29922;color:#0d1117}
++.toast-error{background:var(--error);color:#fff}
++
++@media (prefers-reduced-motion:reduce){
++  .toast{transition:none;transform:none}
++  .toast-visible{opacity:1}
++  .toast-exit{opacity:0;transition:opacity 0.15s ease}
++}
++
++/* Handoff screen */
++.handoff{
++  display:flex;flex-direction:column;align-items:center;justify-content:center;
++  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
++}
++.handoff h1{font-size:1.5rem;color:var(--success)}
++.handoff p{font-size:1rem;color:var(--text);max-width:320px}
++.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz
+new file mode 100644
+index 0000000..26703d3
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.html.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz
+new file mode 100644
+index 0000000..0925e32
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/dashboard.js.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz
+new file mode 100644
+index 0000000..99fe086
+Binary files /dev/null and b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/data/style.css.gz differ
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/ConfigManager.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/ConfigManager.cpp
+new file mode 100644
+index 0000000..504018e
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/core/ConfigManager.cpp
+@@ -0,0 +1,505 @@
++/*
++Purpose: Centralized configuration manager with NVS persistence and compile-time fallbacks.
++Responsibilities:
++- Load settings from NVS on init, falling back to compile-time defaults from config headers.
++- Provide category struct getters for thread-safe reads (copy semantics).
++- Apply JSON patches via applyJson(), distinguishing reboot vs hot-reload keys.
++- Debounce NVS writes for hot-reload keys via schedulePersist().
++- Only file that includes config/*.h headers (AR13 compliance).
++*/
++#include "core/ConfigManager.h"
++#include <Preferences.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/semphr.h>
++#include "utils/Log.h"
++
++// AR13: Only ConfigManager.cpp includes config headers
++#include "config/UserConfiguration.h"
++#include "config/WiFiConfiguration.h"
++#include "config/TimingConfiguration.h"
++#include "config/HardwareConfiguration.h"
++#include "config/APIConfiguration.h"
++
++static const char* NVS_NAMESPACE = "flightwall";
++static SemaphoreHandle_t g_configMutex = nullptr;
++
++struct ConfigSnapshot {
++    DisplayConfig display;
++    LocationConfig location;
++    HardwareConfig hardware;
++    TimingConfig timing;
++    NetworkConfig network;
++};
++
++class ConfigLockGuard {
++public:
++    ConfigLockGuard() {
++        if (g_configMutex != nullptr) {
++            xSemaphoreTake(g_configMutex, portMAX_DELAY);
++        }
++    }
++
++    ~ConfigLockGuard() {
++        if (g_configMutex != nullptr) {
++            xSemaphoreGive(g_configMutex);
++        }
++    }
++};
++
++static bool isSupportedDisplayPin(uint8_t pin);
++
++static bool updateConfigValue(DisplayConfig& display,
++                              LocationConfig& location,
++                              HardwareConfig& hardware,
++                              TimingConfig& timing,
++                              NetworkConfig& network,
++                              const char* key,
++                              JsonVariantConst value) {
++    // Display
++    if (strcmp(key, "brightness") == 0)        { display.brightness = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_r") == 0)      { display.text_color_r = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_g") == 0)      { display.text_color_g = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "text_color_b") == 0)      { display.text_color_b = value.as<uint8_t>(); return true; }
++
++    // Location
++    if (strcmp(key, "center_lat") == 0)        { location.center_lat = value.as<double>(); return true; }
++    if (strcmp(key, "center_lon") == 0)        { location.center_lon = value.as<double>(); return true; }
++    if (strcmp(key, "radius_km") == 0)         { location.radius_km = value.as<double>(); return true; }
++
++    // Hardware
++    if (strcmp(key, "tiles_x") == 0)           { hardware.tiles_x = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "tiles_y") == 0)           { hardware.tiles_y = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "tile_pixels") == 0)       { hardware.tile_pixels = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "display_pin") == 0) {
++        const uint8_t pin = value.as<uint8_t>();
++        if (!isSupportedDisplayPin(pin)) {
++            return false;
++        }
++        hardware.display_pin = pin;
++        return true;
++    }
++    if (strcmp(key, "origin_corner") == 0)     { hardware.origin_corner = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "scan_dir") == 0)          { hardware.scan_dir = value.as<uint8_t>(); return true; }
++    if (strcmp(key, "zigzag") == 0)            { hardware.zigzag = value.as<uint8_t>(); return true; }
++
++    // Timing
++    if (strcmp(key, "fetch_interval") == 0)    { timing.fetch_interval = value.as<uint16_t>(); return true; }
++    if (strcmp(key, "display_cycle") == 0)     { timing.display_cycle = value.as<uint16_t>(); return true; }
++
++    // Network
++    if (strcmp(key, "wifi_ssid") == 0)         { network.wifi_ssid = value.as<String>(); return true; }
++    if (strcmp(key, "wifi_password") == 0)     { network.wifi_password = value.as<String>(); return true; }
++    if (strcmp(key, "os_client_id") == 0)      { network.opensky_client_id = value.as<String>(); return true; }
++    if (strcmp(key, "os_client_sec") == 0)     { network.opensky_client_secret = value.as<String>(); return true; }
++    if (strcmp(key, "aeroapi_key") == 0)       { network.aeroapi_key = value.as<String>(); return true; }
++
++    return false;
++}
++
++static bool isSupportedDisplayPin(uint8_t pin) {
++    switch (pin) {
++        case 0:
++        case 2:
++        case 4:
++        case 5:
++        case 12:
++        case 13:
++        case 14:
++        case 15:
++        case 16:
++        case 17:
++        case 18:
++        case 19:
++        case 21:
++        case 22:
++        case 23:
++        case 25:
++        case 26:
++        case 27:
++        case 32:
++        case 33:
++            return true;
++        default:
++            return false;
++    }
++}
++
++// Reboot-required keys
++static const char* REBOOT_KEYS[] = {
++    "wifi_ssid", "wifi_password",
++    "os_client_id", "os_client_sec",
++    "aeroapi_key", "display_pin",
++    "tiles_x", "tiles_y", "tile_pixels",
++    "origin_corner", "scan_dir", "zigzag"
++};
++static const size_t REBOOT_KEY_COUNT = sizeof(REBOOT_KEYS) / sizeof(REBOOT_KEYS[0]);
++
++// Static member initialization
++DisplayConfig ConfigManager::_display = {};
++LocationConfig ConfigManager::_location = {};
++HardwareConfig ConfigManager::_hardware = {};
++TimingConfig ConfigManager::_timing = {};
++NetworkConfig ConfigManager::_network = {};
++std::vector<std::function<void()>> ConfigManager::_callbacks;
++unsigned long ConfigManager::_persistScheduledAt = 0;
++bool ConfigManager::_persistPending = false;
++
++void ConfigManager::init() {
++    if (g_configMutex == nullptr) {
++        g_configMutex = xSemaphoreCreateMutex();
++        if (g_configMutex == nullptr) {
++            LOG_E("ConfigManager", "Failed to create config mutex");
++            return;
++        }
++    }
++
++    _persistPending = false;
++    _persistScheduledAt = 0;
++
++    // Set compile-time defaults first
++    _display.brightness = UserConfiguration::DISPLAY_BRIGHTNESS;
++    _display.text_color_r = UserConfiguration::TEXT_COLOR_R;
++    _display.text_color_g = UserConfiguration::TEXT_COLOR_G;
++    _display.text_color_b = UserConfiguration::TEXT_COLOR_B;
++
++    _location.center_lat = UserConfiguration::CENTER_LAT;
++    _location.center_lon = UserConfiguration::CENTER_LON;
++    _location.radius_km = UserConfiguration::RADIUS_KM;
++
++    _hardware.tiles_x = HardwareConfiguration::DISPLAY_TILES_X;
++    _hardware.tiles_y = HardwareConfiguration::DISPLAY_TILES_Y;
++    _hardware.tile_pixels = HardwareConfiguration::DISPLAY_TILE_PIXEL_W;
++    _hardware.display_pin = HardwareConfiguration::DISPLAY_PIN;
++    _hardware.origin_corner = 0;
++    _hardware.scan_dir = 0;
++    _hardware.zigzag = 0;
++
++    _timing.fetch_interval = TimingConfiguration::FETCH_INTERVAL_SECONDS;
++    _timing.display_cycle = TimingConfiguration::DISPLAY_CYCLE_SECONDS;
++
++    _network.wifi_ssid = WiFiConfiguration::WIFI_SSID;
++    _network.wifi_password = WiFiConfiguration::WIFI_PASSWORD;
++    _network.opensky_client_id = APIConfiguration::OPENSKY_CLIENT_ID;
++    _network.opensky_client_secret = APIConfiguration::OPENSKY_CLIENT_SECRET;
++    _network.aeroapi_key = APIConfiguration::AEROAPI_KEY;
++
++    // Override with NVS values where they exist
++    loadFromNvs();
++
++    LOG_I("ConfigManager", "Initialized");
++}
++
++void ConfigManager::tick() {
++    unsigned long persistScheduledAt = 0;
++    bool persistPending = false;
++    {
++        ConfigLockGuard guard;
++        persistPending = _persistPending;
++        persistScheduledAt = _persistScheduledAt;
++    }
++
++    if (!persistPending) {
++        return;
++    }
++
++    if ((long)(millis() - persistScheduledAt) >= 0) {
++        persistToNvs();
++    }
++}
++
++void ConfigManager::loadFromNvs() {
++    Preferences prefs;
++    if (!prefs.begin(NVS_NAMESPACE, true)) {
++        LOG_I("ConfigManager", "NVS namespace empty or first boot — using compile-time defaults");
++        return;
++    }
++
++    ConfigSnapshot snapshot;
++    {
++        ConfigLockGuard guard;
++        snapshot.display = _display;
++        snapshot.location = _location;
++        snapshot.hardware = _hardware;
++        snapshot.timing = _timing;
++        snapshot.network = _network;
++    }
++
++    // Display
++    if (prefs.isKey("brightness"))     snapshot.display.brightness = prefs.getUChar("brightness", snapshot.display.brightness);
++    if (prefs.isKey("text_color_r"))   snapshot.display.text_color_r = prefs.getUChar("text_color_r", snapshot.display.text_color_r);
++    if (prefs.isKey("text_color_g"))   snapshot.display.text_color_g = prefs.getUChar("text_color_g", snapshot.display.text_color_g);
++    if (prefs.isKey("text_color_b"))   snapshot.display.text_color_b = prefs.getUChar("text_color_b", snapshot.display.text_color_b);
++
++    // Location
++    if (prefs.isKey("center_lat"))     snapshot.location.center_lat = prefs.getDouble("center_lat", snapshot.location.center_lat);
++    if (prefs.isKey("center_lon"))     snapshot.location.center_lon = prefs.getDouble("center_lon", snapshot.location.center_lon);
++    if (prefs.isKey("radius_km"))      snapshot.location.radius_km = prefs.getDouble("radius_km", snapshot.location.radius_km);
++
++    // Hardware
++    if (prefs.isKey("tiles_x"))        snapshot.hardware.tiles_x = prefs.getUChar("tiles_x", snapshot.hardware.tiles_x);
++    if (prefs.isKey("tiles_y"))        snapshot.hardware.tiles_y = prefs.getUChar("tiles_y", snapshot.hardware.tiles_y);
++    if (prefs.isKey("tile_pixels"))    snapshot.hardware.tile_pixels = prefs.getUChar("tile_pixels", snapshot.hardware.tile_pixels);
++    if (prefs.isKey("display_pin")) {
++        const uint8_t storedPin = prefs.getUChar("display_pin", snapshot.hardware.display_pin);
++        if (isSupportedDisplayPin(storedPin)) {
++            snapshot.hardware.display_pin = storedPin;
++        }
++    }
++    if (prefs.isKey("origin_corner"))  snapshot.hardware.origin_corner = prefs.getUChar("origin_corner", snapshot.hardware.origin_corner);
++    if (prefs.isKey("scan_dir"))       snapshot.hardware.scan_dir = prefs.getUChar("scan_dir", snapshot.hardware.scan_dir);
++    if (prefs.isKey("zigzag"))         snapshot.hardware.zigzag = prefs.getUChar("zigzag", snapshot.hardware.zigzag);
++
++    // Timing
++    if (prefs.isKey("fetch_interval")) snapshot.timing.fetch_interval = prefs.getUShort("fetch_interval", snapshot.timing.fetch_interval);
++    if (prefs.isKey("display_cycle"))  snapshot.timing.display_cycle = prefs.getUShort("display_cycle", snapshot.timing.display_cycle);
++
++    // Network
++    if (prefs.isKey("wifi_ssid"))      snapshot.network.wifi_ssid = prefs.getString("wifi_ssid", snapshot.network.wifi_ssid);
++    if (prefs.isKey("wifi_password"))  snapshot.network.wifi_password = prefs.getString("wifi_password", snapshot.network.wifi_password);
++    if (prefs.isKey("os_client_id"))   snapshot.network.opensky_client_id = prefs.getString("os_client_id", snapshot.network.opensky_client_id);
++    if (prefs.isKey("os_client_sec"))  snapshot.network.opensky_client_secret = prefs.getString("os_client_sec", snapshot.network.opensky_client_secret);
++    if (prefs.isKey("aeroapi_key"))    snapshot.network.aeroapi_key = prefs.getString("aeroapi_key", snapshot.network.aeroapi_key);
++
++    prefs.end();
++    {
++        ConfigLockGuard guard;
++        _display = snapshot.display;
++        _location = snapshot.location;
++        _hardware = snapshot.hardware;
++        _timing = snapshot.timing;
++        _network = snapshot.network;
++    }
++    LOG_I("ConfigManager", "NVS values loaded");
++}
++
++void ConfigManager::persistToNvs() {
++    ConfigSnapshot snapshot;
++    {
++        ConfigLockGuard guard;
++        snapshot.display = _display;
++        snapshot.location = _location;
++        snapshot.hardware = _hardware;
++        snapshot.timing = _timing;
++        snapshot.network = _network;
++    }
++
++    Preferences prefs;
++    if (!prefs.begin(NVS_NAMESPACE, false)) {
++        LOG_E("ConfigManager", "Failed to open NVS for writing");
++        return;
++    }
++
++    // Display
++    prefs.putUChar("brightness", snapshot.display.brightness);
++    prefs.putUChar("text_color_r", snapshot.display.text_color_r);
++    prefs.putUChar("text_color_g", snapshot.display.text_color_g);
++    prefs.putUChar("text_color_b", snapshot.display.text_color_b);
++
++    // Location
++    prefs.putDouble("center_lat", snapshot.location.center_lat);
++    prefs.putDouble("center_lon", snapshot.location.center_lon);
++    prefs.putDouble("radius_km", snapshot.location.radius_km);
++
++    // Hardware
++    prefs.putUChar("tiles_x", snapshot.hardware.tiles_x);
++    prefs.putUChar("tiles_y", snapshot.hardware.tiles_y);
++    prefs.putUChar("tile_pixels", snapshot.hardware.tile_pixels);
++    prefs.putUChar("display_pin", snapshot.hardware.display_pin);
++    prefs.putUChar("origin_corner", snapshot.hardware.origin_corner);
++    prefs.putUChar("scan_dir", snapshot.hardware.scan_dir);
++    prefs.putUChar("zigzag", snapshot.hardware.zigzag);
++
++    // Timing
++    prefs.putUShort("fetch_interval", snapshot.timing.fetch_interval);
++    prefs.putUShort("display_cycle", snapshot.timing.display_cycle);
++
++    // Network
++    prefs.putString("wifi_ssid", snapshot.network.wifi_ssid);
++    prefs.putString("wifi_password", snapshot.network.wifi_password);
++    prefs.putString("os_client_id", snapshot.network.opensky_client_id);
++    prefs.putString("os_client_sec", snapshot.network.opensky_client_secret);
++    prefs.putString("aeroapi_key", snapshot.network.aeroapi_key);
++
++    prefs.end();
++    {
++        ConfigLockGuard guard;
++        _persistScheduledAt = 0;
++        _persistPending = false;
++    }
++    LOG_I("ConfigManager", "NVS persisted");
++}
++
++void ConfigManager::dumpSettingsJson(JsonObject& out) {
++    ConfigSnapshot snapshot;
++    {
++        ConfigLockGuard guard;
++        snapshot.display = _display;
++        snapshot.location = _location;
++        snapshot.hardware = _hardware;
++        snapshot.timing = _timing;
++        snapshot.network = _network;
++    }
++
++    // Display — uses same key names as updateCacheFromKey / applyJson
++    out["brightness"] = snapshot.display.brightness;
++    out["text_color_r"] = snapshot.display.text_color_r;
++    out["text_color_g"] = snapshot.display.text_color_g;
++    out["text_color_b"] = snapshot.display.text_color_b;
++
++    // Location
++    out["center_lat"] = snapshot.location.center_lat;
++    out["center_lon"] = snapshot.location.center_lon;
++    out["radius_km"] = snapshot.location.radius_km;
++
++    // Hardware
++    out["tiles_x"] = snapshot.hardware.tiles_x;
++    out["tiles_y"] = snapshot.hardware.tiles_y;
++    out["tile_pixels"] = snapshot.hardware.tile_pixels;
++    out["display_pin"] = snapshot.hardware.display_pin;
++    out["origin_corner"] = snapshot.hardware.origin_corner;
++    out["scan_dir"] = snapshot.hardware.scan_dir;
++    out["zigzag"] = snapshot.hardware.zigzag;
++
++    // Timing
++    out["fetch_interval"] = snapshot.timing.fetch_interval;
++    out["display_cycle"] = snapshot.timing.display_cycle;
++
++    // Network — NVS abbreviated keys for API round-trip consistency
++    out["wifi_ssid"] = snapshot.network.wifi_ssid;
++    out["wifi_password"] = snapshot.network.wifi_password;
++    out["os_client_id"] = snapshot.network.opensky_client_id;
++    out["os_client_sec"] = snapshot.network.opensky_client_secret;
++    out["aeroapi_key"] = snapshot.network.aeroapi_key;
++}
++
++void ConfigManager::persistAllNow() {
++    persistToNvs();
++    _persistPending = false;
++    _persistScheduledAt = 0;
++    LOG_I("ConfigManager", "Full NVS flush completed");
++}
++
++DisplayConfig ConfigManager::getDisplay() {
++    ConfigLockGuard guard;
++    return _display;
++}
++
++LocationConfig ConfigManager::getLocation() {
++    ConfigLockGuard guard;
++    return _location;
++}
++
++HardwareConfig ConfigManager::getHardware() {
++    ConfigLockGuard guard;
++    return _hardware;
++}
++
++TimingConfig ConfigManager::getTiming() {
++    ConfigLockGuard guard;
++    return _timing;
++}
++
++NetworkConfig ConfigManager::getNetwork() {
++    ConfigLockGuard guard;
++    return _network;
++}
++
++bool ConfigManager::requiresReboot(const char* key) {
++    for (size_t i = 0; i < REBOOT_KEY_COUNT; i++) {
++        if (strcmp(key, REBOOT_KEYS[i]) == 0) return true;
++    }
++    return false;
++}
++
++bool ConfigManager::updateCacheFromKey(const char* key, JsonVariant value) {
++    return updateConfigValue(_display, _location, _hardware, _timing, _network, key, value);
++}
++
++ApplyResult ConfigManager::applyJson(const JsonObject& settings) {
++    ApplyResult result;
++    result.reboot_required = false;
++
++    ConfigSnapshot snapshot;
++    bool hasRebootKey = false;
++    bool hasHotKey = false;
++    {
++        ConfigLockGuard guard;
++        snapshot.display = _display;
++        snapshot.location = _location;
++        snapshot.hardware = _hardware;
++        snapshot.timing = _timing;
++        snapshot.network = _network;
++
++        for (JsonPair kv : settings) {
++            const char* key = kv.key().c_str();
++            JsonVariant value = kv.value();
++
++            if (!updateConfigValue(snapshot.display, snapshot.location, snapshot.hardware, snapshot.timing, snapshot.network, key, value)) {
++                LOG_E("ConfigManager", "Rejected unknown or invalid key");
++                result.applied.clear();
++                return result;
++            }
++
++            result.applied.push_back(String(key));
++
++            if (requiresReboot(key)) {
++                hasRebootKey = true;
++            } else {
++                hasHotKey = true;
++            }
++        }
++
++        _display = snapshot.display;
++        _location = snapshot.location;
++        _hardware = snapshot.hardware;
++        _timing = snapshot.timing;
++        _network = snapshot.network;
++    }
++
++    if (hasRebootKey) {
++        // Reboot keys persist immediately — no debounce
++        persistAllNow();
++        result.reboot_required = true;
++    }
++
++    if (hasHotKey && !hasRebootKey) {
++        schedulePersist(2000);
++    }
++
++    if (hasHotKey) {
++        fireCallbacks();
++    }
++
++    return result;
++}
++
++void ConfigManager::schedulePersist(uint16_t delayMs) {
++    ConfigLockGuard guard;
++    _persistScheduledAt = millis() + delayMs;
++    _persistPending = true;
++}
++
++void ConfigManager::onChange(std::function<void()> callback) {
++    ConfigLockGuard guard;
++    _callbacks.push_back(callback);
++}
++
++void ConfigManager::fireCallbacks() {
++    std::vector<std::function<void()>> callbacks;
++    {
++        ConfigLockGuard guard;
++        callbacks = _callbacks;
++    }
++
++    for (auto& cb : callbacks) {
++        cb();
++    }
++}
++
++// Compile-time URL accessors — these never change at runtime
++const char* ConfigManager::getOpenSkyTokenUrl() { return APIConfiguration::OPENSKY_TOKEN_URL; }
++const char* ConfigManager::getOpenSkyBaseUrl() { return APIConfiguration::OPENSKY_BASE_URL; }
++const char* ConfigManager::getAeroApiBaseUrl() { return APIConfiguration::AEROAPI_BASE_URL; }
++const char* ConfigManager::getFlightWallCdnBaseUrl() { return APIConfiguration::FLIGHTWALL_CDN_BASE_URL; }
++bool ConfigManager::getAeroApiInsecureTls() { return APIConfiguration::AEROAPI_INSECURE_TLS; }
++bool ConfigManager::getFlightWallInsecureTls() { return APIConfiguration::FLIGHTWALL_INSECURE_TLS; }
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+new file mode 100644
+index 0000000..f20ac93
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/src/main.cpp
+@@ -0,0 +1,579 @@
++/*
++Purpose: Firmware entry point for ESP32.
++Responsibilities:
++- Initialize serial, connect to Wi-Fi, and construct fetchers and display.
++- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
++- Display task on Core 0 reads queue and renders to LED matrix independently.
++Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
++Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
++*/
++#include <vector>
++#include <atomic>
++#include <WiFi.h>
++#include <HTTPClient.h>
++#include <WiFiClientSecure.h>
++#include <LittleFS.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <freertos/queue.h>
++#include "esp_task_wdt.h"
++#include "utils/Log.h"
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++#include "adapters/OpenSkyFetcher.h"
++#include "adapters/AeroAPIFetcher.h"
++#include "core/FlightDataFetcher.h"
++#include "adapters/NeoMatrixDisplay.h"
++#include "adapters/WiFiManager.h"
++#include "adapters/WebPortal.h"
++
++#ifndef PIO_UNIT_TESTING
++
++// --- Shared data structures (Task 1) ---
++
++struct FlightDisplayData {
++    std::vector<FlightInfo> flights;
++};
++
++struct DisplayStatusMessage {
++    char text[64];
++    uint32_t durationMs;
++};
++
++// Double buffer for safe cross-core data transfer (no memcpy of String/vector)
++static FlightDisplayData g_flightBuf[2];
++static uint8_t g_writeBuf = 0;
++
++// FreeRTOS queue holding a pointer to the current read buffer
++static QueueHandle_t g_flightQueue = nullptr;
++static QueueHandle_t g_displayMessageQueue = nullptr;
++
++// Atomic flag for config change notification (Core 1 sets, Core 0 reads)
++static std::atomic<bool> g_configChanged(false);
++
++// --- Startup progress coordinator (Story 1.8) ---
++// Owns the ordered LED status sequence during post-wizard startup.
++// Advances intentionally through phases; the single-entry overwrite queue
++// means only one message is active at a time, so we drive transitions
++// from loop() as each real event completes.
++
++enum class StartupPhase : uint8_t {
++    IDLE,               // Normal operation — coordinator inactive
++    SAVING_CONFIG,      // "Saving config..." (set by reboot callback)
++    CONNECTING_WIFI,    // "Connecting to WiFi..."
++    WIFI_CONNECTED,     // "WiFi Connected ✓" then "IP: x.x.x.x"
++    WIFI_FAILED,        // WiFi did not connect — fallback to AP/setup
++    AUTHENTICATING,     // "Authenticating APIs..."
++    FETCHING_FLIGHTS,   // "Fetching flights..."
++    COMPLETE            // First flight data ready — hand off to normal rendering
++};
++
++static StartupPhase g_startupPhase = StartupPhase::IDLE;
++static unsigned long g_phaseEnteredMs = 0;
++static bool g_firstFetchDone = false;  // One-shot flag: first fetch after startup
++static constexpr unsigned long AUTHENTICATING_DISPLAY_MS = 1000UL;
++
++static void enterPhase(StartupPhase phase)
++{
++    g_startupPhase = phase;
++    g_phaseEnteredMs = millis();
++}
++
++// --- Existing globals ---
++
++static OpenSkyFetcher g_openSky;
++static AeroAPIFetcher g_aeroApi;
++static FlightDataFetcher *g_fetcher = nullptr;
++static NeoMatrixDisplay g_display;
++static WiFiManager g_wifiManager;
++static AsyncWebServer g_webServer(80);
++static WebPortal g_webPortal;
++
++static unsigned long g_lastFetchMs = 0;
++
++static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
++{
++    if (g_displayMessageQueue == nullptr)
++    {
++        return;
++    }
++
++    DisplayStatusMessage statusMessage = {};
++    snprintf(statusMessage.text, sizeof(statusMessage.text), "%s", message.c_str());
++    statusMessage.durationMs = durationMs;
++    xQueueOverwrite(g_displayMessageQueue, &statusMessage);
++}
++
++static void showInitialWiFiMessage()
++{
++    switch (g_wifiManager.getState())
++    {
++        case WiFiState::AP_SETUP:
++            g_display.displayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            g_display.displayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            g_display.displayMessage(String("IP: ") + g_wifiManager.getLocalIP());
++            break;
++        case WiFiState::STA_RECONNECTING:
++            g_display.displayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            g_display.displayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static void queueWiFiStateMessage(WiFiState state)
++{
++    // During startup progress, the coordinator drives display messages
++    // so we intercept WiFi events to advance the progress sequence
++    if (g_startupPhase != StartupPhase::IDLE &&
++        g_startupPhase != StartupPhase::COMPLETE)
++    {
++        switch (state)
++        {
++            case WiFiState::STA_CONNECTED:
++                enterPhase(StartupPhase::WIFI_CONNECTED);
++                queueDisplayMessage(String("WiFi Connected ✓"), 2000);
++                LOG_I("Main", "Startup: WiFi connected");
++                return;
++            case WiFiState::AP_FALLBACK:
++                enterPhase(StartupPhase::WIFI_FAILED);
++                queueDisplayMessage(String("WiFi Failed - Reopen Setup"));
++                LOG_I("Main", "Startup: WiFi failed, returning to setup");
++                return;
++            case WiFiState::CONNECTING:
++            case WiFiState::STA_RECONNECTING:
++                // Already showing connecting message — don't overwrite
++                return;
++            default:
++                break;
++        }
++    }
++
++    // Normal (non-startup) WiFi state messages
++    switch (state)
++    {
++        case WiFiState::AP_SETUP:
++            queueDisplayMessage(String("Setup Mode"));
++            break;
++        case WiFiState::CONNECTING:
++            queueDisplayMessage(String("Connecting to WiFi..."));
++            break;
++        case WiFiState::STA_CONNECTED:
++            queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 3000);
++            break;
++        case WiFiState::STA_RECONNECTING:
++            queueDisplayMessage(String("WiFi Lost..."));
++            break;
++        case WiFiState::AP_FALLBACK:
++            queueDisplayMessage(String("WiFi Failed"));
++            break;
++    }
++}
++
++static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
++{
++    return lhs.tiles_x != rhs.tiles_x ||
++           lhs.tiles_y != rhs.tiles_y ||
++           lhs.tile_pixels != rhs.tile_pixels ||
++           lhs.display_pin != rhs.display_pin ||
++           lhs.origin_corner != rhs.origin_corner ||
++           lhs.scan_dir != rhs.scan_dir ||
++           lhs.zigzag != rhs.zigzag;
++}
++
++// --- Display task (Task 2) ---
++
++void displayTask(void *pvParameters)
++{
++    LOG_I("DisplayTask", "Display task started");
++
++    // Read initial config as local copies
++    DisplayConfig localDisp = ConfigManager::getDisplay();
++    HardwareConfig localHw = ConfigManager::getHardware();
++    TimingConfig localTiming = ConfigManager::getTiming();
++
++    // Flight cycling state (owned by display task)
++    size_t currentFlightIndex = 0;
++    unsigned long lastCycleMs = millis();
++    bool statusMessageVisible = false;
++    unsigned long statusMessageUntilMs = 0;
++
++    // Subscribe to task watchdog
++    esp_task_wdt_add(NULL);
++
++    for (;;)
++    {
++        // Check for config changes (atomic flag from Core 1)
++        if (g_configChanged.exchange(false))
++        {
++            DisplayConfig newDisp = ConfigManager::getDisplay();
++            HardwareConfig newHw = ConfigManager::getHardware();
++            TimingConfig newTiming = ConfigManager::getTiming();
++
++            if (hardwareConfigChanged(localHw, newHw))
++            {
++                localHw = newHw;
++                LOG_I("DisplayTask", "Hardware config changed; reboot required to apply layout");
++                // No automatic restart — dashboard sends POST /api/reboot after apply
++            }
++
++            localDisp = newDisp;
++            localTiming = newTiming;
++            g_display.updateBrightness(localDisp.brightness);
++            LOG_I("DisplayTask", "Config change detected, display settings updated");
++        }
++
++        DisplayStatusMessage statusMessage = {};
++        if (g_displayMessageQueue != nullptr &&
++            xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
++        {
++            statusMessageVisible = true;
++            statusMessageUntilMs = statusMessage.durationMs == 0
++                ? 0
++                : millis() + statusMessage.durationMs;
++            g_display.displayMessage(String(statusMessage.text));
++        }
++
++        if (statusMessageVisible)
++        {
++            if (statusMessageUntilMs == 0 || millis() < statusMessageUntilMs)
++            {
++                esp_task_wdt_reset();
++                vTaskDelay(pdMS_TO_TICKS(50));
++                continue;
++            }
++
++            statusMessageVisible = false;
++        }
++
++        // Read latest flight data from queue (peek, don't remove)
++        FlightDisplayData *ptr = nullptr;
++        if (g_flightQueue != nullptr && xQueuePeek(g_flightQueue, &ptr, 0) == pdTRUE && ptr != nullptr)
++        {
++            const auto &flights = ptr->flights;
++
++            if (!flights.empty())
++            {
++                const unsigned long now = millis();
++                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
++
++                if (flights.size() > 1)
++                {
++                    if (now - lastCycleMs >= cycleMs)
++                    {
++                        lastCycleMs = now;
++                        currentFlightIndex = (currentFlightIndex + 1) % flights.size();
++                    }
++                }
++                else
++                {
++                    currentFlightIndex = 0;
++                }
++
++                g_display.renderFlight(flights, currentFlightIndex % flights.size());
++            }
++            else
++            {
++                g_display.showLoading();
++            }
++        }
++
++        // Log stack high watermark at verbose level for tuning
++#if LOG_LEVEL >= 3
++        static unsigned long lastStackLogMs = 0;
++        const unsigned long nowMs = millis();
++        if (nowMs - lastStackLogMs >= 30000UL)
++        {
++            lastStackLogMs = nowMs;
++            Serial.println("[DisplayTask] Stack HWM: " + String(uxTaskGetStackHighWaterMark(NULL)) + " bytes");
++        }
++#endif
++
++        // Reset watchdog and yield (~20fps frame rate)
++        esp_task_wdt_reset();
++        vTaskDelay(pdMS_TO_TICKS(50));
++    }
++}
++
++// --- setup() (Task 3) ---
++
++void setup()
++{
++    Serial.begin(115200);
++    delay(200);
++
++    if (!LittleFS.begin(true)) {
++        LOG_E("Main", "LittleFS mount failed");
++    } else {
++        LOG_I("Main", "LittleFS mounted");
++    }
++
++    ConfigManager::init();
++    SystemStatus::init();
++
++    // Display initialization before task creation (setup runs on Core 1)
++    g_display.initialize();
++    g_display.showLoading();
++
++    // Create flight data queue (length 1, stores a pointer)
++    g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData *));
++    if (g_flightQueue == nullptr) {
++        LOG_E("Main", "Failed to create flight data queue");
++    } else {
++        LOG_I("Main", "Flight data queue created");
++    }
++
++    g_displayMessageQueue = xQueueCreate(1, sizeof(DisplayStatusMessage));
++    if (g_displayMessageQueue == nullptr) {
++        LOG_E("Main", "Failed to create display message queue");
++    } else {
++        LOG_I("Main", "Display message queue created");
++    }
++
++    // Register config change callback (sets atomic flag for display task)
++    ConfigManager::onChange([]() {
++        g_configChanged.store(true);
++    });
++    LOG_I("Main", "Config change callback registered");
++
++    // Create display task pinned to Core 0 (priority 1, 8KB stack)
++    BaseType_t taskResult = xTaskCreatePinnedToCore(
++        displayTask,
++        "display",
++        8192,
++        NULL,
++        1,
++        NULL,
++        0
++    );
++    if (taskResult == pdPASS) {
++        LOG_I("Main", "Display task created on Core 0 (8KB stack, priority 1)");
++    } else {
++        LOG_E("Main", "Failed to create display task");
++    }
++
++    // WiFiManager initialization (non-blocking, event-driven)
++    // Per architecture Decision 5: WiFiManager before WebPortal
++    g_wifiManager.init();
++
++    // Activate startup progress coordinator when WiFi credentials exist
++    // (i.e. this is a post-setup boot, not first-time AP mode)
++    if (g_wifiManager.getState() == WiFiState::CONNECTING)
++    {
++        enterPhase(StartupPhase::CONNECTING_WIFI);
++        queueDisplayMessage(String("Connecting to WiFi..."));
++        LOG_I("Main", "Startup progress active: connecting to WiFi");
++    }
++    else
++    {
++        showInitialWiFiMessage();
++    }
++
++    g_wifiManager.onStateChange([](WiFiState oldState, WiFiState newState) {
++        (void)oldState;
++        queueWiFiStateMessage(newState);
++    });
++
++    // WebPortal initialization — register routes then start server
++    // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
++    g_webPortal.init(g_webServer, g_wifiManager);
++
++    // Register reboot callback so "Saving config..." shows on LED before restart
++    g_webPortal.onReboot([]() {
++        enterPhase(StartupPhase::SAVING_CONFIG);
++        queueDisplayMessage(String("Saving config..."));
++        LOG_I("Main", "Startup: saving config before reboot");
++    });
++
++    g_webPortal.begin();
++    LOG_I("Main", "WebPortal started");
++
++    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
++    if (g_fetcher == nullptr)
++    {
++        LOG_E("Main", "Failed to create FlightDataFetcher");
++    }
++    LOG_I("Main", "Setup complete");
++}
++
++// --- Startup progress coordinator tick (Story 1.8) ---
++// Drives the progress state machine from loop() on Core 1.
++// Each phase transition waits for a real event (WiFi connect, fetch complete)
++// rather than blasting the queue. Returns true if a first-fetch should run now.
++
++static bool tickStartupProgress()
++{
++    if (g_startupPhase == StartupPhase::IDLE ||
++        g_startupPhase == StartupPhase::COMPLETE)
++    {
++        return false;
++    }
++
++    const unsigned long elapsed = millis() - g_phaseEnteredMs;
++
++    switch (g_startupPhase)
++    {
++        case StartupPhase::SAVING_CONFIG:
++            // Display persists until reboot — no transition needed here
++            break;
++
++        case StartupPhase::CONNECTING_WIFI:
++            // Waiting for WiFi callback to advance to WIFI_CONNECTED or WIFI_FAILED
++            break;
++
++        case StartupPhase::WIFI_CONNECTED:
++            // Show "WiFi Connected ✓" briefly, then IP, then move to auth
++            if (elapsed < 2000)
++            {
++                // Still showing "WiFi Connected"
++            }
++            else if (elapsed < 4000)
++            {
++                // Show IP address for discovery (use phase time to gate, not a flag)
++                if (elapsed >= 2000 && elapsed < 2100)
++                {
++                    queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 2000);
++                }
++            }
++            else
++            {
++                // Advance to authentication phase
++                enterPhase(StartupPhase::AUTHENTICATING);
++                queueDisplayMessage(String("Authenticating APIs..."));
++                LOG_I("Main", "Startup: authenticating APIs");
++            }
++            break;
++
++        case StartupPhase::WIFI_FAILED:
++            // Terminal state — device returns to AP/setup mode
++            // WiFiManager handles the AP fallback; message stays visible
++            if (elapsed >= 5000)
++            {
++                // After showing failure message, return to idle
++                // (device is now in AP mode, user must re-run wizard)
++                enterPhase(StartupPhase::IDLE);
++            }
++            break;
++
++        case StartupPhase::AUTHENTICATING:
++            // Hold the authentication message briefly before starting the first fetch.
++            if (elapsed >= AUTHENTICATING_DISPLAY_MS)
++            {
++                return true;
++            }
++            break;
++
++        case StartupPhase::FETCHING_FLIGHTS:
++            // Waiting for fetch to complete — transition driven by loop()
++            break;
++
++        default:
++            break;
++    }
++
++    return false;
++}
++
++// --- loop() (Task 4) ---
++
++void loop()
++{
++    ConfigManager::tick();
++    g_wifiManager.tick();
++
++    if (g_fetcher == nullptr)
++    {
++        delay(1000);
++        return;
++    }
++
++    // Drive startup progress coordinator
++    bool triggerFirstFetch = tickStartupProgress();
++
++    // Determine if we should fetch now
++    const unsigned long intervalMs = ConfigManager::getTiming().fetch_interval * 1000UL;
++    const unsigned long now = millis();
++    bool normalFetchDue = (now - g_lastFetchMs >= intervalMs);
++
++    // First-fetch one-shot: when startup coordinator says go, fetch immediately
++    // regardless of the normal interval timer
++    if (triggerFirstFetch && !g_firstFetchDone)
++    {
++        normalFetchDue = true;
++        LOG_I("Main", "Startup: triggering first fetch immediately");
++    }
++
++    if (normalFetchDue)
++    {
++        g_lastFetchMs = now;
++
++        // Show "Fetching flights..." during startup progress
++        if (g_startupPhase == StartupPhase::AUTHENTICATING ||
++            g_startupPhase == StartupPhase::FETCHING_FLIGHTS)
++        {
++            if (g_startupPhase == StartupPhase::AUTHENTICATING)
++            {
++                enterPhase(StartupPhase::FETCHING_FLIGHTS);
++                queueDisplayMessage(String("Fetching flights..."));
++                LOG_I("Main", "Startup: fetching flights");
++            }
++        }
++
++        std::vector<StateVector> states;
++        std::vector<FlightInfo> flights;
++        size_t enriched = g_fetcher->fetchFlights(states, flights);
++
++        Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
++
++#if LOG_LEVEL >= 3
++        for (const auto &s : states)
++        {
++            Serial.println("[Main] " + s.callsign + " @ " + String(s.distance_km, 1) + "km bearing " + String(s.bearing_deg, 1));
++        }
++
++        for (const auto &f : flights)
++        {
++            Serial.println("[Main] Flight: " + f.ident + " " + f.airline_display_name_full + " " + f.origin.code_icao + "->" + f.destination.code_icao);
++        }
++#endif
++
++        // Write flight data to double buffer and push pointer to queue
++        g_flightBuf[g_writeBuf].flights = flights;
++        FlightDisplayData *ptr = &g_flightBuf[g_writeBuf];
++        if (g_flightQueue != nullptr)
++        {
++            xQueueOverwrite(g_flightQueue, &ptr);
++        }
++        g_writeBuf ^= 1; // swap buffer for next write
++
++        // Complete startup progress after first fetch
++        if (!g_firstFetchDone &&
++            (g_startupPhase == StartupPhase::FETCHING_FLIGHTS ||
++             g_startupPhase == StartupPhase::AUTHENTICATING))
++        {
++            g_firstFetchDone = true;
++            enterPhase(StartupPhase::COMPLETE);
++
++            if (!flights.empty())
++            {
++                // Clear progress message so display task renders flight data
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: first flight data ready");
++            }
++            else
++            {
++                // No flights available — fall back to normal loading screen
++                // (display task will show showLoading() when flight list is empty)
++                queueDisplayMessage(String(""), 1);
++                LOG_I("Main", "Startup complete: no flights yet, showing loading");
++            }
++        }
++    }
++}
++
++#endif // PIO_UNIT_TESTING
+diff --git a/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/test/test_config_manager/test_main.cpp b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/test/test_config_manager/test_main.cpp
+new file mode 100644
+index 0000000..c9e2666
+--- /dev/null
++++ b/Users/christianlee/App-Development/TheFlightWall_OSS-main/firmware/test/test_config_manager/test_main.cpp
+@@ -0,0 +1,315 @@
++/*
++Purpose: Unity tests for ConfigManager.
++Tests: NVS defaults, write/read round-trip, applyJson hot vs reboot paths,
++       debounce scheduling, requiresReboot key detection.
++Environment: esp32dev (on-device test) — requires NVS flash.
++*/
++#include <Arduino.h>
++#include <unity.h>
++#include <Preferences.h>
++#include <ArduinoJson.h>
++#include "core/ConfigManager.h"
++#include "core/SystemStatus.h"
++
++// Helper: clear NVS namespace before tests
++static void clearNvs() {
++    Preferences prefs;
++    prefs.begin("flightwall", false);
++    prefs.clear();
++    prefs.end();
++}
++
++// --- Default Fallback Tests ---
++
++void test_defaults_display_brightness() {
++    clearNvs();
++    ConfigManager::init();
++    DisplayConfig d = ConfigManager::getDisplay();
++    TEST_ASSERT_EQUAL_UINT8(5, d.brightness);
++}
++
++void test_defaults_display_text_color() {
++    DisplayConfig d = ConfigManager::getDisplay();
++    TEST_ASSERT_EQUAL_UINT8(255, d.text_color_r);
++    TEST_ASSERT_EQUAL_UINT8(255, d.text_color_g);
++    TEST_ASSERT_EQUAL_UINT8(255, d.text_color_b);
++}
++
++void test_defaults_location() {
++    LocationConfig l = ConfigManager::getLocation();
++    TEST_ASSERT_DOUBLE_WITHIN(0.001, 37.7749, l.center_lat);
++    TEST_ASSERT_DOUBLE_WITHIN(0.001, -122.4194, l.center_lon);
++    TEST_ASSERT_DOUBLE_WITHIN(0.001, 10.0, l.radius_km);
++}
++
++void test_defaults_hardware() {
++    HardwareConfig h = ConfigManager::getHardware();
++    TEST_ASSERT_EQUAL_UINT8(10, h.tiles_x);
++    TEST_ASSERT_EQUAL_UINT8(2, h.tiles_y);
++    TEST_ASSERT_EQUAL_UINT8(16, h.tile_pixels);
++    TEST_ASSERT_EQUAL_UINT8(25, h.display_pin);
++}
++
++void test_defaults_timing() {
++    TimingConfig t = ConfigManager::getTiming();
++    TEST_ASSERT_EQUAL_UINT16(30, t.fetch_interval);
++    TEST_ASSERT_EQUAL_UINT16(3, t.display_cycle);
++}
++
++// --- NVS Write + Read Round-trip ---
++
++void test_nvs_write_read_roundtrip() {
++    clearNvs();
++
++    // Write a value to NVS directly
++    Preferences prefs;
++    prefs.begin("flightwall", false);
++    prefs.putUChar("brightness", 42);
++    prefs.putDouble("center_lat", 40.7128);
++    prefs.putUShort("fetch_interval", 60);
++    prefs.putString("wifi_ssid", "TestNet");
++    prefs.end();
++
++    // Re-init ConfigManager — should pick up NVS values
++    ConfigManager::init();
++
++    TEST_ASSERT_EQUAL_UINT8(42, ConfigManager::getDisplay().brightness);
++    TEST_ASSERT_DOUBLE_WITHIN(0.001, 40.7128, ConfigManager::getLocation().center_lat);
++    TEST_ASSERT_EQUAL_UINT16(60, ConfigManager::getTiming().fetch_interval);
++    TEST_ASSERT_TRUE(ConfigManager::getNetwork().wifi_ssid == "TestNet");
++}
++
++// --- applyJson Hot-Reload Path ---
++
++void test_apply_json_hot_reload() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["brightness"] = 100;
++    doc["text_color_r"] = 200;
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(2, result.applied.size());
++    TEST_ASSERT_FALSE(result.reboot_required);
++    TEST_ASSERT_EQUAL_UINT8(100, ConfigManager::getDisplay().brightness);
++    TEST_ASSERT_EQUAL_UINT8(200, ConfigManager::getDisplay().text_color_r);
++}
++
++void test_apply_json_hot_reload_persists_after_debounce() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["brightness"] = 77;
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(1, result.applied.size());
++    TEST_ASSERT_FALSE(result.reboot_required);
++
++    Preferences prefs;
++    prefs.begin("flightwall", true);
++    TEST_ASSERT_EQUAL_UINT8(0, prefs.getUChar("brightness", 0));
++    prefs.end();
++
++    delay(2100);
++    ConfigManager::tick();
++
++    prefs.begin("flightwall", true);
++    TEST_ASSERT_EQUAL_UINT8(77, prefs.getUChar("brightness", 0));
++    prefs.end();
++}
++
++// --- applyJson Reboot Path ---
++
++void test_apply_json_reboot_path() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["wifi_ssid"] = "NewNetwork";
++    doc["wifi_password"] = "secret123";
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(2, result.applied.size());
++    TEST_ASSERT_TRUE(result.reboot_required);
++    TEST_ASSERT_TRUE(ConfigManager::getNetwork().wifi_ssid == "NewNetwork");
++
++    // Verify NVS was persisted immediately for reboot keys
++    Preferences prefs;
++    prefs.begin("flightwall", true);
++    String storedSsid = prefs.getString("wifi_ssid", "");
++    prefs.end();
++    TEST_ASSERT_TRUE(storedSsid == "NewNetwork");
++}
++
++// --- applyJson Mixed Keys ---
++
++void test_apply_json_mixed_keys() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["brightness"] = 50;       // hot-reload
++    doc["aeroapi_key"] = "abc";   // reboot
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(2, result.applied.size());
++    TEST_ASSERT_TRUE(result.reboot_required);
++    TEST_ASSERT_EQUAL_UINT8(50, ConfigManager::getDisplay().brightness);
++    TEST_ASSERT_TRUE(ConfigManager::getNetwork().aeroapi_key == "abc");
++}
++
++void test_apply_json_ignores_unknown_keys() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["brightness"] = 88;
++    doc["bogus_key"] = 123;
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(1, result.applied.size());
++    TEST_ASSERT_TRUE(result.applied[0] == "brightness");
++    TEST_ASSERT_EQUAL_UINT8(88, ConfigManager::getDisplay().brightness);
++}
++
++// --- requiresReboot Key Detection ---
++
++void test_requires_reboot_known_keys() {
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_ssid"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_password"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("os_client_id"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("os_client_sec"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("aeroapi_key"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("display_pin"));
++}
++
++void test_requires_reboot_hardware_layout_keys() {
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_x"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_y"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tile_pixels"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("origin_corner"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("scan_dir"));
++    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("zigzag"));
++}
++
++void test_requires_reboot_hot_reload_keys() {
++    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("brightness"));
++    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("text_color_r"));
++    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("center_lat"));
++    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("fetch_interval"));
++}
++
++// --- onChange Callback ---
++
++void test_on_change_callback_fires() {
++    clearNvs();
++    ConfigManager::init();
++
++    bool callbackFired = false;
++    ConfigManager::onChange([&callbackFired]() {
++        callbackFired = true;
++    });
++
++    JsonDocument doc;
++    doc["brightness"] = 77;
++    JsonObject settings = doc.as<JsonObject>();
++    ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_TRUE(callbackFired);
++}
++
++// --- SystemStatus Tests ---
++
++void test_system_status_init() {
++    SystemStatus::init();
++    SubsystemStatus s = SystemStatus::get(Subsystem::WIFI);
++    TEST_ASSERT_EQUAL(StatusLevel::OK, s.level);
++    TEST_ASSERT_TRUE(s.message == "Not initialized");
++}
++
++void test_system_status_set_get() {
++    SystemStatus::init();
++    SystemStatus::set(Subsystem::WIFI, StatusLevel::OK, "Connected");
++    SubsystemStatus s = SystemStatus::get(Subsystem::WIFI);
++    TEST_ASSERT_EQUAL(StatusLevel::OK, s.level);
++    TEST_ASSERT_TRUE(s.message == "Connected");
++}
++
++void test_system_status_error() {
++    SystemStatus::set(Subsystem::OPENSKY, StatusLevel::ERROR, "401 Unauthorized");
++    SubsystemStatus s = SystemStatus::get(Subsystem::OPENSKY);
++    TEST_ASSERT_EQUAL(StatusLevel::ERROR, s.level);
++    TEST_ASSERT_TRUE(s.message == "401 Unauthorized");
++}
++
++void test_system_status_to_json() {
++    SystemStatus::init();
++    SystemStatus::set(Subsystem::WIFI, StatusLevel::OK, "Connected");
++    SystemStatus::set(Subsystem::NVS, StatusLevel::WARNING, "High usage");
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toJson(obj);
++
++    TEST_ASSERT_TRUE(obj["wifi"].is<JsonObject>());
++    TEST_ASSERT_TRUE(obj["wifi"]["level"] == "ok");
++    TEST_ASSERT_TRUE(obj["wifi"]["message"] == "Connected");
++
++    TEST_ASSERT_TRUE(obj["nvs"].is<JsonObject>());
++    TEST_ASSERT_TRUE(obj["nvs"]["level"] == "warning");
++    TEST_ASSERT_TRUE(obj["nvs"]["message"] == "High usage");
++}
++
++void setup() {
++    delay(2000);
++    UNITY_BEGIN();
++
++    // ConfigManager defaults
++    RUN_TEST(test_defaults_display_brightness);
++    RUN_TEST(test_defaults_display_text_color);
++    RUN_TEST(test_defaults_location);
++    RUN_TEST(test_defaults_hardware);
++    RUN_TEST(test_defaults_timing);
++
++    // NVS round-trip
++    RUN_TEST(test_nvs_write_read_roundtrip);
++
++    // applyJson paths
++    RUN_TEST(test_apply_json_hot_reload);
++    RUN_TEST(test_apply_json_hot_reload_persists_after_debounce);
++    RUN_TEST(test_apply_json_reboot_path);
++    RUN_TEST(test_apply_json_mixed_keys);
++    RUN_TEST(test_apply_json_ignores_unknown_keys);
++
++    // Reboot key detection
++    RUN_TEST(test_requires_reboot_known_keys);
++    RUN_TEST(test_requires_reboot_hardware_layout_keys);
++    RUN_TEST(test_requires_reboot_hot_reload_keys);
++
++    // onChange callback
++    RUN_TEST(test_on_change_callback_fires);
++
++    // SystemStatus
++    RUN_TEST(test_system_status_init);
++    RUN_TEST(test_system_status_set_get);
++    RUN_TEST(test_system_status_error);
++    RUN_TEST(test_system_status_to_json);
++
++    UNITY_END();
++}
++
++void loop() {
++    // Tests run once in setup()
++}

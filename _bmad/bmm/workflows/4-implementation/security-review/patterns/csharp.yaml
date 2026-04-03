@@ -1,0 +1,100 @@
+# C#-specific CWE Security Patterns
+# v1: minimal coverage, contributions welcome
+
+patterns:
+  - cwe_id: CWE-502
+    severity: HIGH
+    tier: 1
+    title: "C#: unsafe BinaryFormatter deserialization"
+    vulnerable_example: |
+      BinaryFormatter bf = new BinaryFormatter();
+      object obj = bf.Deserialize(stream);  // arbitrary code execution
+    safe_example: |
+      var obj = JsonSerializer.Deserialize<MyType>(stream);
+      // Or use DataContractSerializer with known types
+      var dcs = new DataContractSerializer(typeof(MyType));
+    detection_hint: "BinaryFormatter.Deserialize or new BinaryFormatter()"
+
+  - cwe_id: CWE-78
+    severity: HIGH
+    tier: 1
+    title: "C#: command injection via Process.Start()"
+    vulnerable_example: |
+      Process.Start("cmd.exe", "/c " + userInput);
+      Process.Start(new ProcessStartInfo { FileName = "cmd", Arguments = "/c " + cmd });
+    safe_example: |
+      var psi = new ProcessStartInfo {
+          FileName = "ping",
+          ArgumentList = { "-n", "1", hostname },
+          UseShellExecute = false
+      };
+      Process.Start(psi);
+    detection_hint: "Process.Start with string concatenation in Arguments or cmd.exe /c"
+
+  - cwe_id: CWE-89
+    severity: HIGH
+    tier: 1
+    title: "C#: SQL injection via SqlCommand string concatenation"
+    vulnerable_example: |
+      string query = "SELECT * FROM Users WHERE Name = '" + userName + "'";
+      SqlCommand cmd = new SqlCommand(query, conn);
+    safe_example: |
+      string query = "SELECT * FROM Users WHERE Name = @name";
+      SqlCommand cmd = new SqlCommand(query, conn);
+      cmd.Parameters.AddWithValue("@name", userName);
+    detection_hint: "new SqlCommand() with string concat instead of Parameters.Add"
+
+  - cwe_id: CWE-79
+    severity: HIGH
+    tier: 1
+    title: "C#: XSS via Response.Write with unencoded output"
+    vulnerable_example: |
+      Response.Write("<div>" + Request.QueryString["name"] + "</div>");
+      @Html.Raw(Model.UserComment)
+    safe_example: |
+      Response.Write("<div>" + HttpUtility.HtmlEncode(Request.QueryString["name"]) + "</div>");
+      @Model.UserComment  // Razor auto-encodes by default
+    detection_hint: "Response.Write with Request[] or Html.Raw() with user-controlled data"
+
+  - cwe_id: CWE-642
+    severity: HIGH
+    tier: 1
+    title: "C#: ViewState without MAC validation"
+    vulnerable_example: |
+      <%@ Page EnableViewStateMac="false" %>
+      <!-- or in web.config -->
+      <pages enableViewStateMac="false" />
+    safe_example: |
+      <%@ Page EnableViewStateMac="true" %>
+      <!-- Ensure machineKey is configured for web farm scenarios -->
+      <machineKey validation="HMACSHA256" decryption="AES" />
+    detection_hint: "EnableViewStateMac=\"false\" or enableViewStateMac=\"false\""
+
+  - cwe_id: CWE-327
+    severity: HIGH
+    tier: 1
+    title: "C#: weak cryptographic algorithms"
+    vulnerable_example: |
+      var md5 = MD5.Create();
+      var sha1 = SHA1.Create();
+      var des = DES.Create();
+    safe_example: |
+      var sha256 = SHA256.Create();
+      var aes = Aes.Create();
+      aes.Mode = CipherMode.CBC;
+      aes.KeySize = 256;
+    detection_hint: "MD5.Create(), SHA1.Create(), DES.Create(), or TripleDES.Create()"
+
+  - cwe_id: CWE-200
+    severity: HIGH
+    tier: 1
+    title: "C#: detailed error information exposed to users"
+    vulnerable_example: |
+      <!-- web.config -->
+      <customErrors mode="Off" />
+      catch (Exception ex) { return Content(ex.ToString()); }
+    safe_example: |
+      <!-- web.config -->
+      <customErrors mode="RemoteOnly" defaultRedirect="~/Error" />
+      catch (Exception ex) { _logger.LogError(ex, "Error"); return StatusCode(500); }
+    detection_hint: "customErrors mode=\"Off\" or ex.ToString()/ex.StackTrace in response"

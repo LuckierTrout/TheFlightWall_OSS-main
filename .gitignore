@@ -1,0 +1,9 @@
+misc
+.DS_Store
+.venv
+firmware/.pio
+
+# bmad-assist artifacts (auto-generated, never commit)
+.bmad-assist/cache/
+*.meta.yaml
+*.tpl.xml
