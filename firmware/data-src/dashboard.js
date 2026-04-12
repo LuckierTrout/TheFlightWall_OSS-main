@@ -7,7 +7,7 @@
  * @param {number} tilePixels - Pixels per tile edge
  * @returns {object} { matrixWidth, matrixHeight, mode, logoZone, flightZone, telemetryZone, valid }
  */
-function computeLayout(tilesX, tilesY, tilePixels) {
+function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct, layoutMode) {
   if (!tilesX || !tilesY || !tilePixels) {
     return { matrixWidth: 0, matrixHeight: 0, mode: 'compact',
       logoZone: {x:0,y:0,w:0,h:0}, flightZone: {x:0,y:0,w:0,h:0},
@@ -28,15 +28,38 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   else if (mh < 48) { mode = 'full'; }
   else { mode = 'expanded'; }
 
-  var halfH = Math.floor(mh / 2);
+  var logoW = mh; // default: square logo
+  if (logoWidthPct > 0 && logoWidthPct <= 99) {
+    logoW = Math.round(mw * logoWidthPct / 100);
+    logoW = Math.max(1, Math.min(mw - 1, logoW));
+  }
+
+  var splitY = Math.floor(mh / 2); // default: 50/50
+  if (flightHeightPct > 0 && flightHeightPct <= 99) {
+    splitY = Math.round(mh * flightHeightPct / 100);
+    splitY = Math.max(1, Math.min(mh - 1, splitY));
+  }
+
+  var logoZone, flightZone, telemetryZone;
+  if (layoutMode === 1) {
+    // Full-width bottom: logo top-left, flight top-right, telemetry spans full width
+    logoZone      = { x: 0,     y: 0,      w: logoW,      h: splitY };
+    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
+    telemetryZone = { x: 0,     y: splitY, w: mw,         h: mh - splitY };
+  } else {
+    // Classic: logo full-height left, flight/telemetry stacked right
+    logoZone      = { x: 0,     y: 0,      w: logoW,      h: mh };
+    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
+    telemetryZone = { x: logoW, y: splitY, w: mw - logoW, h: mh - splitY };
+  }
 
   return {
     matrixWidth: mw,
     matrixHeight: mh,
     mode: mode,
-    logoZone:      { x: 0,  y: 0,     w: mh,      h: mh },
-    flightZone:    { x: mh, y: 0,     w: mw - mh, h: halfH },
-    telemetryZone: { x: mh, y: halfH, w: mw - mh, h: mh - halfH },
+    logoZone: logoZone,
+    flightZone: flightZone,
+    telemetryZone: telemetryZone,
     valid: true
   };
 }
@@ -66,7 +89,6 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   var dOsClientId = document.getElementById('d-os-client-id');
   var dOsClientSec = document.getElementById('d-os-client-sec');
   var dAeroKey = document.getElementById('d-aeroapi-key');
-  var btnApplyNetwork = document.getElementById('btn-apply-network');
   var dBtnScan = document.getElementById('d-btn-scan');
   var dScanArea = document.getElementById('d-scan-area');
   var dScanResults = document.getElementById('d-scan-results');
@@ -80,7 +102,75 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   var dScanDir = document.getElementById('d-scan-dir');
   var dZigzag = document.getElementById('d-zigzag');
   var dResText = document.getElementById('d-resolution-text');
-  var btnApplyHardware = document.getElementById('btn-apply-hardware');
+
+  // --- Unified apply bar ---
+  var applyBar = document.getElementById('apply-bar');
+  var btnApplyAll = document.getElementById('btn-apply-all');
+  var dirtySections = { display: false, timing: false, network: false, hardware: false };
+
+  function markSectionDirty(section) {
+    dirtySections[section] = true;
+    applyBar.style.display = '';
+  }
+
+  function clearDirtyState() {
+    dirtySections.display = false;
+    dirtySections.timing = false;
+    dirtySections.network = false;
+    dirtySections.hardware = false;
+    applyBar.style.display = 'none';
+  }
+
+  function collectPayload() {
+    var payload = {};
+    if (dirtySections.display) {
+      payload.brightness = parseInt(brightness.value, 10);
+      payload.text_color_r = clamp(parseInt(colorR.value, 10) || 0);
+      payload.text_color_g = clamp(parseInt(colorG.value, 10) || 0);
+      payload.text_color_b = clamp(parseInt(colorB.value, 10) || 0);
+    }
+    if (dirtySections.timing) {
+      payload.fetch_interval = parseInt(fetchInterval.value, 10);
+      payload.display_cycle = parseInt(displayCycle.value, 10);
+    }
+    if (dirtySections.network) {
+      payload.wifi_ssid = dWifiSsid.value;
+      payload.wifi_password = dWifiPass.value;
+      payload.os_client_id = dOsClientId.value.trim();
+      payload.os_client_sec = dOsClientSec.value.trim();
+      payload.aeroapi_key = dAeroKey.value.trim();
+    }
+    if (dirtySections.hardware) {
+      var tilesX = parseUint8Field(dTilesX, 'Tiles X', false);
+      if (tilesX === null) return null;
+      var tilesY = parseUint8Field(dTilesY, 'Tiles Y', false);
+      if (tilesY === null) return null;
+      var tilePixels = parseUint8Field(dTilePixels, 'Pixels per tile', false);
+      if (tilePixels === null) return null;
+      var dp = parseUint8Field(dDisplayPin, 'Display data pin', true);
+      if (dp === null || VALID_PINS.indexOf(dp) === -1) {
+        FW.showToast('Invalid GPIO pin. Supported: ' + VALID_PINS.join(', '), 'error');
+        return null;
+      }
+      var originCorner = parseUint8Field(dOriginCorner, 'Origin corner', true);
+      if (originCorner === null) return null;
+      var scanDir = parseUint8Field(dScanDir, 'Scan direction', true);
+      if (scanDir === null) return null;
+      var zigzag = parseUint8Field(dZigzag, 'Zigzag', true);
+      if (zigzag === null) return null;
+      payload.tiles_x = tilesX;
+      payload.tiles_y = tilesY;
+      payload.tile_pixels = tilePixels;
+      payload.display_pin = dp;
+      payload.origin_corner = originCorner;
+      payload.scan_dir = scanDir;
+      payload.zigzag = zigzag;
+      payload.zone_logo_pct = customLogoPct;
+      payload.zone_split_pct = customSplitPct;
+      payload.zone_layout = zoneLayout;
+    }
+    return payload;
+  }
 
   var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 
@@ -91,6 +181,10 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   var previewLastLayout = null;
   var hardwareInputDirty = false;
   var suppressHardwareInputHandler = false;
+  var customLogoPct = 0;   // 0 = auto
+  var customSplitPct = 0;  // 0 = auto
+  var zoneLayout = 0;      // 0 = classic, 1 = full-width bottom
+  var dZoneLayout = document.getElementById('d-zone-layout');
 
   deviceIp.textContent = window.location.hostname || '';
 
@@ -155,6 +249,12 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       if (d.origin_corner !== undefined) dOriginCorner.value = d.origin_corner;
       if (d.scan_dir !== undefined) dScanDir.value = d.scan_dir;
       if (d.zigzag !== undefined) dZigzag.value = d.zigzag;
+      if (d.zone_logo_pct !== undefined) customLogoPct = d.zone_logo_pct;
+      if (d.zone_split_pct !== undefined) customSplitPct = d.zone_split_pct;
+      if (d.zone_layout !== undefined) {
+        zoneLayout = d.zone_layout;
+        if (dZoneLayout) dZoneLayout.value = zoneLayout;
+      }
       updateHwResolution();
 
       // Sync calibration selectors from loaded hardware values
@@ -257,7 +357,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     brightnessVal.textContent = brightness.value;
   });
   brightness.addEventListener('change', function() {
-    applySettings({ brightness: parseInt(brightness.value, 10) });
+    markSectionDirty('display');
   });
 
   // --- RGB inputs ---
@@ -269,11 +369,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     colorG.value = g;
     colorB.value = b;
     updatePreview();
-    debouncedApply({
-      text_color_r: r,
-      text_color_g: g,
-      text_color_b: b
-    });
+    markSectionDirty('display');
   }
 
   colorR.addEventListener('change', onColorChange);
@@ -310,7 +406,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     updateFetchEstimate(fetchInterval.value);
   });
   fetchInterval.addEventListener('change', function() {
-    applySettings({ fetch_interval: parseInt(fetchInterval.value, 10) });
+    markSectionDirty('timing');
   });
 
   // --- Timing: display cycle ---
@@ -322,20 +418,16 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     updateCycleLabel(displayCycle.value);
   });
   displayCycle.addEventListener('change', function() {
-    applySettings({ display_cycle: parseInt(displayCycle.value, 10) });
+    markSectionDirty('timing');
   });
 
-  // --- Network & API: Apply ---
-  btnApplyNetwork.addEventListener('click', function() {
-    var payload = {
-      wifi_ssid: dWifiSsid.value,
-      wifi_password: dWifiPass.value,
-      os_client_id: dOsClientId.value.trim(),
-      os_client_sec: dOsClientSec.value.trim(),
-      aeroapi_key: dAeroKey.value.trim()
-    };
-    applyWithReboot(payload, btnApplyNetwork, 'Apply');
-  });
+  // --- Network & API: mark dirty on change ---
+  function onNetworkInput() { markSectionDirty('network'); }
+  dWifiSsid.addEventListener('input', onNetworkInput);
+  dWifiPass.addEventListener('input', onNetworkInput);
+  dOsClientId.addEventListener('input', onNetworkInput);
+  dOsClientSec.addEventListener('input', onNetworkInput);
+  dAeroKey.addEventListener('input', onNetworkInput);
 
   // --- Hardware: Resolution text ---
   function updateHwResolution() {
@@ -473,6 +565,13 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       { zone: layout.telemetryZone, color: ZONE_COLORS.telemetry, label: 'Telemetry' }
     ];
 
+    // Helper: truncate text to fit pixel columns (mirrors firmware truncateToColumns)
+    function truncPreview(text, maxCols) {
+      if (text.length <= maxCols) return text;
+      if (maxCols <= 3) return text.substring(0, maxCols);
+      return text.substring(0, maxCols - 3) + '...';
+    }
+
     zones.forEach(function(z) {
       if (!z.zone || z.zone.w <= 0 || z.zone.h <= 0) return;
       var rx = Math.round(z.zone.x * sx);
@@ -491,20 +590,127 @@ function computeLayout(tilesX, tilesY, tilePixels) {
         ctx.strokeRect(rx + 1, ry + 1, rw - 2, rh - 2);
       }
 
-      // Label if space permits (zone scaled width > 40px)
-      if (rw > 40 && rh > 16) {
-        ctx.fillStyle = z.color;
-        ctx.font = Math.min(12, Math.floor(rh * 0.4)) + 'px sans-serif';
+      // Firmware uses 6x8px characters. Compute how many lines/cols fit.
+      var charW = 6, charH = 8;
+      var maxCols = Math.floor(z.zone.w / charW);
+      var linesAvail = Math.floor(z.zone.h / charH);
+      var fontSize = Math.max(7, Math.min(13, Math.round(charH * sy)));
+      var lineH = fontSize * 1.15;
+
+      if (maxCols <= 0 || linesAvail <= 0 || rw < 20 || rh < 10) {
+        // Too small for text — just show zone color label
+        if (rw > 30 && rh > 12) {
+          ctx.fillStyle = z.color;
+          ctx.font = '9px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(z.label, rx + rw / 2, ry + rh / 2);
+        }
+        return;
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rx, ry, rw, rh);
+      ctx.clip();
+      ctx.font = fontSize + 'px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#e6edf3';
+
+      var lines = [];
+
+      if (z.label === 'Logo') {
+        // Logo zone: show icon placeholder
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(z.label, rx + rw / 2, ry + rh / 2);
+        ctx.fillStyle = z.color;
+        ctx.font = Math.min(fontSize + 2, Math.floor(rh * 0.35)) + 'px sans-serif';
+        ctx.fillText('Logo', rx + rw / 2, ry + rh / 2);
+        ctx.restore();
+        return;
       }
+
+      if (z.label === 'Flight') {
+        // Mirror firmware renderFlightZone logic with sample data
+        var airline = 'United 1234';
+        var route = 'SFO>LAX';
+        var aircraft = 'B737';
+
+        if (linesAvail === 1) {
+          lines.push(truncPreview(route, maxCols));
+        } else if (linesAvail === 2) {
+          lines.push(truncPreview(airline, maxCols));
+          var detail = route + ' ' + aircraft;
+          lines.push(truncPreview(detail, maxCols));
+        } else {
+          lines.push(truncPreview(airline, maxCols));
+          lines.push(truncPreview(route, maxCols));
+          lines.push(truncPreview(aircraft, maxCols));
+        }
+      }
+
+      if (z.label === 'Telemetry') {
+        // Mirror firmware renderTelemetryZone logic with sample data
+        if (linesAvail >= 2) {
+          lines.push(truncPreview('28.3kft 450mph', maxCols));
+          lines.push(truncPreview('045d -12fps', maxCols));
+        } else {
+          lines.push(truncPreview('A28k S450 T045 V-12', maxCols));
+        }
+      }
+
+      // Draw lines vertically centered in zone (mirrors firmware centering)
+      var totalH = lines.length * lineH;
+      var startY = ry + (rh - totalH) / 2;
+      var padX = Math.round(2 * sx);
+      for (var i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], rx + padX, startY + i * lineH);
+      }
+
+      ctx.restore();
     });
 
     // Matrix outline
     ctx.strokeStyle = '#30363d';
     ctx.lineWidth = 1;
     ctx.strokeRect(0, 0, drawWidth, drawHeight);
+
+    // Draw zone divider drag handles
+    var logoX = Math.round(layout.logoZone.w * sx);
+    var splitYPos = Math.round(layout.flightZone.h * sy);
+
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#fff';
+    ctx.globalAlpha = 0.4;
+    ctx.lineWidth = 2;
+
+    // Logo divider (vertical) — in mode 1, only extends to splitY
+    var logoVEnd = (layout.zoneLayout === 1) ? splitYPos : drawHeight;
+    ctx.beginPath();
+    ctx.moveTo(logoX, 0);
+    ctx.lineTo(logoX, logoVEnd);
+    ctx.stroke();
+
+    // Split divider (horizontal) — in mode 1, spans full width
+    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
+    ctx.beginPath();
+    ctx.moveTo(splitXStart, splitYPos);
+    ctx.lineTo(drawWidth, splitYPos);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.7;
+
+    // Grab handles
+    var ghw = 4, ghh = 16;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(logoX - ghw / 2, logoVEnd / 2 - ghh / 2, ghw, ghh);
+    var infoMidX = (layout.zoneLayout === 1) ? drawWidth / 2 : logoX + (drawWidth - logoX) / 2;
+    ctx.fillRect(infoMidX - ghh / 2, splitYPos - ghw / 2, ghh, ghw);
+
+    ctx.restore();
   }
 
   function updatePreviewFromInputs() {
@@ -513,7 +719,8 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     if (!dims) {
       layout = { valid: false };
     } else {
-      layout = computeLayout(dims.tilesX, dims.tilesY, dims.tilePixels);
+      layout = computeLayout(dims.tilesX, dims.tilesY, dims.tilePixels, customLogoPct, customSplitPct, zoneLayout);
+      layout.zoneLayout = zoneLayout;
       layout.hardware = {
         tilesX: dims.tilesX,
         tilesY: dims.tilesY,
@@ -521,11 +728,13 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       };
     }
     renderLayoutCanvas(layout);
+    renderWiringCanvas();
   }
 
   function onHardwareInput() {
     if (!suppressHardwareInputHandler) {
       hardwareInputDirty = true;
+      markSectionDirty('hardware');
     }
     updateHwResolution();
     updatePreviewFromInputs();
@@ -538,38 +747,107 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     if (previewLastLayout) {
       renderLayoutCanvas(previewLastLayout);
     }
+    renderWiringCanvas();
   });
 
-  // --- Hardware: Apply ---
-  btnApplyHardware.addEventListener('click', function() {
-    var tilesX = parseUint8Field(dTilesX, 'Tiles X', false);
-    if (tilesX === null) return;
-    var tilesY = parseUint8Field(dTilesY, 'Tiles Y', false);
-    if (tilesY === null) return;
-    var tilePixels = parseUint8Field(dTilePixels, 'Pixels per tile', false);
-    if (tilePixels === null) return;
-    var dp = parseUint8Field(dDisplayPin, 'Display data pin', true);
-    if (dp === null || VALID_PINS.indexOf(dp) === -1) {
-      FW.showToast('Invalid GPIO pin. Supported: ' + VALID_PINS.join(', '), 'error');
+  // --- Zone drag interaction on layout preview canvas ---
+  var zoneDragTarget = null; // 'logo' or 'split'
+
+  function canvasPos(e) {
+    var rect = layoutCanvas.getBoundingClientRect();
+    var cx = e.touches ? e.touches[0].clientX : e.clientX;
+    var cy = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: cx - rect.left, y: cy - rect.top };
+  }
+
+  function hitTestDivider(pos) {
+    if (!previewLastLayout || !previewLastLayout.valid) return null;
+    var layout = previewLastLayout;
+    var sx = layoutCanvas.width / layout.matrixWidth;
+    var sy = layoutCanvas.height / layout.matrixHeight;
+    var threshold = 10;
+
+    var logoX = layout.logoZone.w * sx;
+    var logoVEnd = (layout.zoneLayout === 1) ? (layout.flightZone.h * sy) : (layoutCanvas.height);
+    if (Math.abs(pos.x - logoX) < threshold && pos.y <= logoVEnd + threshold) return 'logo';
+
+    var splitY = layout.flightZone.h * sy;
+    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
+    if (pos.x >= splitXStart - threshold && Math.abs(pos.y - splitY) < threshold) return 'split';
+
+    return null;
+  }
+
+  function onZoneDragStart(e) {
+    var pos = canvasPos(e);
+    var target = hitTestDivider(pos);
+    if (!target) return;
+    e.preventDefault();
+    zoneDragTarget = target;
+  }
+
+  function onZoneDragMove(e) {
+    if (!zoneDragTarget) {
+      // Update cursor on hover
+      if (layoutCanvas && previewLastLayout && previewLastLayout.valid) {
+        var hoverPos = e.touches ? null : canvasPos(e);
+        if (hoverPos) {
+          var hover = hitTestDivider(hoverPos);
+          layoutCanvas.style.cursor = hover ? (hover === 'logo' ? 'col-resize' : 'row-resize') : '';
+        }
+      }
       return;
     }
-    var originCorner = parseUint8Field(dOriginCorner, 'Origin corner', true);
-    if (originCorner === null) return;
-    var scanDir = parseUint8Field(dScanDir, 'Scan direction', true);
-    if (scanDir === null) return;
-    var zigzag = parseUint8Field(dZigzag, 'Zigzag', true);
-    if (zigzag === null) return;
-    var payload = {
-      tiles_x: tilesX,
-      tiles_y: tilesY,
-      tile_pixels: tilePixels,
-      display_pin: dp,
-      origin_corner: originCorner,
-      scan_dir: scanDir,
-      zigzag: zigzag
-    };
-    applyWithReboot(payload, btnApplyHardware, 'Apply');
-  });
+    e.preventDefault();
+
+    var pos = canvasPos(e);
+    var layout = previewLastLayout;
+    if (!layout || !layout.valid) return;
+    var sx = layoutCanvas.width / layout.matrixWidth;
+    var sy = layoutCanvas.height / layout.matrixHeight;
+
+    if (zoneDragTarget === 'logo') {
+      var newLogoW = Math.round(pos.x / sx);
+      newLogoW = Math.max(Math.round(layout.matrixWidth * 0.05), Math.min(Math.round(layout.matrixWidth * 0.95), newLogoW));
+      customLogoPct = Math.round(newLogoW / layout.matrixWidth * 100);
+    } else {
+      var newSplitY = Math.round(pos.y / sy);
+      newSplitY = Math.max(Math.round(layout.matrixHeight * 0.1), Math.min(Math.round(layout.matrixHeight * 0.9), newSplitY));
+      customSplitPct = Math.round(newSplitY / layout.matrixHeight * 100);
+    }
+
+    updatePreviewFromInputs();
+  }
+
+  function onZoneDragEnd() {
+    if (zoneDragTarget) {
+      zoneDragTarget = null;
+      markSectionDirty('hardware');
+    }
+  }
+
+  layoutCanvas.addEventListener('mousedown', onZoneDragStart);
+  layoutCanvas.addEventListener('touchstart', onZoneDragStart, { passive: false });
+  document.addEventListener('mousemove', onZoneDragMove);
+  document.addEventListener('touchmove', onZoneDragMove, { passive: false });
+  document.addEventListener('mouseup', onZoneDragEnd);
+  document.addEventListener('touchend', onZoneDragEnd);
+
+  // --- Hardware: mark dirty on change ---
+  function onHardwareDirty() { markSectionDirty('hardware'); }
+  dDisplayPin.addEventListener('input', onHardwareDirty);
+  dOriginCorner.addEventListener('input', onHardwareDirty);
+  dScanDir.addEventListener('input', onHardwareDirty);
+  dZigzag.addEventListener('input', onHardwareDirty);
+
+  // --- Layout mode selector ---
+  if (dZoneLayout) {
+    dZoneLayout.addEventListener('change', function() {
+      zoneLayout = parseInt(dZoneLayout.value, 10) || 0;
+      markSectionDirty('hardware');
+      updatePreviewFromInputs();
+    });
+  }
 
   // --- WiFi Scan (Task 3 — optional SSID picker) ---
   var scanTimer = null;
@@ -649,6 +927,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       row.addEventListener('click', function() {
         dWifiSsid.value = n.ssid;
         dScanResults.style.display = 'none';
+        markSectionDirty('network');
       });
       dScanResults.appendChild(row);
     });
@@ -1117,7 +1396,12 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   var calZigzag = document.getElementById('cal-zigzag');
   var calCanvas = document.getElementById('cal-preview-canvas');
   var calPreviewContainer = document.getElementById('cal-preview-container');
+  var wiringCanvas = document.getElementById('wiring-preview');
+  var wiringLegend = document.getElementById('wiring-legend');
   var calibrationActive = false;
+  var positioningActive = false;
+  var calPattern = 0; // 0=scan order, 1=panel position
+  var calPatternToggle = document.getElementById('cal-pattern-toggle');
   var calDebounce = null;
   var CAL_DEBOUNCE_MS = 50;
 
@@ -1189,6 +1473,61 @@ function computeLayout(tilesX, tilesY, tilePixels) {
         var y = Math.round(gy) + 0.5;
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(drawWidth, y); ctx.stroke();
       }
+    }
+
+    // Position pattern mode: colored tiles with numbers
+    if (calPattern === 1) {
+      var tilesX = dims.tilesX;
+      var tilesY = dims.tilesY;
+      var totalTiles = tilesX * tilesY;
+      for (var tRow = 0; tRow < tilesY; tRow++) {
+        for (var tCol = 0; tCol < tilesX; tCol++) {
+          var tIdx = tRow * tilesX + tCol;
+          var tileHue = tIdx / totalTiles;
+
+          // Dim fill
+          var dimR = Math.round(40 * Math.max(0, Math.cos(tileHue * Math.PI * 2)));
+          var dimG = Math.round(40 * Math.max(0, Math.cos((tileHue - 0.333) * Math.PI * 2)));
+          var dimB = Math.round(40 * Math.max(0, Math.cos((tileHue - 0.667) * Math.PI * 2)));
+          // Bright border
+          var brtR = Math.round(200 * Math.max(0, Math.cos(tileHue * Math.PI * 2)));
+          var brtG = Math.round(200 * Math.max(0, Math.cos((tileHue - 0.333) * Math.PI * 2)));
+          var brtB = Math.round(200 * Math.max(0, Math.cos((tileHue - 0.667) * Math.PI * 2)));
+
+          var tpx = tCol * tp * sx;
+          var tpy = tRow * tp * sy;
+          var tw = tp * sx;
+          var th = tp * sy;
+
+          // Dim fill
+          ctx.fillStyle = 'rgb(' + (dimR + 20) + ',' + (dimG + 20) + ',' + (dimB + 20) + ')';
+          ctx.fillRect(tpx, tpy, tw, th);
+
+          // Bright border
+          ctx.strokeStyle = 'rgb(' + (brtR + 55) + ',' + (brtG + 55) + ',' + (brtB + 55) + ')';
+          ctx.lineWidth = Math.max(1, Math.round(sx));
+          ctx.strokeRect(tpx + 0.5, tpy + 0.5, tw - 1, th - 1);
+
+          // Red corner marker
+          var mSize = Math.max(3, Math.round(Math.min(tw, th) * 0.15));
+          ctx.fillStyle = '#f00';
+          ctx.fillRect(tpx, tpy, mSize, mSize);
+
+          // Tile number centered
+          var fontSize = Math.max(10, Math.round(Math.min(tw, th) * 0.35));
+          ctx.font = 'bold ' + fontSize + 'px sans-serif';
+          ctx.fillStyle = '#fff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(tIdx), tpx + tw / 2, tpy + th / 2);
+        }
+      }
+
+      // Matrix outline
+      ctx.strokeStyle = '#30363d';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, drawWidth, drawHeight);
+      return;
     }
 
     // Draw calibration test pattern: numbered pixel traversal showing scan order
@@ -1325,9 +1664,42 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   function stopCalibrationMode() {
     if (!calibrationActive) return;
     calibrationActive = false;
-    FW.post('/api/calibration/stop', {}).catch(function() {
-      // Best-effort stop — ignore network errors
+    FW.post('/api/calibration/stop', {}).catch(function() {});
+  }
+
+  function startPositioningMode() {
+    if (positioningActive) return;
+    positioningActive = true;
+    FW.post('/api/positioning/start', {}).then(function(res) {
+      if (!res.body.ok) {
+        FW.showToast(res.body.error || 'Positioning start failed', 'error');
+        positioningActive = false;
+      }
+    }).catch(function() {
+      FW.showToast('Network error starting positioning', 'error');
+      positioningActive = false;
     });
+  }
+
+  function stopPositioningMode() {
+    if (!positioningActive) return;
+    positioningActive = false;
+    FW.post('/api/positioning/stop', {}).catch(function() {});
+  }
+
+  function activatePattern() {
+    if (calPattern === 1) {
+      stopCalibrationMode();
+      startPositioningMode();
+    } else {
+      stopPositioningMode();
+      startCalibrationMode();
+    }
+  }
+
+  function stopAllTestPatterns() {
+    stopCalibrationMode();
+    stopPositioningMode();
   }
 
   function setCalibrationOpen(shouldOpen) {
@@ -1337,10 +1709,174 @@ function computeLayout(tilesX, tilesY, tilePixels) {
     if (shouldOpen) {
       syncCalibrationFromSettings();
       renderCalibrationCanvas();
-      startCalibrationMode();
+      activatePattern();
     } else {
-      stopCalibrationMode();
+      stopAllTestPatterns();
     }
+  }
+
+  // --- Wiring diagram canvas ---
+  function renderWiringCanvas() {
+    if (!wiringCanvas || !wiringCanvas.getContext || !previewContainer) return;
+    var ctx = wiringCanvas.getContext('2d');
+    var dims = parseHardwareDimensionsFromInputs();
+
+    if (!dims || dims.tilesX <= 0 || dims.tilesY <= 0) {
+      wiringCanvas.width = 0;
+      wiringCanvas.height = 0;
+      wiringCanvas.style.display = 'none';
+      if (wiringLegend) wiringLegend.style.display = 'none';
+      return;
+    }
+
+    wiringCanvas.style.display = '';
+    if (wiringLegend) wiringLegend.style.display = '';
+
+    var tilesX = dims.tilesX;
+    var tilesY = dims.tilesY;
+    var originCorner = parseInt(calOrigin.value, 10) || 0;
+    var scanDir = parseInt(calScanDir.value, 10) || 0;
+    var zigzag = parseInt(calZigzag.value, 10) || 0;
+
+    var containerWidth = previewContainer.clientWidth || 300;
+    var aspect = tilesX / tilesY;
+    var drawWidth = Math.min(containerWidth, 480);
+    var drawHeight = Math.round(drawWidth / aspect);
+    if (drawHeight < 60) drawHeight = 60;
+
+    wiringCanvas.width = drawWidth;
+    wiringCanvas.height = drawHeight;
+
+    var cellW = drawWidth / tilesX;
+    var cellH = drawHeight / tilesY;
+
+    // Background
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, drawWidth, drawHeight);
+
+    // Tile grid lines
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 1;
+    for (var gx = 0; gx <= tilesX; gx++) {
+      var x = Math.round(gx * cellW) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, drawHeight); ctx.stroke();
+    }
+    for (var gy = 0; gy <= tilesY; gy++) {
+      var y = Math.round(gy * cellH) + 0.5;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(drawWidth, y); ctx.stroke();
+    }
+
+    // Build tile traversal order (same algorithm as calibration but at tile level)
+    var tilePositions = [];
+    for (var tRow = 0; tRow < tilesY; tRow++) {
+      for (var tCol = 0; tCol < tilesX; tCol++) {
+        var effCol = tCol;
+        var effRow = tRow;
+
+        // Origin corner transform
+        if (originCorner === 1 || originCorner === 3) {
+          effCol = tilesX - 1 - tCol;
+        }
+        if (originCorner === 2 || originCorner === 3) {
+          effRow = tilesY - 1 - tRow;
+        }
+
+        // Scan direction + zigzag
+        var tileIndex;
+        if (scanDir === 0) {
+          // Row-major
+          if (zigzag && (effRow % 2 === 1)) {
+            effCol = tilesX - 1 - effCol;
+          }
+          tileIndex = effRow * tilesX + effCol;
+        } else {
+          // Column-major
+          if (zigzag && (effCol % 2 === 1)) {
+            effRow = tilesY - 1 - effRow;
+          }
+          tileIndex = effCol * tilesY + effRow;
+        }
+
+        tilePositions.push({
+          col: tCol, row: tRow,
+          cx: (tCol + 0.5) * cellW,
+          cy: (tRow + 0.5) * cellH,
+          idx: tileIndex
+        });
+      }
+    }
+
+    // Sort by tile index to get wiring order
+    tilePositions.sort(function(a, b) { return a.idx - b.idx; });
+
+    // Draw cable path (thick blue polyline)
+    if (tilePositions.length > 1) {
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tilePositions[0].cx, tilePositions[0].cy);
+      for (var i = 1; i < tilePositions.length; i++) {
+        ctx.lineTo(tilePositions[i].cx, tilePositions[i].cy);
+      }
+      ctx.stroke();
+
+      // Draw arrowheads along path at each segment midpoint
+      ctx.fillStyle = '#58a6ff';
+      for (var j = 0; j < tilePositions.length - 1; j++) {
+        var ax = tilePositions[j].cx;
+        var ay = tilePositions[j].cy;
+        var bx = tilePositions[j + 1].cx;
+        var by = tilePositions[j + 1].cy;
+        var mx = (ax + bx) / 2;
+        var my = (ay + by) / 2;
+        var angle = Math.atan2(by - ay, bx - ax);
+        var arrowSize = Math.min(cellW, cellH) * 0.18;
+        if (arrowSize < 4) arrowSize = 4;
+        ctx.save();
+        ctx.translate(mx, my);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(arrowSize, 0);
+        ctx.lineTo(-arrowSize * 0.6, -arrowSize * 0.6);
+        ctx.lineTo(-arrowSize * 0.6, arrowSize * 0.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Draw tile index numbers
+    var fontSize = Math.max(10, Math.min(cellW, cellH) * 0.35);
+    ctx.font = 'bold ' + Math.round(fontSize) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e6edf3';
+    for (var k = 0; k < tilePositions.length; k++) {
+      var tp = tilePositions[k];
+      ctx.fillText(String(tp.idx), tp.cx, tp.cy);
+    }
+
+    // Green marker at tile 0 (data input)
+    if (tilePositions.length > 0) {
+      var t0 = tilePositions[0];
+      var markerR = Math.max(5, Math.min(cellW, cellH) * 0.15);
+      ctx.beginPath();
+      ctx.arc(t0.cx, t0.cy - cellH * 0.35, markerR, 0, Math.PI * 2);
+      ctx.fillStyle = '#3fb950';
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold ' + Math.round(markerR * 1.1) + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('IN', t0.cx, t0.cy - cellH * 0.35);
+    }
+
+    // Matrix outline
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, drawWidth - 2, drawHeight - 2);
   }
 
   function onCalibrationChange() {
@@ -1353,6 +1889,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
 
     // Instant canvas update
     renderCalibrationCanvas();
+    renderWiringCanvas();
 
     // Debounced server POST (persists + updates LED test pattern)
     clearTimeout(calDebounce);
@@ -1386,17 +1923,37 @@ function computeLayout(tilesX, tilesY, tilePixels) {
 
   calToggle.addEventListener('click', toggleCalibrationCard);
 
-  // Stop calibration on page unload
-  window.addEventListener('beforeunload', function() {
-    if (calibrationActive) {
-      // Synchronous XHR for reliable unload delivery
-      try {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/calibration/stop', false);
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        xhr.send('{}');
-      } catch (e) { /* best effort */ }
+  // Pattern toggle buttons
+  if (calPatternToggle) {
+    var patternBtns = calPatternToggle.querySelectorAll('.cal-pattern-btn');
+    for (var pi = 0; pi < patternBtns.length; pi++) {
+      patternBtns[pi].addEventListener('click', function() {
+        calPattern = parseInt(this.getAttribute('data-pattern'), 10) || 0;
+        var all = calPatternToggle.querySelectorAll('.cal-pattern-btn');
+        for (var j = 0; j < all.length; j++) all[j].classList.remove('active');
+        this.classList.add('active');
+        renderCalibrationCanvas();
+        activatePattern();
+      });
     }
+  }
+
+  // Stop all test patterns on page unload
+  window.addEventListener('beforeunload', function() {
+    try {
+      if (calibrationActive) {
+        var xhr1 = new XMLHttpRequest();
+        xhr1.open('POST', '/api/calibration/stop', false);
+        xhr1.setRequestHeader('Content-Type', 'application/json');
+        xhr1.send('{}');
+      }
+      if (positioningActive) {
+        var xhr2 = new XMLHttpRequest();
+        xhr2.open('POST', '/api/positioning/stop', false);
+        xhr2.setRequestHeader('Content-Type', 'application/json');
+        xhr2.send('{}');
+      }
+    } catch (e) { /* best effort */ }
   });
 
   // Resize handler for calibration canvas
@@ -1480,8 +2037,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
   function decodeRgb565Preview(entry) {
     var reader = new FileReader();
     reader.onload = function() {
-      var buf = new Uint16Array(reader.result);
-      if (buf.length !== 1024) {
+      if (reader.result.byteLength !== 2048) {
         entry.valid = false;
         entry.error = 'Decode error: unexpected pixel count';
         updateRowState(entry);
@@ -1489,7 +2045,8 @@ function computeLayout(tilesX, tilesY, tilePixels) {
         return;
       }
 
-      // Decode RGB565 -> RGBA for canvas
+      // Decode RGB565 (big-endian) -> RGBA for canvas
+      var view = new DataView(reader.result);
       var canvas = document.createElement('canvas');
       canvas.width = 32;
       canvas.height = 32;
@@ -1498,7 +2055,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       var pixels = imgData.data;
 
       for (var i = 0; i < 1024; i++) {
-        var px = buf[i];
+        var px = view.getUint16(i * 2, false); // big-endian
         var r5 = (px >> 11) & 0x1F;
         var g6 = (px >> 5) & 0x3F;
         var b5 = px & 0x1F;
@@ -1795,12 +2352,12 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       })
       .then(function(buf) {
         if (!buf || buf.byteLength !== 2048) return;
-        var pixels = new Uint16Array(buf);
+        var view = new DataView(buf);
         var ctx = canvas.getContext('2d');
         var imgData = ctx.createImageData(32, 32);
         var d = imgData.data;
         for (var i = 0; i < 1024; i++) {
-          var px = pixels[i];
+          var px = view.getUint16(i * 2, false); // big-endian
           var r5 = (px >> 11) & 0x1F;
           var g6 = (px >> 5) & 0x3F;
           var b5 = px & 0x1F;
@@ -1901,6 +2458,23 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       });
   }
 
+  // --- Unified Apply ---
+  btnApplyAll.addEventListener('click', function() {
+    var payload = collectPayload();
+    if (payload === null) return; // validation failed
+
+    if (Object.keys(payload).length === 0) {
+      clearDirtyState();
+      return;
+    }
+
+    applyWithReboot(payload, btnApplyAll, 'Apply Changes');
+
+    // Clear dirty state after successful send (applyWithReboot handles UI)
+    // We clear immediately since applyWithReboot manages the button state
+    clearDirtyState();
+  });
+
   // --- Init ---
   var settingsPromise = loadSettings();
 
@@ -1923,6 +2497,7 @@ function computeLayout(tilesX, tilesY, tilePixels) {
       matrixHeight: layout.matrixHeight
     });
     renderLayoutCanvas(layout);
+    renderWiringCanvas();
   }).catch(function() {
     // Fallback: render from settings-loaded form values.
     settingsPromise.then(function() {

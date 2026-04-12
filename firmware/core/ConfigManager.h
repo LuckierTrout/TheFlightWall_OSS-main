@@ -22,6 +22,9 @@ struct LocationConfig {
 struct HardwareConfig {
     uint8_t tiles_x, tiles_y, tile_pixels, display_pin;
     uint8_t origin_corner, scan_dir, zigzag;
+    uint8_t zone_logo_pct;   // 0 = auto (square logo), 1-99 = % of matrix width
+    uint8_t zone_split_pct;  // 0 = auto (50/50), 1-99 = % of matrix height for flight zone
+    uint8_t zone_layout;     // 0 = classic (logo full-height left), 1 = full-width bottom
 };
 
 struct TimingConfig {

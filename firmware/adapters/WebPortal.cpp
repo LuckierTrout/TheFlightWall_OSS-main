@@ -118,6 +118,10 @@ void WebPortal::onCalibration(CalibrationCallback callback) {
     _calibrationCallback = callback;
 }
 
+void WebPortal::onPositioning(PositioningCallback callback) {
+    _positioningCallback = callback;
+}
+
 void WebPortal::_registerRoutes() {
     // GET / — serve wizard or dashboard based on WiFi mode
     _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
@@ -205,9 +209,37 @@ void WebPortal::_registerRoutes() {
         _handleGetLayout(request);
     });
 
-    // POST /api/calibration/start (Story 4.2)
+    // POST /api/calibration/start (Story 4.2) — gradient pattern
     _server->on("/api/calibration/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
         _handlePostCalibrationStart(request);
+    });
+
+    // POST /api/positioning/start — panel positioning guide (independent from calibration)
+    _server->on("/api/positioning/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_positioningCallback) {
+            _positioningCallback(true);
+        }
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["message"] = "Positioning mode started";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // POST /api/positioning/stop
+    _server->on("/api/positioning/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_positioningCallback) {
+            _positioningCallback(false);
+        }
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["message"] = "Positioning mode stopped";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
     });
 
     // POST /api/calibration/stop (Story 4.2)

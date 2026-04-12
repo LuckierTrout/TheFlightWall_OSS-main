@@ -1,0 +1,4207 @@
+{
+  "metadata": {
+    "repository": "LuckierTrout/TheFlightWall_OSS-main",
+    "branch": "main",
+    "analysis_date": "Apr 3, 2026, 10:55 AM",
+    "scan_summary": {
+      "files_included": "",
+      "files_excluded": ".md",
+      "lines_analyzed": "115160"
+    },
+    "filter": {
+      "type": "codebase_only",
+      "excluded_path_prefixes": [
+        ".agents/",
+        ".claude/",
+        ".cursor/skills/",
+        ".gemini/",
+        ".kiro/",
+        ".opencode/",
+        "_bmad/",
+        "_bmad-output/"
+      ],
+      "note": "duplicate_code retained unchanged because file_path values are empty in source report"
+    }
+  },
+  "summary": {
+    "sast": {
+      "total_issues": 3,
+      "false_positives": 6,
+      "severity_distribution": {
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 3
+      }
+    },
+    "secrets": {
+      "total_detected": 0,
+      "confidence_distribution": {
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0
+      }
+    },
+    "infrastructure": {
+      "total_issues": 0,
+      "severity_distribution": {
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0
+      }
+    },
+    "sca": {
+      "total_vulnerabilities": 0,
+      "severity_distribution": {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "UNKNOWN": 0
+      },
+      "healthy_packages_scanned": 0
+    },
+    "antipatterns": {
+      "total_issues": 567
+    },
+    "complex_functions": {
+      "total_complex_functions": 4
+    },
+    "docstrings_absent": {
+      "total_missing": 119
+    },
+    "duplicate_code": {
+      "total_groups": 9
+    },
+    "dead_code": {
+      "total_issues": 0
+    },
+    "sbom": {
+      "total_components": 0,
+      "permissive": 0,
+      "non_permissive": 0
+    }
+  },
+  "results": {
+    "sast": [
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/health.js",
+        "line_number": 73,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-"
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/health.js",
+        "line_number": 85,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-"
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/health.js",
+        "line_number": 101,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-"
+      }
+    ],
+    "sast_false_positives": [
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/wizard.js",
+        "line_number": 144,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "The user-controlled SSID is HTML-escaped with escHtml() before being inserted, so the reported XSS is not present."
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/wizard.js",
+        "line_number": 266,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "All dynamic review content is HTML-escaped with escHtml() before innerHTML assignment, so there is no XSS sink here."
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/wizard.js",
+        "line_number": 519,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "The only user-controlled value in the handoff message is escaped with escHtml(), so the innerHTML usage is safe here."
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/dashboard.js",
+        "line_number": 648,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "The untrusted SSID is HTML-escaped via textContent before being inserted into innerHTML, so no XSS sink is exposed."
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/health.js",
+        "line_number": 110,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "The rendered device fields are numeric telemetry formatted for display, with no concrete evidence of attacker-controlled markup reaching the sink."
+      },
+      {
+        "title": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "description": "User controlled data in methods like `innerHTML`, `outerHTML` or `document.write` is an anti-pattern that can lead to XSS vulnerabilities",
+        "file_path": "firmware/data-src/health.js",
+        "line_number": 121,
+        "severity": "LOW",
+        "cwe": [
+          "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+        ],
+        "owasp": [
+          "A07:2017 - Cross-Site Scripting (XSS)",
+          "A03:2021 - Injection",
+          "A05:2025 - Injection"
+        ],
+        "epss_score": "-",
+        "epss_percentile": "-",
+        "false_positive_reasoning": "The flight panel only renders numeric status metrics, so there is no evidence of exploitable HTML injection."
+      }
+    ],
+    "secrets": [],
+    "infrastructure": [],
+    "sca": [],
+    "antipatterns": [
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_layout_engine/test_main.cpp/anti_patterns.json",
+        "line_number": 12,
+        "message": "Use \"std::string\" instead of a C-style char array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 20,
+        "message": "Refactor this code to not nest more than 3 if|for|do|while|switch statements.",
+        "symbol": "cpp:S134"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 71,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 138,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 176,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 189,
+        "message": "Define each identifier in a dedicated statement.",
+        "symbol": "cpp:S1659"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 202,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/anti_patterns.json",
+        "line_number": 204,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 41,
+        "message": "Use \"std::string\" instead of a C-style char array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 46,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 46,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 47,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 54,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 73,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 74,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 75,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 94,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 105,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 106,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 110,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 115,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 116,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 117,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 118,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 119,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 281,
+        "message": "Refactor this code to not nest more than 3 if|for|do|while|switch statements.",
+        "symbol": "cpp:S134"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 350,
+        "message": "Refactor this code to not nest more than 3 if|for|do|while|switch statements.",
+        "symbol": "cpp:S134"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 637,
+        "message": "Refactor this code to not nest more than 3 if|for|do|while|switch statements.",
+        "symbol": "cpp:S134"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 252,
+        "message": "Replace this use of \"void *\" with a more meaningful type.",
+        "symbol": "cpp:S5008"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 388,
+        "message": "Remove the commented out code.",
+        "symbol": "cpp:S125"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/anti_patterns.json",
+        "line_number": 615,
+        "message": "Remove the commented out code.",
+        "symbol": "cpp:S125"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/anti_patterns.json",
+        "line_number": 639,
+        "message": "Remove the commented out code.",
+        "symbol": "cpp:S125"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WebPortal.cpp/anti_patterns.json",
+        "line_number": 36,
+        "message": "Move this #include directive to the top of the file.",
+        "symbol": "cpp:S954"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WebPortal.cpp/anti_patterns.json",
+        "line_number": 44,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WebPortal.cpp/anti_patterns.json",
+        "line_number": 59,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/ConfigManager.cpp/anti_patterns.json",
+        "line_number": 8,
+        "message": "Remove the misleading \"/*\" characters.",
+        "symbol": "cpp:S1103"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/ConfigManager.cpp/anti_patterns.json",
+        "line_number": 23,
+        "message": "Global pointers should be const at every level.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/ConfigManager.cpp/anti_patterns.json",
+        "line_number": 34,
+        "message": "Remove this class' destructor so that the class follows the rule of Zero.",
+        "symbol": "cpp:S4963"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/ConfigManager.cpp/anti_patterns.json",
+        "line_number": 128,
+        "message": "Use \"std::array\" or \"std::vector\" instead of a C-style array.",
+        "symbol": "cpp:S5945"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/ConfigManager.cpp/anti_patterns.json",
+        "line_number": 128,
+        "message": "Global variables should be const.",
+        "symbol": "cpp:S5421"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 2,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 10,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 19,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 48,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 62,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 63,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 64,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/anti_patterns.json",
+        "line_number": 68,
+        "message": "Expected an assignment or function call and instead saw an expression.",
+        "symbol": "javascript:S905"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 5,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 6,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 9,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 25,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 28,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 29,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 30,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 31,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 32,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 33,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 34,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 35,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 36,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 37,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 38,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 39,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 40,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 43,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 44,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 45,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 46,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 47,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 48,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 51,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 52,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 53,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 54,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 55,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 56,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 59,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 65,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 73,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 80,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 81,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 82,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 83,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 84,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 92,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 101,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 110,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 131,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 138,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 142,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 144,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 153,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 180,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 203,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 216,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 221,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 222,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 223,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 225,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 234,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 247,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 250,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 252,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 257,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 262,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 262,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 263,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 264,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 278,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 284,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 292,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 293,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 293,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 294,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 294,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 366,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 382,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 399,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 400,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 401,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 402,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 421,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 422,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 423,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 424,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 425,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 431,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 433,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 458,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 463,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 480,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 487,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 488,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 505,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 518,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/anti_patterns.json",
+        "line_number": 520,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 5,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 6,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 7,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 8,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 9,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 10,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 19,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 20,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 21,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 22,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 23,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 24,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 25,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 26,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 27,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 33,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 35,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 36,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 37,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 38,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 39,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 40,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 44,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 45,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 49,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 53,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 59,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 60,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 63,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 77,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 78,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 79,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 80,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 89,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 90,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 94,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 105,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 106,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 109,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 114,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 115,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 116,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 130,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/anti_patterns.json",
+        "line_number": 134,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 17,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 18,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 26,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 31,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 48,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 49,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 50,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 51,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 52,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 53,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 54,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 57,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 58,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 59,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 60,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 61,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 64,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 65,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 66,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 67,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 68,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 69,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 70,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 71,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 72,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 75,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 76,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 77,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 78,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 79,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 80,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 81,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 82,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 83,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 85,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 87,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 88,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 89,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 90,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 91,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 92,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 93,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 104,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 135,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 157,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 173,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 187,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 204,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 229,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 230,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 231,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 232,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 240,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 246,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 247,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 249,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 265,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 266,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 267,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 288,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 289,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 290,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 291,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 292,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 293,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 297,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 299,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 300,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 318,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 330,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 342,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 351,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 355,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 356,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 357,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 371,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 372,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 373,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 374,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 381,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 382,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 383,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 384,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 385,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 386,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 387,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 388,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 405,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 406,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 408,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 416,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 430,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 431,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 432,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 433,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 438,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 439,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 447,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 448,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 452,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 453,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 459,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 460,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 470,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 478,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 479,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 480,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 481,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 497,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 511,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 512,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 545,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 547,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 549,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 551,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 553,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 556,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 558,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 560,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 562,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 575,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 576,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 577,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 578,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 581,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 605,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 614,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 635,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 642,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 646,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 648,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 667,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 668,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 669,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 670,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 671,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 689,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 710,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 711,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 712,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 713,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 714,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 715,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 716,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 717,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 718,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 720,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 721,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 722,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 723,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 724,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 725,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 726,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 727,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 728,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 729,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 730,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 731,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 732,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 733,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 734,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 767,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 768,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 769,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 798,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 806,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 807,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 832,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 844,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 857,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 900,
+        "message": "Expected catch() or return",
+        "symbol": "promise/catch-or-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 901,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 914,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 959,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 963,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 996,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1007,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1008,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1009,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1048,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1050,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1056,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1057,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1064,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1065,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1070,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1071,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1072,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1088,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1113,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1114,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1115,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1116,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1117,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1118,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1119,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1120,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1121,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1122,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1144,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1145,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1156,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1157,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1158,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1159,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1160,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1162,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1163,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1164,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1165,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1170,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1171,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1178,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1179,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1180,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1184,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1185,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1188,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1189,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1196,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1197,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1197,
+        "message": "Use object destructuring.",
+        "symbol": "autofix/prefer-destructuring"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1198,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1198,
+        "message": "Use object destructuring.",
+        "symbol": "autofix/prefer-destructuring"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1203,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1204,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1205,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1207,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1207,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1208,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1208,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1210,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1211,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1212,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1213,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1216,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1217,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1218,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1219,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1232,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1257,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1263,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1263,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1264,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1265,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1268,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1269,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1270,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1271,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1272,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1273,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1274,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1275,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1282,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1283,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1284,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1284,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1290,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1298,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1315,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1347,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1365,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1383,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1394,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1410,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1411,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1412,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1413,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1414,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1415,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1449,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1452,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1456,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1464,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1481,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1483,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1493,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1496,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1497,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1498,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1500,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1500,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1501,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1502,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1503,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1504,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1515,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1517,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1535,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1536,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1538,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1543,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1545,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1548,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1549,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1554,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1559,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1575,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1576,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1578,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1584,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1590,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1596,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1597,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1598,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1599,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1608,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1610,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1629,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1630,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1632,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1638,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1649,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1650,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1660,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1663,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1674,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1677,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1693,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1694,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1695,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1696,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1697,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1700,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1701,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1702,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1703,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1704,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1714,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1715,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1724,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1733,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1748,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1753,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1758,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1760,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1763,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1769,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1772,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1791,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1798,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1799,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1800,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1801,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1802,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1802,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1802,
+        "message": "Unary operator '++' used.",
+        "symbol": "autofix/no-plusplus"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1803,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1804,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1805,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1806,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1813,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1835,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1837,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1839,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1847,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1862,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1864,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1866,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1882,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1886,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1890,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1891,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1899,
+        "message": "Unexpected string concatenation.",
+        "symbol": "autofix/prefer-template"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1905,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1913,
+        "message": "Unexpected var, use let or const instead.",
+        "symbol": "autofix/no-var"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1914,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1928,
+        "message": "Expected catch() or return",
+        "symbol": "promise/catch-or-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1928,
+        "message": "Avoid nesting promises.",
+        "symbol": "promise/no-nesting"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1929,
+        "message": "Each then() should return a value or throw",
+        "symbol": "promise/always-return"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 204,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 205,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 214,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 415,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 418,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 702,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1143,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1263,
+        "message": "Expected a `for-of` loop instead of a `for` loop with this simple iteration.",
+        "symbol": "javascript:S4138"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1284,
+        "message": "Expected a `for-of` loop instead of a `for` loop with this simple iteration.",
+        "symbol": "javascript:S4138"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1415,
+        "message": "Remove this commented out code.",
+        "symbol": "javascript:S125"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1434,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1441,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1516,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1618,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1645,
+        "message": "Refactor this code to not nest functions more than 4 levels deep.",
+        "symbol": "javascript:S2004"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/anti_patterns.json",
+        "line_number": 1912,
+        "message": "Prefer using an optional chain expression instead, as it's more concise and easier to read.",
+        "symbol": "javascript:S6582"
+      }
+    ],
+    "complex_functions": [
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/complex_functions.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/complex_functions.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/complex_functions.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/complex_functions.json"
+      }
+    ],
+    "docstrings_absent": [
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_layout_engine/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_layout_engine/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_logo_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_telemetry_conversion/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_telemetry_conversion/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/test/test_config_manager/test_main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/src/main.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/FlightWallFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/FlightWallFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/FlightWallFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/AeroAPIFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/NeoMatrixDisplay.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/WiFiManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/OpenSkyFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/OpenSkyFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/OpenSkyFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/adapters/OpenSkyFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/FlightDataFetcher.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LayoutEngine.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/core/LogoManager.cpp/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/common.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/wizard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/health.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      },
+      {
+        "file_path": "6d509a05e2f549a98b484fd2597a377df11335e5/firmware/data-src/dashboard.js/docstring.json"
+      }
+    ],
+    "duplicate_code": [
+      {
+        "group_id": 1,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 2,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 3,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 4,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 5,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 6,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 7,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 8,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      },
+      {
+        "group_id": 9,
+        "occurrences": [
+          {
+            "file_path": ""
+          },
+          {
+            "file_path": ""
+          }
+        ]
+      }
+    ],
+    "dead_code": [],
+    "sbom": []
+  }
+}

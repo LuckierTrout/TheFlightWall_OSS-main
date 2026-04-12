@@ -24,7 +24,7 @@ template: false
 variables:
   # Project context
   project_context: "**/project-context.md"
-  story_dir: "{implementation_artifacts}"
+  story_dir: "{implementation_artifacts}/stories"
 
 # Smart input file references - handles both whole docs and sharded docs
 # Priority: Whole document first, then sharded version

@@ -1,0 +1,366 @@
+# FlightWall CI/CD Quality Pipeline
+# Platform: GitHub Actions
+# Project: ESP32 PlatformIO (embedded C++ with web UI)
+#
+# Pipeline stages:
+#   1. build     — Compile firmware, enforce binary size gate
+#   2. assets    — Validate web assets fit LittleFS partition budget
+#   3. lint      — Static analysis (cppcheck)
+#   4. burn-in   — Repeated build stability check (main/release only)
+#
+# On-device Unity tests (ConfigManager, LayoutEngine, LogoManager, etc.)
+# require ESP32 hardware and cannot run in CI. They are documented as
+# manual gates in the development workflow.
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "release/**"]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "firmware/**"
+      - ".github/workflows/ci.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Architecture-mandated limits (see architecture.md Decision F1)
+  MAX_FIRMWARE_SIZE: 1572864   # 1.5 MiB (1536 * 1024) — OTA partition limit
+  WARN_FIRMWARE_SIZE: 1363148  # 1.3 MiB — pre-implementation warning gate
+  MAX_LITTLEFS_SIZE: 983040    # 960 KB — LittleFS partition budget
+  PIO_ENV: esp32dev
+
+jobs:
+  # ============================================================================
+  # Stage 1: Build — Compile firmware and enforce size gates
+  # ============================================================================
+  build:
+    name: Build & Size Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            pio-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build firmware
+        working-directory: firmware
+        run: pio run -e ${{ env.PIO_ENV }}
+
+      - name: Firmware binary size gate
+        working-directory: firmware
+        run: |
+          FIRMWARE_BIN=".pio/build/${{ env.PIO_ENV }}/firmware.bin"
+
+          if [ ! -f "$FIRMWARE_BIN" ]; then
+            echo "::error::firmware.bin not found at $FIRMWARE_BIN"
+            exit 1
+          fi
+
+          SIZE=$(stat -c%s "$FIRMWARE_BIN")
+          SIZE_KB=$((SIZE / 1024))
+          MAX_KB=$((${{ env.MAX_FIRMWARE_SIZE }} / 1024))
+          WARN_KB=$((${{ env.WARN_FIRMWARE_SIZE }} / 1024))
+
+          echo "## Firmware Size Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Binary size | ${SIZE_KB} KB (${SIZE} bytes) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OTA partition limit | ${MAX_KB} KB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Warning threshold | ${WARN_KB} KB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Headroom | $(( (MAX_KB - SIZE_KB) )) KB |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$SIZE" -gt "${{ env.MAX_FIRMWARE_SIZE }}" ]; then
+            echo "::error::Firmware binary (${SIZE_KB} KB) exceeds OTA partition limit (${MAX_KB} KB)"
+            exit 1
+          fi
+
+          if [ "$SIZE" -gt "${{ env.WARN_FIRMWARE_SIZE }}" ]; then
+            echo "::warning::Firmware binary (${SIZE_KB} KB) exceeds warning threshold (${WARN_KB} KB). Optimize before adding more features."
+          fi
+
+          echo "Firmware size OK: ${SIZE_KB} KB / ${MAX_KB} KB"
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-build
+          path: |
+            firmware/.pio/build/${{ env.PIO_ENV }}/firmware.bin
+            firmware/.pio/build/${{ env.PIO_ENV }}/firmware.elf
+          retention-days: 14
+
+  # ============================================================================
+  # Stage 2: Assets — Validate web assets fit LittleFS budget
+  # ============================================================================
+  assets:
+    name: Web Assets Size Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: LittleFS asset size gate
+        working-directory: firmware
+        run: |
+          echo "## Web Assets Size Report" >> "$GITHUB_STEP_SUMMARY"
+
+          # Calculate total size of gzipped assets in data/
+          if [ ! -d "data" ]; then
+            echo "::warning::firmware/data/ directory not found — no web assets to check"
+            echo "No data/ directory found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TOTAL_SIZE=0
+          echo "| File | Size (bytes) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-------------|" >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS= read -r -d '' file; do
+            FSIZE=$(stat -c%s "$file")
+            TOTAL_SIZE=$((TOTAL_SIZE + FSIZE))
+            REL_PATH="${file#./}"
+            echo "| ${REL_PATH} | ${FSIZE} |" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find data/ -type f -print0 | sort -z)
+
+          TOTAL_KB=$((TOTAL_SIZE / 1024))
+          MAX_KB=$((${{ env.MAX_LITTLEFS_SIZE }} / 1024))
+          HEADROOM_KB=$((MAX_KB - TOTAL_KB))
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Total** | **${TOTAL_SIZE} bytes (${TOTAL_KB} KB)** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LittleFS budget | ${MAX_KB} KB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Headroom | ${HEADROOM_KB} KB |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TOTAL_SIZE" -gt "${{ env.MAX_LITTLEFS_SIZE }}" ]; then
+            echo "::error::Web assets (${TOTAL_KB} KB) exceed LittleFS partition budget (${MAX_KB} KB)"
+            exit 1
+          fi
+
+          # Warn if assets consume >80% of budget
+          THRESHOLD=$(( ${{ env.MAX_LITTLEFS_SIZE }} * 80 / 100 ))
+          if [ "$TOTAL_SIZE" -gt "$THRESHOLD" ]; then
+            echo "::warning::Web assets using >80% of LittleFS budget (${TOTAL_KB} KB / ${MAX_KB} KB)"
+          fi
+
+          echo "Web assets OK: ${TOTAL_KB} KB / ${MAX_KB} KB"
+
+      - name: Verify gzip integrity
+        working-directory: firmware
+        run: |
+          ERRORS=0
+          for gz in $(find data/ -name "*.gz" -type f 2>/dev/null); do
+            if ! gzip -t "$gz" 2>/dev/null; then
+              echo "::error::Corrupt gzip file: $gz"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::${ERRORS} corrupt gzip file(s) detected"
+            exit 1
+          fi
+
+          echo "All gzip files valid."
+
+      - name: Source vs gzip freshness check
+        working-directory: firmware
+        run: |
+          # Warn if any data-src/ file is newer than its data/*.gz counterpart
+          STALE=0
+          if [ -d "data-src" ]; then
+            for src in $(find data-src/ -type f -name "*.html" -o -name "*.js" -o -name "*.css" 2>/dev/null); do
+              BASENAME=$(basename "$src")
+              GZ_PATH="data/${BASENAME}.gz"
+              if [ -f "$GZ_PATH" ]; then
+                if [ "$src" -nt "$GZ_PATH" ]; then
+                  echo "::warning::${src} is newer than ${GZ_PATH} — gzipped asset may be stale"
+                  STALE=$((STALE + 1))
+                fi
+              fi
+            done
+          fi
+
+          if [ "$STALE" -gt 0 ]; then
+            echo "::warning::${STALE} web asset(s) may need re-gzipping (data-src/ newer than data/*.gz)"
+          fi
+
+  # ============================================================================
+  # Stage 3: Lint — Static analysis
+  # ============================================================================
+  lint:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck on firmware sources
+        working-directory: firmware
+        run: |
+          cppcheck \
+            --enable=warning,style,performance \
+            --suppress=missingInclude \
+            --suppress=unusedFunction \
+            --suppress=unmatchedSuppression \
+            --error-exitcode=0 \
+            --inline-suppr \
+            --language=c++ \
+            --std=c++11 \
+            -I src -I core -I adapters -I interfaces -I models -I utils -I config \
+            src/ core/ adapters/ \
+            2>&1 | tee cppcheck-report.txt
+
+          # Count errors (severity: error)
+          ERRORS=$(grep -c "\(error\)" cppcheck-report.txt 2>/dev/null || echo "0")
+
+          echo "## Static Analysis Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "cppcheck found **${ERRORS}** error(s)." >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::warning::cppcheck found ${ERRORS} error(s) — review cppcheck-report.txt"
+          fi
+
+      - name: Upload cppcheck report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cppcheck-report
+          path: firmware/cppcheck-report.txt
+          retention-days: 14
+
+  # ============================================================================
+  # Stage 4: Burn-In — Repeated build stability (main/release only)
+  # ============================================================================
+  burn-in:
+    name: Burn-In Build Stability
+    needs: [build]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        iteration: [1, 2, 3]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            pio-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: "Burn-in build (iteration ${{ matrix.iteration }})"
+        working-directory: firmware
+        run: |
+          echo "=== Burn-in iteration ${{ matrix.iteration }} of 3 ==="
+
+          # Clean build to detect non-deterministic issues
+          pio run -e ${{ env.PIO_ENV }} -t clean
+          pio run -e ${{ env.PIO_ENV }}
+
+          # Record binary size for cross-iteration comparison
+          SIZE=$(stat -c%s ".pio/build/${{ env.PIO_ENV }}/firmware.bin")
+          echo "FIRMWARE_SIZE=${SIZE}" >> "$GITHUB_ENV"
+          echo "Iteration ${{ matrix.iteration }}: firmware.bin = ${SIZE} bytes"
+
+      - name: Verify binary size consistency
+        working-directory: firmware
+        run: |
+          SIZE=$(stat -c%s ".pio/build/${{ env.PIO_ENV }}/firmware.bin")
+          SIZE_KB=$((SIZE / 1024))
+          MAX_KB=$((${{ env.MAX_FIRMWARE_SIZE }} / 1024))
+
+          echo "## Burn-In Iteration ${{ matrix.iteration }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Binary size: ${SIZE_KB} KB / ${MAX_KB} KB limit" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$SIZE" -gt "${{ env.MAX_FIRMWARE_SIZE }}" ]; then
+            echo "::error::Burn-in iteration ${{ matrix.iteration }}: firmware exceeds size limit"
+            exit 1
+          fi
+
+  # ============================================================================
+  # Report — Aggregate results (runs after all stages)
+  # ============================================================================
+  report:
+    name: Pipeline Summary
+    needs: [build, assets, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate pipeline summary
+        run: |
+          echo "## CI Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stage | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build & Size Gate | ${{ needs.build.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Web Assets | ${{ needs.assets.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Static Analysis | ${{ needs.lint.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Manual Gates (require ESP32 hardware)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [ ] ConfigManager unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [ ] LayoutEngine unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [ ] LogoManager unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [ ] Telemetry conversion tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [ ] ModeRegistry unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Run on-device tests: \`cd firmware && pio test -e esp32dev\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,18 @@
+cli_args:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+cli_args_masked:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+current_phase: null
+ended_at: null
+epic: null
+phase_events: []
+phases: []
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 5098f9dd
+started_at: '2026-04-12T04:00:34.634749Z'
+status: running
+story: null

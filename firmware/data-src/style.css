@@ -199,6 +199,27 @@ body{
 .apply-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
 .apply-btn:disabled{opacity:0.5;cursor:default}
 
+/* Unified apply bar */
+.apply-bar{
+  position:sticky;bottom:0;z-index:100;
+  background:var(--surface);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  padding:12px var(--gap);margin-top:var(--gap);
+  display:flex;justify-content:space-between;align-items:center;
+  box-shadow:0 -4px 12px rgba(0,0,0,0.4);
+}
+.apply-bar-text{font-size:0.875rem;color:var(--primary);font-weight:500}
+.apply-bar-btn{
+  padding:10px 24px;font-size:1rem;
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+  white-space:nowrap;
+}
+.apply-bar-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.apply-bar-btn:disabled{opacity:0.5;cursor:default}
+
 /* Card form fields (dashboard) */
 .card .form-fields{display:flex;flex-direction:column;gap:4px}
 .card .form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
@@ -286,6 +307,11 @@ body{
   margin-right:4px;vertical-align:middle;
 }
 
+.wiring-label{
+  font-size:0.8125rem;font-weight:600;color:var(--text-muted);
+  margin:var(--gap) 0 6px;
+}
+
 /* Location card (Story 4.1) */
 .location-toggle{cursor:pointer;user-select:none}
 .location-toggle::after{
@@ -357,6 +383,17 @@ body{
   border:1px solid var(--border);border-radius:var(--radius);
   background:var(--bg);
 }
+
+/* Calibration pattern toggle */
+.cal-pattern-toggle{display:flex;gap:0;margin-bottom:var(--gap)}
+.cal-pattern-btn{
+  flex:1;padding:6px 0;border:1px solid var(--border);
+  background:var(--bg);color:var(--text-muted);cursor:pointer;
+  font-size:0.8125rem;
+}
+.cal-pattern-btn:first-child{border-radius:var(--radius) 0 0 var(--radius)}
+.cal-pattern-btn:last-child{border-radius:0 var(--radius) var(--radius) 0}
+.cal-pattern-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
 
 /* Logo upload (Story 4.3) */
 .logo-upload-zone{

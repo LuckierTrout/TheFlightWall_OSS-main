@@ -677,6 +677,108 @@ void NeoMatrixDisplay::renderCalibrationPattern()
     FastLED.show();
 }
 
+// --- Positioning mode (independent from calibration) ---
+
+void NeoMatrixDisplay::setPositioningMode(bool enabled)
+{
+    _positioningMode = enabled;
+}
+
+bool NeoMatrixDisplay::isPositioningMode() const
+{
+    return _positioningMode;
+}
+
+void NeoMatrixDisplay::renderPositioningPattern()
+{
+    if (_matrix == nullptr) return;
+
+    _matrix->fillScreen(0);
+
+    uint8_t tilesX = _hardware.tiles_x;
+    uint8_t tilesY = _hardware.tiles_y;
+    uint8_t tp = _hardware.tile_pixels;
+    uint8_t totalTiles = tilesX * tilesY;
+
+    if (totalTiles == 0 || tp == 0) return;
+
+    // 3x5 digit bitmaps: 3 columns, each byte = 5 row bits (bit0 = top row)
+    static const uint8_t font[10][3] = {
+        {0x1F, 0x11, 0x1F}, // 0
+        {0x12, 0x1F, 0x10}, // 1
+        {0x1D, 0x15, 0x17}, // 2
+        {0x15, 0x15, 0x1F}, // 3
+        {0x07, 0x04, 0x1F}, // 4
+        {0x17, 0x15, 0x1D}, // 5
+        {0x1F, 0x15, 0x1D}, // 6
+        {0x01, 0x01, 0x1F}, // 7
+        {0x1F, 0x15, 0x1F}, // 8
+        {0x17, 0x15, 0x1F}, // 9
+    };
+
+    for (uint8_t row = 0; row < tilesY; row++) {
+        for (uint8_t col = 0; col < tilesX; col++) {
+            uint8_t gridIdx = row * tilesX + col;
+            uint16_t tileX0 = col * tp;
+            uint16_t tileY0 = row * tp;
+
+            // Unique hue per tile
+            uint8_t hue = gridIdx * 255 / totalTiles;
+            CRGB bright, dim;
+            bright.setHSV(hue, 255, 200);
+            dim.setHSV(hue, 200, 40);
+
+            uint16_t dimColor = _matrix->Color(dim.r, dim.g, dim.b);
+            uint16_t brightColor = _matrix->Color(bright.r, bright.g, bright.b);
+
+            // Fill tile with dim color
+            for (uint8_t ly = 0; ly < tp; ly++)
+                for (uint8_t lx = 0; lx < tp; lx++)
+                    _matrix->drawPixel(tileX0 + lx, tileY0 + ly, dimColor);
+
+            // Bright border
+            for (uint8_t i = 0; i < tp; i++) {
+                _matrix->drawPixel(tileX0 + i, tileY0, brightColor);
+                _matrix->drawPixel(tileX0 + i, tileY0 + tp - 1, brightColor);
+                _matrix->drawPixel(tileX0, tileY0 + i, brightColor);
+                _matrix->drawPixel(tileX0 + tp - 1, tileY0 + i, brightColor);
+            }
+
+            // Red corner marker at top-left of tile (orientation guide)
+            uint16_t red = _matrix->Color(255, 0, 0);
+            uint8_t ms = (tp >= 8) ? 3 : 2;
+            for (uint8_t my = 0; my < ms; my++)
+                for (uint8_t mx = 0; mx < ms; mx++)
+                    _matrix->drawPixel(tileX0 + mx, tileY0 + my, red);
+
+            // Draw 3x5 digit(s) centered in tile
+            uint16_t white = _matrix->Color(255, 255, 255);
+            auto drawDigit = [&](uint16_t ox, uint16_t oy, uint8_t d) {
+                if (d > 9) return;
+                for (uint8_t cx = 0; cx < 3; cx++) {
+                    uint8_t bits = font[d][cx];
+                    for (uint8_t cy = 0; cy < 5; cy++) {
+                        if (bits & (1 << cy)) {
+                            _matrix->drawPixel(ox + cx, oy + cy, white);
+                        }
+                    }
+                }
+            };
+
+            if (gridIdx < 10) {
+                drawDigit(tileX0 + (tp - 3) / 2, tileY0 + (tp - 5) / 2, gridIdx);
+            } else {
+                uint16_t ox = tileX0 + (tp - 7) / 2;
+                uint16_t oy = tileY0 + (tp - 5) / 2;
+                drawDigit(ox, oy, gridIdx / 10);
+                drawDigit(ox + 4, oy, gridIdx % 10);
+            }
+        }
+    }
+
+    FastLED.show();
+}
+
 void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size_t index)
 {
     if (_matrix == nullptr)

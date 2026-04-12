@@ -11,7 +11,7 @@ date: system-generated
 planning_artifacts: "{config_source}:planning_artifacts"
 implementation_artifacts: "{config_source}:implementation_artifacts"
 output_folder: "{implementation_artifacts}"
-story_dir: "{implementation_artifacts}"
+story_dir: "{implementation_artifacts}/stories"
 
 # Workflow components
 installed_path: "{project-root}/_bmad/bmm/workflows/4-implementation/validate-story"

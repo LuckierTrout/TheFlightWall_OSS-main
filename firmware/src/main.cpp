@@ -304,6 +304,27 @@ void displayTask(void *pvParameters)
             LOG_I("DisplayTask", "Config change detected, display settings updated");
         }
 
+        // Calibration mode (Story 4.2): render test pattern instead of flights
+        // Checked before status messages so test patterns override persistent banners
+        if (g_display.isCalibrationMode())
+        {
+            statusMessageVisible = false;
+            g_display.renderCalibrationPattern();
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        // Positioning mode: render panel position guide instead of flights
+        if (g_display.isPositioningMode())
+        {
+            statusMessageVisible = false;
+            g_display.renderPositioningPattern();
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         DisplayStatusMessage statusMessage = {};
         if (g_displayMessageQueue != nullptr &&
             xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
@@ -325,15 +346,6 @@ void displayTask(void *pvParameters)
             }
 
             statusMessageVisible = false;
-        }
-
-        // Calibration mode (Story 4.2): render test pattern instead of flights
-        if (g_display.isCalibrationMode())
-        {
-            g_display.renderCalibrationPattern();
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(50)); // Keep calibration feedback responsive
-            continue;
         }
 
         // Read latest flight data from queue (peek, don't remove)
@@ -506,13 +518,23 @@ void setup()
     // Server serves in both AP and STA modes; GET / routes dynamically based on WiFi state
     g_webPortal.init(g_webServer, g_wifiManager);
 
-    // Register calibration callback (Story 4.2) — toggles display test pattern
+    // Register calibration callback (Story 4.2) — toggles gradient test pattern
     g_webPortal.onCalibration([](bool enabled) {
         g_display.setCalibrationMode(enabled);
         if (enabled) {
             LOG_I("Main", "Calibration mode started");
         } else {
             LOG_I("Main", "Calibration mode stopped");
+        }
+    });
+
+    // Register positioning callback — toggles panel positioning guide
+    g_webPortal.onPositioning([](bool enabled) {
+        g_display.setPositioningMode(enabled);
+        if (enabled) {
+            LOG_I("Main", "Positioning mode started");
+        } else {
+            LOG_I("Main", "Positioning mode stopped");
         }
     });
 

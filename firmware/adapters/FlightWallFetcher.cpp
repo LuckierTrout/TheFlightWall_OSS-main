@@ -19,9 +19,16 @@ bool FlightWallFetcher::httpGetJson(const String &url, String &outPayload)
 
     HTTPClient http;
     http.begin(client, url);
+    http.setTimeout(15000);
     http.addHeader("Accept", "application/json");
 
     int code = http.GET();
+    if (code <= 0)
+    {
+        Serial.printf("FlightWallFetcher: Connection failed (error %d)\n", code);
+        http.end();
+        return false;
+    }
     if (code != 200)
     {
         http.end();

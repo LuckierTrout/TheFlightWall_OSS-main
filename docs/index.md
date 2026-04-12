@@ -22,6 +22,8 @@
 - [Source Tree Analysis](./source-tree-analysis.md)
 - [Component Inventory](./component-inventory.md)
 - [Development Guide](./development-guide.md)
+- [Device Setup and Flash Guide](./device-setup-and-flash-guide.md)
+- [Device Setup and Flash (Printable)](./device-setup-and-flash-printable.md)
 - [API Contracts](./api-contracts.md)
 
 ## Existing Documentation
@@ -38,4 +40,4 @@
 5. Set your location in `firmware/config/UserConfiguration.h`
 6. Connect ESP32 via USB and click Upload
 
-See [Development Guide](./development-guide.md) for detailed instructions.
+See [Development Guide](./development-guide.md) for architecture-oriented setup and [Device Setup and Flash Guide](./device-setup-and-flash-guide.md) for the full end-to-end first-flash flow.

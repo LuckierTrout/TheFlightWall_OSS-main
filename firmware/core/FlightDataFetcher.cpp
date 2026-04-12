@@ -8,6 +8,7 @@ Output: Returns count of enriched flights and fills outStates/outFlights.
 */
 #include "core/FlightDataFetcher.h"
 #include "core/ConfigManager.h"
+#include "core/SystemStatus.h"
 #include "adapters/FlightWallFetcher.h"
 
 FlightDataFetcher::FlightDataFetcher(BaseStateVectorFetcher *stateFetcher,
@@ -27,9 +28,18 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
         loc.radius_km,
         outStates);
     if (!ok)
+    {
+        SystemStatus::set(Subsystem::OPENSKY, StatusLevel::ERROR, "Fetch failed");
         return 0;
+    }
+
+    SystemStatus::set(Subsystem::OPENSKY, StatusLevel::OK,
+        String(outStates.size()) + " vectors");
 
     size_t enriched = 0;
+    size_t aeroOk = 0, aeroFail = 0;
+    size_t cdnOk = 0, cdnFail = 0;
+
     for (const StateVector &s : outStates)
     {
         if (s.callsign.length() == 0)
@@ -39,6 +49,7 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
         FlightInfo info;
         if (_flightFetcher->fetchFlightInfo(s.callsign, info))
         {
+            aeroOk++;
             FlightWallFetcher fw;
             if (info.operator_icao.length())
             {
@@ -46,6 +57,11 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
                 if (fw.getAirlineName(info.operator_icao, airlineFull))
                 {
                     info.airline_display_name_full = airlineFull;
+                    cdnOk++;
+                }
+                else
+                {
+                    cdnFail++;
                 }
             }
             if (info.aircraft_code.length())
@@ -57,6 +73,11 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
                     {
                         info.aircraft_display_name_short = aircraftShort;
                     }
+                    cdnOk++;
+                }
+                else
+                {
+                    cdnFail++;
                 }
             }
             // Join state-vector telemetry with display units (Story 3.3)
@@ -77,6 +98,39 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
             outFlights.push_back(info);
             enriched++;
         }
+        else
+        {
+            aeroFail++;
+        }
     }
+
+    // Update AeroAPI subsystem status
+    if (aeroOk + aeroFail == 0) {
+        SystemStatus::set(Subsystem::AEROAPI, StatusLevel::OK, "No flights to enrich");
+    } else if (aeroFail == 0) {
+        SystemStatus::set(Subsystem::AEROAPI, StatusLevel::OK,
+            String(aeroOk) + " enriched");
+    } else if (aeroOk == 0) {
+        SystemStatus::set(Subsystem::AEROAPI, StatusLevel::ERROR,
+            "All " + String(aeroFail) + " lookups failed");
+    } else {
+        SystemStatus::set(Subsystem::AEROAPI, StatusLevel::WARNING,
+            String(aeroOk) + "/" + String(aeroOk + aeroFail) + " enriched");
+    }
+
+    // Update CDN subsystem status
+    if (cdnOk + cdnFail == 0) {
+        SystemStatus::set(Subsystem::CDN, StatusLevel::OK, "No lookups needed");
+    } else if (cdnFail == 0) {
+        SystemStatus::set(Subsystem::CDN, StatusLevel::OK,
+            String(cdnOk) + " resolved");
+    } else if (cdnOk == 0) {
+        SystemStatus::set(Subsystem::CDN, StatusLevel::ERROR,
+            "All " + String(cdnFail) + " lookups failed");
+    } else {
+        SystemStatus::set(Subsystem::CDN, StatusLevel::WARNING,
+            String(cdnOk) + "/" + String(cdnOk + cdnFail) + " resolved");
+    }
+
     return enriched;
 }

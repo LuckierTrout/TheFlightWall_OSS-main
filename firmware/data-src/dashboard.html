@@ -83,7 +83,6 @@
         <label for="d-aeroapi-key">AeroAPI Key</label>
         <input type="password" id="d-aeroapi-key" autocomplete="off" autocapitalize="off" spellcheck="false">
       </div>
-      <button type="button" class="apply-btn" id="btn-apply-network">Apply</button>
     </section>
 
     <!-- Hardware Card -->
@@ -113,6 +112,12 @@
       </div>
       <p class="resolution-text" id="d-resolution-text"></p>
 
+      <label for="d-zone-layout">Layout Style</label>
+      <select id="d-zone-layout">
+        <option value="0">Classic</option>
+        <option value="1">Full-width bottom</option>
+      </select>
+
       <div class="preview-container" id="preview-container">
         <canvas id="layout-preview"></canvas>
         <div class="preview-legend" id="preview-legend">
@@ -120,10 +125,15 @@
           <span class="legend-chip" style="background:#3fb950"></span> Flight
           <span class="legend-chip" style="background:#d29922"></span> Telemetry
         </div>
+        <h3 class="wiring-label">Panel Wiring Path</h3>
+        <canvas id="wiring-preview"></canvas>
+        <div class="preview-legend" id="wiring-legend">
+          <span class="legend-chip" style="background:#3fb950"></span> Data in
+          <span class="legend-chip" style="background:#58a6ff"></span> Cable path
+        </div>
         <p class="helper-copy">Predictive preview — actual LED wall updates after Apply.</p>
       </div>
 
-      <button type="button" class="apply-btn" id="btn-apply-hardware">Apply</button>
     </section>
 
     <!-- Calibration Card -->
@@ -131,6 +141,12 @@
       <h2 class="calibration-toggle">Calibration</h2>
       <div class="calibration-body" id="calibration-body" style="display:none">
         <p class="helper-copy" style="margin-top:0;margin-bottom:12px">Adjust wiring flags and see the test pattern update in real-time on the LED wall and canvas preview.</p>
+
+        <label>Test Pattern</label>
+        <div class="cal-pattern-toggle" id="cal-pattern-toggle">
+          <button type="button" class="cal-pattern-btn active" data-pattern="0">Scan Order</button>
+          <button type="button" class="cal-pattern-btn" data-pattern="1">Panel Position</button>
+        </div>
 
         <div class="form-fields">
           <label for="cal-origin-corner">Origin Corner</label>
@@ -219,6 +235,11 @@
       </div>
     </section>
   </main>
+
+  <div class="apply-bar" id="apply-bar" style="display:none">
+    <span class="apply-bar-text">Unsaved changes</span>
+    <button type="button" class="apply-bar-btn" id="btn-apply-all">Apply Changes</button>
+  </div>
 </div>
 
 <script src="/common.js"></script>

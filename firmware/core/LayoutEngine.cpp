@@ -47,15 +47,54 @@ LayoutResult LayoutEngine::compute(uint8_t tilesX, uint8_t tilesY, uint8_t tileP
     }
 
     // Zone calculation (shared algorithm — must match dashboard.js exactly)
-    uint16_t halfH = mh / 2;
+    // Use custom zone percentages when non-zero, otherwise auto layout.
+    uint16_t logoW = mh; // default: square logo
+    uint16_t splitY = mh / 2; // default: 50/50
 
-    result.logoZone      = { 0,  0,     mh,        mh };
-    result.flightZone    = { mh, 0,     static_cast<uint16_t>(mw - mh), halfH };
-    result.telemetryZone = { mh, halfH, static_cast<uint16_t>(mw - mh), static_cast<uint16_t>(mh - halfH) };
+    result.logoZone      = { 0,     0,      logoW,                                    mh };
+    result.flightZone    = { logoW, 0,      static_cast<uint16_t>(mw - logoW),        splitY };
+    result.telemetryZone = { logoW, splitY, static_cast<uint16_t>(mw - logoW),        static_cast<uint16_t>(mh - splitY) };
 
     return result;
 }
 
 LayoutResult LayoutEngine::compute(const HardwareConfig& hw) {
-    return compute(hw.tiles_x, hw.tiles_y, hw.tile_pixels);
+    LayoutResult result = compute(hw.tiles_x, hw.tiles_y, hw.tile_pixels);
+    if (!result.valid) return result;
+
+    uint16_t mw = result.matrixWidth;
+    uint16_t mh = result.matrixHeight;
+    bool customized = false;
+
+    uint16_t logoW = result.logoZone.w;
+    uint16_t splitY = result.flightZone.h;
+
+    if (hw.zone_logo_pct > 0 && hw.zone_logo_pct <= 99) {
+        logoW = (uint16_t)((uint32_t)mw * hw.zone_logo_pct / 100);
+        if (logoW < 1) logoW = 1;
+        if (logoW >= mw) logoW = mw - 1;
+        customized = true;
+    }
+    if (hw.zone_split_pct > 0 && hw.zone_split_pct <= 99) {
+        splitY = (uint16_t)((uint32_t)mh * hw.zone_split_pct / 100);
+        if (splitY < 1) splitY = 1;
+        if (splitY >= mh) splitY = mh - 1;
+        customized = true;
+    }
+
+    if (customized || hw.zone_layout == 1) {
+        if (hw.zone_layout == 1) {
+            // Full-width bottom: logo top-left, flight top-right, telemetry spans full width
+            result.logoZone      = { 0,     0,      logoW,                             splitY };
+            result.flightZone    = { logoW, 0,      static_cast<uint16_t>(mw - logoW), splitY };
+            result.telemetryZone = { 0,     splitY, mw,                                static_cast<uint16_t>(mh - splitY) };
+        } else {
+            // Classic: logo full-height left, flight/telemetry stacked right
+            result.logoZone      = { 0,     0,      logoW,                             mh };
+            result.flightZone    = { logoW, 0,      static_cast<uint16_t>(mw - logoW), splitY };
+            result.telemetryZone = { logoW, splitY, static_cast<uint16_t>(mw - logoW), static_cast<uint16_t>(mh - splitY) };
+        }
+    }
+
+    return result;
 }

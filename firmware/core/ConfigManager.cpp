@@ -47,6 +47,15 @@ public:
 };
 
 static bool isSupportedDisplayPin(uint8_t pin);
+static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels);
+
+// Reject tile configs that would exceed ESP32 RAM (~160KB usable).
+// CRGB is 3 bytes per pixel; cap at 16,384 pixels (~49KB).
+static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels) {
+    if (tiles_x == 0 || tiles_y == 0 || tile_pixels == 0) return false;
+    uint32_t total = (uint32_t)tiles_x * tiles_y * tile_pixels * tile_pixels;
+    return total <= 16384;
+}
 
 static bool updateConfigValue(DisplayConfig& display,
                               LocationConfig& location,
@@ -66,10 +75,22 @@ static bool updateConfigValue(DisplayConfig& display,
     if (strcmp(key, "center_lon") == 0)        { location.center_lon = value.as<double>(); return true; }
     if (strcmp(key, "radius_km") == 0)         { location.radius_km = value.as<double>(); return true; }
 
-    // Hardware
-    if (strcmp(key, "tiles_x") == 0)           { hardware.tiles_x = value.as<uint8_t>(); return true; }
-    if (strcmp(key, "tiles_y") == 0)           { hardware.tiles_y = value.as<uint8_t>(); return true; }
-    if (strcmp(key, "tile_pixels") == 0)       { hardware.tile_pixels = value.as<uint8_t>(); return true; }
+    // Hardware — validate tile values to prevent OOM
+    if (strcmp(key, "tiles_x") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (!isValidTileConfig(v, hardware.tiles_y, hardware.tile_pixels)) return false;
+        hardware.tiles_x = v; return true;
+    }
+    if (strcmp(key, "tiles_y") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (!isValidTileConfig(hardware.tiles_x, v, hardware.tile_pixels)) return false;
+        hardware.tiles_y = v; return true;
+    }
+    if (strcmp(key, "tile_pixels") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (!isValidTileConfig(hardware.tiles_x, hardware.tiles_y, v)) return false;
+        hardware.tile_pixels = v; return true;
+    }
     if (strcmp(key, "display_pin") == 0) {
         const uint8_t pin = value.as<uint8_t>();
         if (!isSupportedDisplayPin(pin)) {
@@ -81,6 +102,21 @@ static bool updateConfigValue(DisplayConfig& display,
     if (strcmp(key, "origin_corner") == 0)     { hardware.origin_corner = value.as<uint8_t>(); return true; }
     if (strcmp(key, "scan_dir") == 0)          { hardware.scan_dir = value.as<uint8_t>(); return true; }
     if (strcmp(key, "zigzag") == 0)            { hardware.zigzag = value.as<uint8_t>(); return true; }
+    if (strcmp(key, "zone_logo_pct") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (v > 99) return false;
+        hardware.zone_logo_pct = v; return true;
+    }
+    if (strcmp(key, "zone_split_pct") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (v > 99) return false;
+        hardware.zone_split_pct = v; return true;
+    }
+    if (strcmp(key, "zone_layout") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (v > 1) return false;
+        hardware.zone_layout = v; return true;
+    }
 
     // Timing
     if (strcmp(key, "fetch_interval") == 0)    { timing.fetch_interval = value.as<uint16_t>(); return true; }
@@ -160,6 +196,9 @@ void ConfigManager::loadDefaults() {
     _hardware.origin_corner = 0;
     _hardware.scan_dir = 0;
     _hardware.zigzag = 0;
+    _hardware.zone_logo_pct = 0;
+    _hardware.zone_split_pct = 0;
+    _hardware.zone_layout = 0;
 
     _timing.fetch_interval = TimingConfiguration::FETCH_INTERVAL_SECONDS;
     _timing.display_cycle = TimingConfiguration::DISPLAY_CYCLE_SECONDS;
@@ -264,10 +303,19 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("center_lon"))     snapshot.location.center_lon = prefs.getDouble("center_lon", snapshot.location.center_lon);
     if (prefs.isKey("radius_km"))      snapshot.location.radius_km = prefs.getDouble("radius_km", snapshot.location.radius_km);
 
-    // Hardware
-    if (prefs.isKey("tiles_x"))        snapshot.hardware.tiles_x = prefs.getUChar("tiles_x", snapshot.hardware.tiles_x);
-    if (prefs.isKey("tiles_y"))        snapshot.hardware.tiles_y = prefs.getUChar("tiles_y", snapshot.hardware.tiles_y);
-    if (prefs.isKey("tile_pixels"))    snapshot.hardware.tile_pixels = prefs.getUChar("tile_pixels", snapshot.hardware.tile_pixels);
+    // Hardware — validate tile config to prevent OOM crash
+    if (prefs.isKey("tiles_x") || prefs.isKey("tiles_y") || prefs.isKey("tile_pixels")) {
+        uint8_t tx = prefs.isKey("tiles_x") ? prefs.getUChar("tiles_x", snapshot.hardware.tiles_x) : snapshot.hardware.tiles_x;
+        uint8_t ty = prefs.isKey("tiles_y") ? prefs.getUChar("tiles_y", snapshot.hardware.tiles_y) : snapshot.hardware.tiles_y;
+        uint8_t tp = prefs.isKey("tile_pixels") ? prefs.getUChar("tile_pixels", snapshot.hardware.tile_pixels) : snapshot.hardware.tile_pixels;
+        if (isValidTileConfig(tx, ty, tp)) {
+            snapshot.hardware.tiles_x = tx;
+            snapshot.hardware.tiles_y = ty;
+            snapshot.hardware.tile_pixels = tp;
+        } else {
+            LOG_E("ConfigManager", "NVS tile config invalid — using defaults");
+        }
+    }
     if (prefs.isKey("display_pin")) {
         const uint8_t storedPin = prefs.getUChar("display_pin", snapshot.hardware.display_pin);
         if (isSupportedDisplayPin(storedPin)) {
@@ -277,6 +325,9 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("origin_corner"))  snapshot.hardware.origin_corner = prefs.getUChar("origin_corner", snapshot.hardware.origin_corner);
     if (prefs.isKey("scan_dir"))       snapshot.hardware.scan_dir = prefs.getUChar("scan_dir", snapshot.hardware.scan_dir);
     if (prefs.isKey("zigzag"))         snapshot.hardware.zigzag = prefs.getUChar("zigzag", snapshot.hardware.zigzag);
+    if (prefs.isKey("zone_logo_pct"))  snapshot.hardware.zone_logo_pct = prefs.getUChar("zone_logo_pct", snapshot.hardware.zone_logo_pct);
+    if (prefs.isKey("zone_split_pct")) snapshot.hardware.zone_split_pct = prefs.getUChar("zone_split_pct", snapshot.hardware.zone_split_pct);
+    if (prefs.isKey("zone_layout"))    snapshot.hardware.zone_layout = prefs.getUChar("zone_layout", snapshot.hardware.zone_layout);
 
     // Timing
     if (prefs.isKey("fetch_interval")) snapshot.timing.fetch_interval = prefs.getUShort("fetch_interval", snapshot.timing.fetch_interval);
@@ -329,6 +380,9 @@ void ConfigManager::persistToNvs() {
     prefs.putUChar("origin_corner", _hardware.origin_corner);
     prefs.putUChar("scan_dir", _hardware.scan_dir);
     prefs.putUChar("zigzag", _hardware.zigzag);
+    prefs.putUChar("zone_logo_pct", _hardware.zone_logo_pct);
+    prefs.putUChar("zone_split_pct", _hardware.zone_split_pct);
+    prefs.putUChar("zone_layout", _hardware.zone_layout);
 
     // Timing
     prefs.putUShort("fetch_interval", _timing.fetch_interval);
@@ -377,6 +431,9 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     out["origin_corner"] = snapshot.hardware.origin_corner;
     out["scan_dir"] = snapshot.hardware.scan_dir;
     out["zigzag"] = snapshot.hardware.zigzag;
+    out["zone_logo_pct"] = snapshot.hardware.zone_logo_pct;
+    out["zone_split_pct"] = snapshot.hardware.zone_split_pct;
+    out["zone_layout"] = snapshot.hardware.zone_layout;
 
     // Timing
     out["fetch_interval"] = snapshot.timing.fetch_interval;

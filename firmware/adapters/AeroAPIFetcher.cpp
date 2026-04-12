@@ -35,13 +35,20 @@ bool AeroAPIFetcher::fetchFlightInfo(const String &flightIdent, FlightInfo &outI
     HTTPClient http;
     String url = String(ConfigManager::getAeroApiBaseUrl()) + "/flights/" + flightIdent;
     http.begin(client, url);
+    http.setTimeout(15000);
     http.addHeader("x-apikey", netCfg.aeroapi_key);
     http.addHeader("Accept", "application/json");
 
     int code = http.GET();
+    if (code <= 0)
+    {
+        Serial.printf("AeroAPIFetcher: Connection failed (error %d) for flight %s\n", code, flightIdent.c_str());
+        http.end();
+        return false;
+    }
     if (code != 200)
     {
-        Serial.printf("AeroAPIFetcher: HTTP request failed with code %d for flight %s\n", code, flightIdent.c_str());
+        Serial.printf("AeroAPIFetcher: HTTP %d for flight %s\n", code, flightIdent.c_str());
         http.end();
         return false;
     }

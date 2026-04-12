@@ -1,5 +1,5 @@
 # generated: 2026-04-02
-# last_updated: 2026-04-03T12:46:19Z
+# last_updated: 2026-04-12
 # project: TheFlightWall_OSS-main
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,9 +35,15 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Epic 2 and Epic 3 can proceed in parallel after Epic 1 completes
 # - Epic 4 stories (4.1-4.4) are parallelizable — no internal dependencies
+#
+# RELEASE ORDER (post-MVP):
+# =========================
+# 1. Foundation (FN) — OTA, night mode, settings migration — infrastructure for later releases
+# 2. Display System (DS) — mode architecture, mode picker — depends on Foundation
+# 3. Delight (DL) — clock mode, departures, transitions, scheduling, OTA pull — depends on DS
 
 generated: 2026-04-02
-last_updated: 2026-04-03T14:28:02Z
+last_updated: 2026-04-12
 project: TheFlightWall_OSS-main
 project_key: NOKEY
 tracking_system: file-system
@@ -45,7 +51,7 @@ story_location: _bmad-output/implementation-artifacts
 
 development_status:
   # === Epic 1: First-Boot Setup ===
-  epic-1: in-progress
+  epic-1: done
   1-1-project-infrastructure: done
   1-2-configmanager-and-systemstatus: done
   1-3-freertos-dual-core-task-architecture: done
@@ -54,29 +60,121 @@ development_status:
   1-6-setup-wizard-wifi-and-api-keys: done
   1-7-setup-wizard-location-hardware-and-review: done
   1-8-led-progress-states-and-first-flight: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   # === Epic 2: Config Dashboard & Device Management ===
-  epic-2: in-progress
+  epic-2: done
   2-1-dashboard-layout-display-settings-and-toast-system: done
   2-2-timing-controls-and-api-usage-estimate: done
   2-3-network-and-api-settings-with-reboot-flow: done
   2-4-system-health-page: done
   2-5-factory-reset-and-gpio-button: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 
   # === Epic 3: Enhanced Flight Display & Canvas Preview ===
-  epic-3: in-progress
+  epic-3: done
   3-1-layout-engine-and-shared-zone-algorithm: done
   3-2-logo-manager-and-fallback-sprite: done
   3-3-zone-based-flight-rendering-with-logos-and-telemetry: done
   3-4-canvas-layout-preview-in-dashboard: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   # === Epic 4: Advanced Dashboard Tools ===
-  epic-4: in-progress
+  epic-4: done
   4-1-interactive-map-with-circle-radius: done
   4-2-display-calibration-and-test-pattern: done
   4-3-logo-upload-with-rgb565-preview: done
   4-4-logo-list-management-and-deletion: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
+
+  # === Epic FN-1: OTA Firmware Updates & Settings Migration ===
+  epic-fn-1: backlog
+  fn-1-1-partition-table-and-build-configuration: backlog
+  fn-1-2-configmanager-expansion-schedule-keys-and-systemstatus: backlog
+  fn-1-3-ota-upload-endpoint: backlog
+  fn-1-4-ota-self-check-and-rollback-detection: backlog
+  fn-1-5-settings-export-endpoint: backlog
+  fn-1-6-dashboard-firmware-card-and-ota-upload-ui: backlog
+  fn-1-7-settings-import-in-setup-wizard: backlog
+  epic-fn-1-retrospective: optional
+
+  # === Epic FN-2: Night Mode & Brightness Scheduling ===
+  epic-fn-2: backlog
+  fn-2-1-ntp-time-sync-and-timezone-configuration: backlog
+  fn-2-2-night-mode-brightness-scheduler: backlog
+  fn-2-3-dashboard-night-mode-card: backlog
+  epic-fn-2-retrospective: optional
+
+  # === Epic FN-3: Onboarding Polish ===
+  epic-fn-3: backlog
+  fn-3-1-wizard-step-6-test-your-wall: backlog
+  fn-3-2-wizard-timezone-auto-detect: backlog
+  epic-fn-3-retrospective: optional
+
+  # === Epic DS-1: Display Mode Architecture & Classic Card Migration ===
+  epic-ds-1: backlog
+  ds-1-1-heap-baseline-measurement-and-core-abstractions: backlog
+  ds-1-2-displayutils-extraction: backlog
+  ds-1-3-moderegistry-and-static-registration-system: backlog
+  ds-1-4-classic-card-mode-implementation: backlog
+  ds-1-5-display-pipeline-integration: backlog
+  epic-ds-1-retrospective: optional
+
+  # === Epic DS-2: Live Flight Card Mode ===
+  epic-ds-2: backlog
+  ds-2-1-live-flight-card-mode-enriched-telemetry-rendering: backlog
+  ds-2-2-adaptive-field-dropping-and-vertical-direction-indicator: backlog
+  epic-ds-2-retrospective: optional
+
+  # === Epic DS-3: Mode Switching API & Dashboard Mode Picker ===
+  epic-ds-3: backlog
+  ds-3-1-display-mode-api-endpoints: backlog
+  ds-3-2-nvs-mode-persistence-and-boot-restore: backlog
+  ds-3-3-mode-picker-section-cards-and-schematic-previews: backlog
+  ds-3-4-mode-switching-flow-and-transition-states: backlog
+  ds-3-5-accessibility-and-responsive-layout: backlog
+  ds-3-6-upgrade-notification-banner: backlog
+  epic-ds-3-retrospective: optional
+
+  # === Epic DL-1: Clock Mode & Orchestration Foundation ===
+  epic-dl-1: backlog
+  dl-1-1-clock-mode-time-display: backlog
+  dl-1-2-idle-fallback-to-clock-mode: backlog
+  dl-1-3-manual-mode-switching-via-orchestrator: backlog
+  dl-1-4-watchdog-recovery-to-default-mode: backlog
+  epic-dl-1-retrospective: optional
+
+  # === Epic DL-2: Departures Board ===
+  epic-dl-2: backlog
+  dl-2-1-departures-board-multi-row-rendering: backlog
+  dl-2-2-dynamic-row-add-and-remove-on-flight-changes: backlog
+  epic-dl-2-retrospective: optional
+
+  # === Epic DL-3: Animated Transitions ===
+  epic-dl-3: backlog
+  dl-3-1-fade-transition-between-display-modes: backlog
+  epic-dl-3-retrospective: optional
+
+  # === Epic DL-4: Mode Scheduling ===
+  epic-dl-4: backlog
+  dl-4-1-schedule-rules-storage-and-orchestrator-integration: backlog
+  dl-4-2-schedule-management-dashboard-ui: backlog
+  epic-dl-4-retrospective: optional
+
+  # === Epic DL-5: Mode-Specific Settings ===
+  epic-dl-5: backlog
+  dl-5-1-per-mode-settings-panels-in-mode-picker: backlog
+  epic-dl-5-retrospective: optional
+
+  # === Epic DL-6: OTA Version Check & Notification ===
+  epic-dl-6: backlog
+  dl-6-1-ota-version-check-against-github-releases: backlog
+  dl-6-2-update-notification-and-release-notes-in-dashboard: backlog
+  epic-dl-6-retrospective: optional
+
+  # === Epic DL-7: OTA Download & Safety ===
+  epic-dl-7: backlog
+  dl-7-1-ota-download-with-incremental-sha-256-verification: backlog
+  dl-7-2-ota-failure-handling-rollback-and-retry: backlog
+  dl-7-3-ota-pull-dashboard-ui-and-status-polling: backlog
+  epic-dl-7-retrospective: optional

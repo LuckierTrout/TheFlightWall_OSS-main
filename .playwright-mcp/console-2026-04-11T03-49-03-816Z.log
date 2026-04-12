@@ -1,0 +1,7 @@
+[     117ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8766/dashboard.html:0
+[     117ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8766/dashboard.html:0
+[     117ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8766/dashboard.html:0
+[     120ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8766/api/layout:0
+[     120ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8766/api/settings:0
+[     120ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8766/api/logos:0
+[     122ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8766/favicon.ico:0

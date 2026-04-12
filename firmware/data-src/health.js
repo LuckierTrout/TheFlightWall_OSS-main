@@ -45,14 +45,20 @@
     return (b / 1024).toFixed(1) + ' KiB';
   }
 
+  function escHtml(value) {
+    var el = document.createElement('span');
+    el.textContent = value === undefined || value === null ? '' : String(value);
+    return el.innerHTML;
+  }
+
   function row(label, value) {
-    return '<div class="status-row"><span class="status-label">' + label + '</span><span class="status-value">' + value + '</span></div>';
+    return '<div class="status-row"><span class="status-label">' + escHtml(label) + '</span><span class="status-value">' + escHtml(value) + '</span></div>';
   }
 
   function dotRow(label, level, text) {
-    return '<div class="status-row"><span class="status-label">' + label +
+    return '<div class="status-row"><span class="status-label">' + escHtml(label) +
       '</span><span class="status-value"><span class="status-dot" style="background:' +
-      dotColor(level) + '"></span>' + text + '</span></div>';
+      dotColor(level) + '"></span>' + escHtml(text) + '</span></div>';
   }
 
   function renderWifi(d) {

@@ -29,6 +29,11 @@ public:
     bool isCalibrationMode() const;
     void renderCalibrationPattern();
 
+    // Positioning mode — independent from calibration
+    void setPositioningMode(bool enabled);
+    bool isPositioningMode() const;
+    void renderPositioningPattern();
+
 private:
     FastLED_NeoMatrix *_matrix = nullptr;
     CRGB *_leds = nullptr;
@@ -49,6 +54,9 @@ private:
 
     // Calibration mode (Story 4.2)
     volatile bool _calibrationMode = false;
+
+    // Positioning mode — independent from calibration
+    volatile bool _positioningMode = false;
 
     void drawTextLine(int16_t x, int16_t y, const String &text, uint16_t color);
     String makeFlightLine(const FlightInfo &f);

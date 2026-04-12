@@ -1,0 +1,97 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - heading "FlightWall" [level=1] [ref=e4]
+      - paragraph [ref=e5]: localhost
+      - navigation [ref=e6]:
+        - link "System Health" [ref=e7] [cursor=pointer]:
+          - /url: /health.html
+    - main [ref=e8]:
+      - generic [ref=e9]:
+        - heading "Display" [level=2] [ref=e10]
+        - generic [ref=e11]: Brightness
+        - generic [ref=e12]:
+          - slider "Brightness" [ref=e13]: "128"
+          - generic [ref=e14]: "128"
+        - generic [ref=e15]: Text Color
+        - generic [ref=e16]:
+          - generic [ref=e17]:
+            - spinbutton [ref=e18]: "255"
+            - generic [ref=e19]: R
+          - generic [ref=e20]:
+            - spinbutton [ref=e21]: "255"
+            - generic [ref=e22]: G
+          - generic [ref=e23]:
+            - spinbutton [ref=e24]: "255"
+            - generic [ref=e25]: B
+      - generic [ref=e27]:
+        - heading "Timing" [level=2] [ref=e28]
+        - generic [ref=e29]: "Check for flights every: 10 min"
+        - 'slider "Check for flights every: 10 min" [ref=e31]': "600"
+        - paragraph
+        - paragraph [ref=e32]: OpenSky poll estimate; AeroAPI/CDN calls not included.
+        - generic [ref=e33]: "Cycle flights every: 3 s"
+        - 'slider "Cycle flights every: 3 s" [ref=e35]': "3"
+      - generic [ref=e36]:
+        - heading "Network & API" [level=2] [ref=e37]
+        - generic [ref=e38]:
+          - generic [ref=e39]: WiFi Network
+          - textbox "WiFi Network" [ref=e40]
+          - generic [ref=e41]: WiFi Password
+          - textbox "WiFi Password" [ref=e42]
+          - generic [ref=e43]: OpenSky Client ID
+          - textbox "OpenSky Client ID" [ref=e44]
+          - generic [ref=e45]: OpenSky Client Secret
+          - textbox "OpenSky Client Secret" [ref=e46]
+          - generic [ref=e47]: AeroAPI Key
+          - textbox "AeroAPI Key" [ref=e48]
+      - generic [ref=e49]:
+        - heading "Hardware" [level=2] [ref=e50]
+        - generic [ref=e51]:
+          - generic [ref=e52]: Tiles X
+          - spinbutton "Tiles X" [ref=e53]
+          - generic [ref=e54]: Tiles Y
+          - spinbutton "Tiles Y" [ref=e55]
+          - generic [ref=e56]: Pixels per tile
+          - spinbutton "Pixels per tile" [ref=e57]
+          - generic [ref=e58]: Display data pin (GPIO)
+          - spinbutton "Display data pin (GPIO)" [ref=e59]
+          - generic [ref=e60]: Origin corner
+          - spinbutton "Origin corner" [ref=e61]
+          - generic [ref=e62]: Scan direction
+          - spinbutton "Scan direction" [ref=e63]
+          - generic [ref=e64]: Zigzag
+          - spinbutton "Zigzag" [ref=e65]
+        - paragraph
+        - generic [ref=e66]: Layout Style
+        - combobox "Layout Style" [ref=e67]:
+          - option "Classic" [selected]
+          - option "Full-width bottom"
+        - generic [ref=e68]:
+          - generic [ref=e70]:
+            - text: Logo
+            - text: Flight
+            - text: Telemetry
+          - heading "Panel Wiring Path" [level=3] [ref=e74]
+          - generic [ref=e76]:
+            - text: Data in
+            - text: Cable path
+          - paragraph [ref=e79]: Predictive preview — actual LED wall updates after Apply.
+      - heading "Calibration ▶" [level=2] [ref=e81] [cursor=pointer]
+      - heading "Location ▶" [level=2] [ref=e83] [cursor=pointer]
+      - generic [ref=e84]:
+        - heading "Logos" [level=2] [ref=e85]
+        - generic [ref=e86]:
+          - paragraph [ref=e87]:
+            - text: Drag & drop
+            - code [ref=e88]: .bin
+            - text: logo files here or
+          - generic [ref=e89] [cursor=pointer]: Choose files
+          - paragraph [ref=e90]: 32×32 RGB565, 2048 bytes each
+        - paragraph
+      - generic [ref=e91]:
+        - heading "System" [level=2] [ref=e92]
+        - button "Reset to Defaults" [ref=e94] [cursor=pointer]
+  - generic:
+    - generic [ref=e95]: Failed to load settings
+    - generic [ref=e96]: Invalid server response (HTTP 404)

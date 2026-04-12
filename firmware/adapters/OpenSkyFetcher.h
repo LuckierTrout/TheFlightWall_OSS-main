@@ -25,4 +25,7 @@ private:
 
     bool ensureAccessToken(bool forceRefresh = false);
     bool requestAccessToken(String &outToken, unsigned long &outExpiryMs);
+    bool parseStateVectors(const String &payload,
+                           double centerLat, double centerLon, double radiusKm,
+                           std::vector<StateVector> &outStateVectors);
 };
