@@ -1,0 +1,55 @@
+cli_args:
+- run
+cli_args_masked:
+- run
+current_phase: null
+ended_at: '2026-04-12T04:29:18.086051Z'
+epic: 3
+phase_events:
+- duration_ms: null
+  epic: 3
+  error_type: null
+  event_type: started
+  model: opus
+  phase: CREATE_STORY
+  provider: claude
+  status: null
+  story: '3.5'
+  termination_metadata: null
+  timestamp: '2026-04-12T04:29:17.993130Z'
+- duration_ms: 20
+  epic: 3
+  error_type: 'Failed to compile workflow: create-story
+
+
+    The workflow compiler could not load this workflow.
+
+    Handle'
+  event_type: completed
+  model: opus
+  phase: CREATE_STORY
+  provider: claude
+  status: error
+  story: '3.5'
+  termination_metadata: null
+  timestamp: '2026-04-12T04:29:18.013958Z'
+phases:
+- duration_ms: 20
+  ended_at: '2026-04-12T04:29:18.013958Z'
+  error_type: 'Failed to compile workflow: create-story
+
+
+    The workflow compiler could not load this workflow.
+
+    Handle'
+  model: opus
+  phase: CREATE_STORY
+  provider: claude
+  provider_count: 1
+  started_at: '2026-04-12T04:29:17.993130Z'
+  status: error
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: afa3f119
+started_at: '2026-04-12T04:28:17.923330Z'
+status: completed
+story: '3.5'

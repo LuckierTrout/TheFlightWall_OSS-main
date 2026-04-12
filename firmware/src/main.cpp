@@ -29,6 +29,11 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "core/LayoutEngine.h"
 #include "core/LogoManager.h"
 
+// Firmware version defined in platformio.ini build_flags
+#ifndef FW_VERSION
+#define FW_VERSION "0.0.0-dev"  // Fallback for IDE/testing
+#endif
+
 #ifndef PIO_UNIT_TESTING
 
 // --- Shared data structures (Task 1) ---
@@ -403,6 +408,12 @@ void setup()
 {
     Serial.begin(115200);
     delay(200);
+
+    // Log firmware version at boot (Story fn-1.1)
+    Serial.println();
+    Serial.println("=================================");
+    Serial.printf("FlightWall Firmware v%s\n", FW_VERSION);
+    Serial.println("=================================");
 
     if (!LittleFS.begin(true)) {
         LOG_E("Main", "LittleFS mount failed");

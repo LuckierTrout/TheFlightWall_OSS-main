@@ -1,6 +1,6 @@
 # bmad-assist configuration for APP-MAIN
 
-project_name: APP-MAIN
+project_name: TheFlightWall
 user_name: Christian
 communication_language: English
 document_output_language: English
@@ -100,13 +100,14 @@ phase_models:
 compiler:
   source_context:
     budgets:
-      create_story: 20000
-      validate_story: 15000
+      # create-story embeds project-context + PRD + architecture + UX; estimate is ~2× token_estimate (XML overhead).
+      create_story: 45000
+      validate_story: 50000
       validate_story_synthesis: 0
-      dev_story: 15000
-      code_review: 15000
+      dev_story: 50000
+      code_review: 50000
       code_review_synthesis: 0
-      default: 20000
+      default: 50000
 
     scoring:
       in_file_list: 50
@@ -123,7 +124,7 @@ compiler:
       max_files: 15
 
   strategic_context:
-    budget: 15000
+    budget: 50000
     tree_budget: 0
     defaults:
       include: [project-context]
@@ -149,38 +150,30 @@ benchmarking:
 parallel_delay: 2.0
 
 loop:
-  epic_setup:
-    - tea_framework
-    - tea_ci
-    - tea_test_design
+  epic_setup: []
   story:
     - create_story
     - validate_story
     - validate_story_synthesis
-    - atdd
     - dev_story
     - code_review
     - code_review_synthesis
-    - test_review
-  epic_teardown:
-    - trace
-    - tea_nfr_assess
-    - retrospective
+  epic_teardown: []
   code_review_rework: true
   max_rework_attempts: 2
 
 testarch:
-  enabled: true
-  engagement_model: auto
-  atdd_mode: auto
-  framework_mode: auto
-  ci_mode: auto
+  enabled: false
+  engagement_model: "off"
+  atdd_mode: "off"
+  framework_mode: "off"
+  ci_mode: "off"
   test_design_mode: "off"
   test_design_level: auto
   automate_mode: "off"
-  nfr_assess_mode: auto
-  trace_on_epic_complete: auto
-  test_review_on_code_complete: auto
+  nfr_assess_mode: "off"
+  trace_on_epic_complete: "off"
+  test_review_on_code_complete: "off"
   test_dir: e2e/
 
   playwright:
