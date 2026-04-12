@@ -10,7 +10,9 @@ enum class Subsystem : uint8_t {
     AEROAPI,
     CDN,
     NVS,
-    LITTLEFS
+    LITTLEFS,
+    OTA,
+    NTP
 };
 
 enum class StatusLevel : uint8_t {
@@ -33,6 +35,7 @@ struct FlightStatsSnapshot {
     uint16_t enriched_flights;      // enriched flight count from last fetch
     uint16_t logos_matched;         // placeholder 0 until Epic 3
     uint32_t fetches_since_boot;    // total fetch attempts since boot
+    bool rollback_detected;         // true if OTA rollback occurred (Story fn-1.4)
 };
 
 class SystemStatus {
@@ -49,7 +52,7 @@ public:
     static const char* levelName(StatusLevel level);
 
 private:
-    static const uint8_t SUBSYSTEM_COUNT = 6;
+    static const uint8_t SUBSYSTEM_COUNT = 8;
     static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
     static SemaphoreHandle_t _mutex;
     static const char* subsystemName(Subsystem sys);

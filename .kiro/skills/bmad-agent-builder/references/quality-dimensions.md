@@ -52,3 +52,14 @@ See `./references/standard-fields.md` for correct/incorrect patterns.
 ## 7. Token Efficiency
 
 Remove genuine waste (repetition, defensive padding, meta-explanation). Preserve context that enables judgment (persona voice, domain framing, theory of mind, design rationale). These are different things — never trade effectiveness for efficiency. A capability that works correctly but uses extra tokens is always better than one that's lean but fails edge cases.
+
+## 8. Sanctum Architecture (memory agents only)
+
+Memory agents have additional quality dimensions beyond the general seven:
+
+- **Bootloader weight:** SKILL.md should be ~30 lines of content. If it's heavier, content belongs in sanctum templates instead.
+- **Template seed quality:** All 6 standard sanctum templates (INDEX, PERSONA, CREED, BOND, MEMORY, CAPABILITIES) must exist. CREED, BOND, and PERSONA should have meaningful seed values, not empty placeholders. MEMORY starts empty (correct).
+- **First Breath completeness:** first-breath.md must exist with all universal mechanics (for calibration: pacing, mirroring, hypotheses, silence-as-signal, save-as-you-go; for configuration: discovery questions, urgency detection). Must have domain-specific territories beyond universal ones. Birthday ceremony must be present.
+- **Standing orders:** CREED template must include surprise-and-delight and self-improvement, domain-adapted with concrete examples.
+- **Init script validity:** init-sanctum.py must exist, SKILL_NAME must match the skill name, TEMPLATE_FILES must match actual templates in ./assets/.
+- **Self-containment:** After init script runs, the sanctum must be fully self-contained. The agent should not depend on the skill bundle for normal operation (only for First Breath and init).

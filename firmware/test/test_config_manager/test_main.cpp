@@ -187,7 +187,7 @@ void test_apply_json_mixed_keys() {
     TEST_ASSERT_TRUE(ConfigManager::getNetwork().aeroapi_key == "abc");
 }
 
-void test_apply_json_ignores_unknown_keys() {
+void test_apply_json_rejects_unknown_keys() {
     clearNvs();
     ConfigManager::init();
 
@@ -198,9 +198,9 @@ void test_apply_json_ignores_unknown_keys() {
 
     ApplyResult result = ConfigManager::applyJson(settings);
 
-    TEST_ASSERT_EQUAL(1, result.applied.size());
-    TEST_ASSERT_TRUE(result.applied[0] == "brightness");
-    TEST_ASSERT_EQUAL_UINT8(88, ConfigManager::getDisplay().brightness);
+    // applyJson uses all-or-nothing validation - unknown key rejects entire batch
+    TEST_ASSERT_EQUAL(0, result.applied.size());
+    TEST_ASSERT_EQUAL_UINT8(5, ConfigManager::getDisplay().brightness);  // default unchanged
 }
 
 // --- requiresReboot Key Detection ---
@@ -287,6 +287,133 @@ void test_on_change_callback_fires() {
     TEST_ASSERT_TRUE(callbackFired);
 }
 
+// --- Schedule Tests ---
+
+void test_defaults_schedule() {
+    clearNvs();
+    ConfigManager::init();
+    ScheduleConfig s = ConfigManager::getSchedule();
+    TEST_ASSERT_TRUE(s.timezone == "UTC0");
+    TEST_ASSERT_EQUAL_UINT8(0, s.sched_enabled);
+    TEST_ASSERT_EQUAL_UINT16(1380, s.sched_dim_start);
+    TEST_ASSERT_EQUAL_UINT16(420, s.sched_dim_end);
+    TEST_ASSERT_EQUAL_UINT8(10, s.sched_dim_brt);
+}
+
+void test_nvs_write_read_roundtrip_schedule() {
+    clearNvs();
+
+    // Write schedule values to NVS directly
+    Preferences prefs;
+    prefs.begin("flightwall", false);
+    prefs.putString("timezone", "PST8PDT");
+    prefs.putUChar("sched_enabled", 1);
+    prefs.putUShort("sched_dim_start", 1200);
+    prefs.putUShort("sched_dim_end", 360);
+    prefs.putUChar("sched_dim_brt", 25);
+    prefs.end();
+
+    // Re-init ConfigManager — should pick up NVS values
+    ConfigManager::init();
+
+    ScheduleConfig s = ConfigManager::getSchedule();
+    TEST_ASSERT_TRUE(s.timezone == "PST8PDT");
+    TEST_ASSERT_EQUAL_UINT8(1, s.sched_enabled);
+    TEST_ASSERT_EQUAL_UINT16(1200, s.sched_dim_start);
+    TEST_ASSERT_EQUAL_UINT16(360, s.sched_dim_end);
+    TEST_ASSERT_EQUAL_UINT8(25, s.sched_dim_brt);
+}
+
+void test_apply_json_schedule_hot_reload() {
+    clearNvs();
+    ConfigManager::init();
+
+    JsonDocument doc;
+    doc["timezone"] = "PST8PDT";
+    doc["sched_enabled"] = 1;
+    JsonObject settings = doc.as<JsonObject>();
+
+    ApplyResult result = ConfigManager::applyJson(settings);
+
+    TEST_ASSERT_EQUAL(2, result.applied.size());
+    TEST_ASSERT_FALSE(result.reboot_required);
+    TEST_ASSERT_TRUE(ConfigManager::getSchedule().timezone == "PST8PDT");
+    TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getSchedule().sched_enabled);
+}
+
+void test_apply_json_schedule_validation() {
+    clearNvs();
+    ConfigManager::init();
+
+    // Test sched_enabled > 1 is rejected
+    JsonDocument doc1;
+    doc1["sched_enabled"] = 2;
+    ApplyResult result1 = ConfigManager::applyJson(doc1.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result1.applied.size());
+
+    // Test sched_dim_start > 1439 is rejected
+    JsonDocument doc2;
+    doc2["sched_dim_start"] = 1440;
+    ApplyResult result2 = ConfigManager::applyJson(doc2.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result2.applied.size());
+
+    // Test sched_dim_end > 1439 is rejected
+    JsonDocument doc3;
+    doc3["sched_dim_end"] = 1440;
+    ApplyResult result3 = ConfigManager::applyJson(doc3.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result3.applied.size());
+
+    // Test timezone too long is rejected (>40 chars)
+    JsonDocument doc4;
+    doc4["timezone"] = "ThisIsAVeryLongTimezoneStringThatExceedsTheMaximumLengthOf40Characters";
+    ApplyResult result4 = ConfigManager::applyJson(doc4.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result4.applied.size());
+
+    // Test sched_dim_brt > 255 is rejected
+    JsonDocument doc5;
+    doc5["sched_dim_brt"] = 256;
+    ApplyResult result5 = ConfigManager::applyJson(doc5.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result5.applied.size());
+
+    // Test sched_enabled overflow (256 wraps to 0 without proper validation)
+    JsonDocument doc6;
+    doc6["sched_enabled"] = 256;
+    ApplyResult result6 = ConfigManager::applyJson(doc6.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result6.applied.size());
+}
+
+void test_dump_settings_json_includes_schedule() {
+    clearNvs();
+    ConfigManager::init();
+
+    // Set known schedule values
+    JsonDocument setDoc;
+    setDoc["timezone"] = "EST5EDT";
+    setDoc["sched_enabled"] = 1;
+    setDoc["sched_dim_start"] = 1320;  // 22:00
+    setDoc["sched_dim_end"] = 360;     // 06:00
+    setDoc["sched_dim_brt"] = 5;
+    ConfigManager::applyJson(setDoc.as<JsonObject>());
+
+    // Call dumpSettingsJson
+    JsonDocument outDoc;
+    JsonObject out = outDoc.to<JsonObject>();
+    ConfigManager::dumpSettingsJson(out);
+
+    // Verify all schedule keys present
+    TEST_ASSERT_TRUE(out["timezone"].is<String>());
+    TEST_ASSERT_TRUE(out["timezone"] == "EST5EDT");
+    TEST_ASSERT_EQUAL_UINT8(1, out["sched_enabled"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT16(1320, out["sched_dim_start"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT16(360, out["sched_dim_end"].as<uint16_t>());
+    TEST_ASSERT_EQUAL_UINT8(5, out["sched_dim_brt"].as<uint8_t>());
+
+    // Verify total key count (29 keys total: 4 display + 3 location + 10 hardware + 2 timing + 5 network + 5 schedule)
+    size_t keyCount = 0;
+    for (JsonPair kv : out) keyCount++;
+    TEST_ASSERT_EQUAL_UINT32(29, keyCount);
+}
+
 // --- SystemStatus Tests ---
 
 void test_system_status_init() {
@@ -329,6 +456,33 @@ void test_system_status_to_json() {
     TEST_ASSERT_TRUE(obj["nvs"]["message"] == "High usage");
 }
 
+void test_system_status_ota_ntp() {
+    SystemStatus::init();
+    SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Ready");
+    SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Synced");
+
+    SubsystemStatus ota = SystemStatus::get(Subsystem::OTA);
+    TEST_ASSERT_EQUAL(StatusLevel::OK, ota.level);
+    TEST_ASSERT_TRUE(ota.message == "Ready");
+
+    SubsystemStatus ntp = SystemStatus::get(Subsystem::NTP);
+    TEST_ASSERT_EQUAL(StatusLevel::OK, ntp.level);
+    TEST_ASSERT_TRUE(ntp.message == "Synced");
+
+    // Verify OTA and NTP appear in JSON output
+    JsonDocument doc;
+    JsonObject obj = doc.to<JsonObject>();
+    SystemStatus::toJson(obj);
+
+    TEST_ASSERT_TRUE(obj["ota"].is<JsonObject>());
+    TEST_ASSERT_TRUE(obj["ota"]["level"] == "ok");
+    TEST_ASSERT_TRUE(obj["ota"]["message"] == "Ready");
+
+    TEST_ASSERT_TRUE(obj["ntp"].is<JsonObject>());
+    TEST_ASSERT_TRUE(obj["ntp"]["level"] == "ok");
+    TEST_ASSERT_TRUE(obj["ntp"]["message"] == "Synced");
+}
+
 void setup() {
     delay(2000);
     UNITY_BEGIN();
@@ -343,13 +497,20 @@ void setup() {
     // NVS round-trip
     RUN_TEST(test_nvs_write_read_roundtrip);
 
+    // Schedule tests
+    RUN_TEST(test_defaults_schedule);
+    RUN_TEST(test_nvs_write_read_roundtrip_schedule);
+    RUN_TEST(test_apply_json_schedule_hot_reload);
+    RUN_TEST(test_apply_json_schedule_validation);
+    RUN_TEST(test_dump_settings_json_includes_schedule);
+
     // applyJson paths
     RUN_TEST(test_apply_json_hot_reload);
     RUN_TEST(test_apply_json_matrix_mapping_hot_reload);
     RUN_TEST(test_apply_json_hot_reload_persists_after_debounce);
     RUN_TEST(test_apply_json_reboot_path);
     RUN_TEST(test_apply_json_mixed_keys);
-    RUN_TEST(test_apply_json_ignores_unknown_keys);
+    RUN_TEST(test_apply_json_rejects_unknown_keys);
 
     // Reboot key detection
     RUN_TEST(test_requires_reboot_known_keys);
@@ -367,6 +528,7 @@ void setup() {
     RUN_TEST(test_system_status_set_get);
     RUN_TEST(test_system_status_error);
     RUN_TEST(test_system_status_to_json);
+    RUN_TEST(test_system_status_ota_ntp);
 
     UNITY_END();
 }

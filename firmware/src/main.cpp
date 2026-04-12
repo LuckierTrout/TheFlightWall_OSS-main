@@ -17,6 +17,8 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "esp_task_wdt.h"
+#include "esp_partition.h"
+#include "esp_ota_ops.h"
 #include "utils/Log.h"
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
@@ -114,6 +116,15 @@ static constexpr unsigned long BUTTON_SHORT_PRESS_MAX_MS = 1000;  // Presses lon
 
 static unsigned long g_lastFetchMs = 0;
 
+// --- OTA self-check & rollback detection state (Story fn-1.4) ---
+static bool g_rollbackDetected = false;
+static bool g_otaSelfCheckDone = false;
+static unsigned long g_bootStartMs = 0;
+// 60s per Architecture Decision F3: allows good firmware to connect WiFi even on slow
+// networks, while ensuring bootloader-triggered rollback if firmware crashes before this.
+// Typical WiFi connect: 5–15s. No-WiFi fallback: marks valid after 60s.
+static constexpr unsigned long OTA_SELF_CHECK_TIMEOUT_MS = 60000;
+
 // --- Flight stats snapshot for /api/status health page (Story 2.4) ---
 // Written from loop() on Core 1 after each fetch; read from HTTP handler on async TCP task.
 // Use std::atomic for each field to avoid torn reads on 32-bit ESP32.
@@ -130,6 +141,7 @@ FlightStatsSnapshot getFlightStatsSnapshot() {
     s.enriched_flights = g_statsEnrichedFlights.load();
     s.logos_matched = g_statsLogosMatched.load();
     s.fetches_since_boot = g_statsFetchesSinceBoot.load();
+    s.rollback_detected = g_rollbackDetected;
     return s;
 }
 
@@ -402,6 +414,119 @@ void displayTask(void *pvParameters)
     }
 }
 
+// --- OTA rollback detection (Story fn-1.4, Task 1) ---
+// Called once in setup(), before SystemStatus::init().
+// SystemStatus::set() is deferred to loop() since SystemStatus isn't ready yet.
+
+static void detectRollback() {
+    const esp_partition_t* invalid = esp_ota_get_last_invalid_partition();
+    if (invalid != NULL) {
+        g_rollbackDetected = true;
+        Serial.printf("[OTA] Rollback detected: partition '%s' was invalid\n", invalid->label);
+    }
+}
+
+// --- OTA self-check (Story fn-1.4, Task 2) ---
+// Called from loop() until complete. Marks firmware valid via WiFi-OR-Timeout strategy.
+// Architecture Decision F3: WiFi connected OR 60s timeout — whichever comes first.
+
+static void performOtaSelfCheck() {
+    if (g_otaSelfCheckDone) return;
+
+    // Cache pending-verify state once — OTA partition state cannot change while we're
+    // running, so avoid repeated IDF flash reads on every loop iteration.
+    static int8_t s_isPendingVerify = -1;  // -1 = unchecked, 0 = already valid, 1 = pending
+    if (s_isPendingVerify == -1) {
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        esp_ota_img_states_t state;
+        s_isPendingVerify = 0;
+        if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
+            s_isPendingVerify = (state == ESP_OTA_IMG_PENDING_VERIFY) ? 1 : 0;
+        }
+    }
+    bool isPendingVerify = (s_isPendingVerify == 1);
+
+    unsigned long elapsed = millis() - g_bootStartMs;
+    bool wifiConnected = (g_wifiManager.getState() == WiFiState::STA_CONNECTED);
+
+    if (wifiConnected || elapsed >= OTA_SELF_CHECK_TIMEOUT_MS) {
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        if (err == ESP_OK) {
+            if (isPendingVerify) {
+                if (wifiConnected) {
+                    unsigned long elapsedSec = elapsed / 1000;
+                    String okMsg = "Firmware verified — WiFi connected in " + String(elapsedSec) + "s";
+                    Serial.printf("[OTA] Firmware marked valid — WiFi connected in %lums\n", elapsed);
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::OK, okMsg);
+                } else {
+                    LOG_W("OTA", "Firmware marked valid on timeout — WiFi not verified");
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
+                        "Marked valid on timeout — WiFi not verified");
+                }
+            } else {
+                LOG_V("OTA", "Self-check: already valid (normal boot)");
+                // AC #6: No SystemStatus::set call on normal boot
+            }
+
+            // Deferred rollback status (SystemStatus wasn't ready in setup())
+            // g_rollbackDetected persists until a new successful OTA — intentional per AC #4 / Gotcha #2
+            if (g_rollbackDetected) {
+                SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
+                    "Firmware rolled back to previous version");
+            }
+
+            g_otaSelfCheckDone = true;
+        } else {
+            // mark_valid failed — log but do NOT set done flag; allow retry next loop iteration.
+            // This call is idempotent and should always succeed on valid partitions; persistent
+            // failure indicates a flash/NVS hardware problem requiring investigation.
+            String errMsg = "Failed to mark firmware valid: error " + String(err);
+            Serial.printf("[OTA] ERROR: esp_ota_mark_app_valid_cancel_rollback() failed: %d\n", err);
+            SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, errMsg);
+        }
+    }
+}
+
+// --- Partition validation helper (Story fn-1.1) ---
+
+void validatePartitionLayout() {
+    Serial.println("[Main] Validating partition layout...");
+
+    // Expected partition sizes from custom_partitions.csv (Story fn-1.1)
+    // IMPORTANT: If you modify custom_partitions.csv, update these constants
+    const size_t EXPECTED_APP_SIZE = 0x180000;   // app0/app1: 1.5MB
+    const size_t EXPECTED_SPIFFS_SIZE = 0xF0000; // spiffs: 960KB
+
+    // Validate running app partition
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running) {
+        if (running->size == EXPECTED_APP_SIZE) {
+            Serial.printf("[Main] App partition: %s, size 0x%x (correct)\n", running->label, running->size);
+        } else {
+            Serial.printf("[Main] WARNING: App partition size mismatch: expected 0x%x, got 0x%x\n",
+                  EXPECTED_APP_SIZE, running->size);
+            Serial.println("WARNING: Partition table may not match firmware expectations!");
+            Serial.println("Reflash with new partition table via USB if OTA updates fail.");
+        }
+    } else {
+        Serial.println("[Main] WARNING: Could not determine running partition");
+    }
+
+    // Validate LittleFS partition
+    const esp_partition_t* littlefs = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+    if (littlefs) {
+        if (littlefs->size == EXPECTED_SPIFFS_SIZE) {
+            Serial.printf("[Main] LittleFS partition: size 0x%x (correct)\n", littlefs->size);
+        } else {
+            Serial.printf("[Main] WARNING: LittleFS partition size mismatch: expected 0x%x, got 0x%x\n",
+                  EXPECTED_SPIFFS_SIZE, littlefs->size);
+        }
+    } else {
+        Serial.println("[Main] WARNING: Could not find LittleFS partition");
+    }
+}
+
 // --- setup() (Task 3) ---
 
 void setup()
@@ -409,16 +534,30 @@ void setup()
     Serial.begin(115200);
     delay(200);
 
+    // Record boot time for OTA self-check timing (Story fn-1.4)
+    g_bootStartMs = millis();
+
     // Log firmware version at boot (Story fn-1.1)
     Serial.println();
     Serial.println("=================================");
     Serial.printf("FlightWall Firmware v%s\n", FW_VERSION);
     Serial.println("=================================");
 
-    if (!LittleFS.begin(true)) {
-        LOG_E("Main", "LittleFS mount failed");
+    // Detect rollback before anything else (Story fn-1.4, Task 1)
+    // Must run before SystemStatus::init() — defers SystemStatus::set() to loop()
+    detectRollback();
+
+    // Validate partition layout matches expectations (Story fn-1.1)
+    validatePartitionLayout();
+
+    // Mount LittleFS without auto-format to prevent silent data loss
+    if (!LittleFS.begin(false)) {
+        LOG_E("Main", "LittleFS mount failed - filesystem may be corrupted or unformatted");
+        Serial.println("WARNING: LittleFS mount failed!");
+        Serial.println("To format filesystem, reflash with: pio run -t uploadfs");
+        // Continue boot - device will function but web assets/logos unavailable
     } else {
-        LOG_I("Main", "LittleFS mounted");
+        LOG_I("Main", "LittleFS mounted successfully");
     }
 
     ConfigManager::init();
@@ -651,6 +790,11 @@ void loop()
 {
     ConfigManager::tick();
     g_wifiManager.tick();
+
+    // OTA self-check: mark firmware valid once WiFi connects or timeout expires (Story fn-1.4)
+    if (!g_otaSelfCheckDone) {
+        performOtaSelfCheck();
+    }
 
     // Boot button short-press detection (millis debounce, no ISR)
     // Only active during normal operation — skip if forced AP setup

@@ -1,0 +1,7 @@
+{
+  "name": "theflightwall-oss",
+  "private": true,
+  "scripts": {
+    "bmad:serve": "sh -c 'if [ -x .venv/bin/bmad-assist ]; then exec .venv/bin/bmad-assist serve; else exec bmad-assist serve; fi'"
+  }
+}

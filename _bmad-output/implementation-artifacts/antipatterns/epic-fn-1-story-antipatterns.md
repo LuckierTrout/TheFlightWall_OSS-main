@@ -13,3 +13,32 @@
 | high | Ambiguous Documentation Location in AC1**: The phrase "a warning is documented" in AC1 did not specify where or how the warning should be recorded, creating ambiguity for an LLM agent. | Updated AC1 to specify: "a warning is logged to stdout and noted in the 'Completion Notes List' section of this story with optimization recommendations" |
 | high | Overly Broad Functionality Verification in AC3**: The criterion "all existing functionality works: flight data pipeline, web dashboard, logo management, calibration tools" lacked specific verification steps. | Updated AC3 to enumerate specific checks: "the following existing functionality is verified to work correctly: device boots successfully; web dashboard accessible at device IP; flight data fetches and displays on LED matrix; logo management functions (upload, list, delete); calibration tools function" |
 | high | Missing Runtime Verification in AC4**: AC4 only verified compile-time availability of FW_VERSION but not whether the runtime value matched the build flag. | Updated AC4 to include: "And the version string accurately reflects the value defined in the build flag when accessed at runtime" |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| medium | Ambiguous instruction in Task 5 regarding ConfigSnapshot usage for getSchedule() method | Split Task 5 into two clear sub-tasks: (1) implement getter following direct return pattern with ConfigLockGuard, (2) add ScheduleConfig field to ConfigSnapshot struct for loadFromNvs() operations |
+
+## Story fn-1-3 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Missing Firmware Integrity Check (SHA256/MD5) | Added AC7 for firmware integrity verification with SHA256 hash, added Task 11 for implementation, added error code INTEGRITY_FAILED, updated Dev Notes with integrity verification section |
+| critical | Lack of Version Check/Downgrade Protection | Added AC8 for firmware version validation, added Task 12 for version comparison implementation, added error codes VERSION_CHECK_FAILED and DOWNGRADE_BLOCKED, added Dev Notes section on version validation |
+| critical | Missing RAM/Heap Impact Analysis for OTA State | Added subtask to Task 10 to measure and log heap usage during OTA upload, strengthened existing Dev Notes reference to heap constraints |
+| high | Explicit Documentation for esp_ota_get_next_update_partition(NULL) | Enhanced AC1 to explicitly reference esp_ota_get_next_update_partition(NULL) |
+| high | Specify UI Feedback for Reboot | Added note to AC5 referencing Story fn-1.6 requirement for UI reboot message, added cross-reference in Dependencies section |
+| high | Guidance for OTAUploadState Helper Functions | Added comprehensive helper function implementation examples in Dev Notes with findOTAUpload() and clearOTAUpload() code snippets |
+| high | Cross-reference UI handling of error messages | Added Dev Notes section on UI Error Handling Requirements with explicit fn-1.6 cross-reference |
+
+## Story fn-1-4 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | Rollback flag persistence API behavior was left as an open "consider whether" question rather than a definitive spec | Updated Critical Gotcha #2 to establish that `rollback_detected` remains `true` on every boot until a new successful OTA clears the invalid partition slot. This is declared intentional API behavior, and fn-1.6 is noted as the consumer that should display the persistent state. |
+| medium | Log message time unit in AC1 shows `"8s"` (seconds) but Task 2 and the implementation pattern use `%lums` (milliseconds) — two different outputs for the same event | Updated AC1 log message example from `"Marked valid, WiFi connected in 8s"` to `"Firmware marked valid — WiFi connected in 8432ms"` to match the implementation pattern. Added explicit parenthetical `(X = elapsed seconds)` to the SystemStatus message format to clarify the unit distinction between the developer log and the user-facing status. |
+| low | AC6 "no WARNING or ERROR status is set" was ambiguous about whether a StatusLevel::OK call is also omitted for normal boots | Updated AC6 to explicitly state "no `SystemStatus::set` call is made for the OTA subsystem" — eliminating the gap between "no WARNING or ERROR" and the implementation which makes no OTA status call at all on normal boots. |
+| low | FW_VERSION note in the SystemStatus extension section was self-contradictory — stated the macro is "already available project-wide" then immediately suggested a local conditional define | Rewrote the note to explain the fallback guard is for non-PlatformIO build contexts (e.g., unit test harnesses), resolving the apparent contradiction. |
+| dismissed | `"firmware_version": "1.0.0"` in AC5 hardcodes a specific version, which is misleading | FALSE POSITIVE: The value is immediately qualified with `(from FW_VERSION build flag)` — this is a concrete example in an AC, not a hardcoded literal. This is standard practice for illustrative acceptance criteria. No change warranted. |
+| dismissed | `String(...).c_str()` usage in `performOtaSelfCheck()` should be replaced with direct String construction | FALSE POSITIVE: The pattern is valid, idiomatic Arduino/ESP32 embedded C++. `SystemStatus::set` accepting `const char*` or `const String&` is implementation-dependent, and `.c_str()` is universally compatible. The validator's alternative produces the same compiled output. The story's implementation pattern should not be changed for a style preference that has no correctness implication. --- |

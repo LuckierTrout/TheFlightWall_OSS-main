@@ -1,6 +1,19 @@
 # Name,    Type,  SubType, Offset,   Size
-# Dual-OTA partition layout for Foundation release
+# Dual-OTA partition layout for Foundation release (Story fn-1.1)
 # Total: 4MB (0x400000), Bootloader uses 0x1000-0x8FFF
+#
+# IMPORTANT: If you modify partition sizes, also update:
+#   - firmware/check_size.py (limit/warning_threshold)
+#   - firmware/src/main.cpp validatePartitionLayout() (EXPECTED_APP_SIZE, EXPECTED_SPIFFS_SIZE)
+#
+# Partition sizes:
+#   nvs:     20KB  (0x5000)
+#   otadata: 8KB   (0x2000)
+#   app0:    1.5MB (0x180000)
+#   app1:    1.5MB (0x180000)
+#   spiffs:  960KB (0xF0000) - LittleFS filesystem
+#
+# End: 0x3FFFFF (36KB gap to 4MB boundary reserved for future use)
 nvs,       data,  nvs,     0x9000,   0x5000
 otadata,   data,  ota,     0xe000,   0x2000
 app0,      app,   ota_0,   0x10000,  0x180000

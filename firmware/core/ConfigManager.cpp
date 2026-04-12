@@ -29,6 +29,7 @@ struct ConfigSnapshot {
     HardwareConfig hardware;
     TimingConfig timing;
     NetworkConfig network;
+    ScheduleConfig schedule;
 };
 
 class ConfigLockGuard {
@@ -62,6 +63,7 @@ static bool updateConfigValue(DisplayConfig& display,
                               HardwareConfig& hardware,
                               TimingConfig& timing,
                               NetworkConfig& network,
+                              ScheduleConfig& schedule,
                               const char* key,
                               JsonVariantConst value) {
     // Display
@@ -129,6 +131,45 @@ static bool updateConfigValue(DisplayConfig& display,
     if (strcmp(key, "os_client_sec") == 0)     { network.opensky_client_secret = value.as<String>(); return true; }
     if (strcmp(key, "aeroapi_key") == 0)       { network.aeroapi_key = value.as<String>(); return true; }
 
+    // Schedule (Foundation release - night mode) — all hot-reload, NOT in REBOOT_KEYS
+    if (strcmp(key, "timezone") == 0) {
+        if (!value.is<const char*>()) return false;  // Must be string type
+        String tz = value.as<String>();
+        if (tz.length() > 40) return false;  // Max POSIX timezone length
+        schedule.timezone = tz;
+        return true;
+    }
+    if (strcmp(key, "sched_enabled") == 0) {
+        // Validate as wider type first to catch overflow before cast
+        if (!value.is<unsigned int>()) return false;
+        unsigned int v = value.as<unsigned int>();
+        if (v > 1) return false;  // Only 0 or 1 valid
+        schedule.sched_enabled = static_cast<uint8_t>(v);
+        return true;
+    }
+    if (strcmp(key, "sched_dim_start") == 0) {
+        if (!value.is<int>()) return false;  // Must be numeric type
+        int32_t v = value.as<int32_t>();
+        if (v < 0 || v > 1439) return false;  // 0-1439 (24*60-1 minutes in a day)
+        schedule.sched_dim_start = static_cast<uint16_t>(v);
+        return true;
+    }
+    if (strcmp(key, "sched_dim_end") == 0) {
+        if (!value.is<int>()) return false;  // Must be numeric type
+        int32_t v = value.as<int32_t>();
+        if (v < 0 || v > 1439) return false;  // 0-1439 (24*60-1 minutes in a day)
+        schedule.sched_dim_end = static_cast<uint16_t>(v);
+        return true;
+    }
+    if (strcmp(key, "sched_dim_brt") == 0) {
+        // Accept 0-255 (full uint8_t range) but validate type first
+        if (!value.is<unsigned int>()) return false;
+        unsigned int v = value.as<unsigned int>();
+        if (v > 255) return false;
+        schedule.sched_dim_brt = static_cast<uint8_t>(v);
+        return true;
+    }
+
     return false;
 }
 
@@ -175,6 +216,7 @@ LocationConfig ConfigManager::_location = {};
 HardwareConfig ConfigManager::_hardware = {};
 TimingConfig ConfigManager::_timing = {};
 NetworkConfig ConfigManager::_network = {};
+ScheduleConfig ConfigManager::_schedule = {};
 std::vector<std::function<void()>> ConfigManager::_callbacks;
 unsigned long ConfigManager::_persistScheduledAt = 0;
 bool ConfigManager::_persistPending = false;
@@ -208,6 +250,13 @@ void ConfigManager::loadDefaults() {
     _network.opensky_client_id = APIConfiguration::OPENSKY_CLIENT_ID;
     _network.opensky_client_secret = APIConfiguration::OPENSKY_CLIENT_SECRET;
     _network.aeroapi_key = APIConfiguration::AEROAPI_KEY;
+
+    // Schedule defaults (Foundation release - night mode)
+    _schedule.timezone = "UTC0";           // POSIX timezone
+    _schedule.sched_enabled = 0;           // disabled by default
+    _schedule.sched_dim_start = 1380;      // 23:00 = 23 * 60
+    _schedule.sched_dim_end = 420;         // 07:00 = 7 * 60
+    _schedule.sched_dim_brt = 10;          // dim brightness
 }
 
 void ConfigManager::init() {
@@ -290,6 +339,7 @@ void ConfigManager::loadFromNvs() {
         snapshot.hardware = _hardware;
         snapshot.timing = _timing;
         snapshot.network = _network;
+        snapshot.schedule = _schedule;
     }
 
     // Display
@@ -340,6 +390,13 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("os_client_sec"))  snapshot.network.opensky_client_secret = prefs.getString("os_client_sec", snapshot.network.opensky_client_secret);
     if (prefs.isKey("aeroapi_key"))    snapshot.network.aeroapi_key = prefs.getString("aeroapi_key", snapshot.network.aeroapi_key);
 
+    // Schedule (Foundation release - night mode)
+    if (prefs.isKey("timezone"))        snapshot.schedule.timezone = prefs.getString("timezone", snapshot.schedule.timezone);
+    if (prefs.isKey("sched_enabled"))   snapshot.schedule.sched_enabled = prefs.getUChar("sched_enabled", snapshot.schedule.sched_enabled);
+    if (prefs.isKey("sched_dim_start")) snapshot.schedule.sched_dim_start = prefs.getUShort("sched_dim_start", snapshot.schedule.sched_dim_start);
+    if (prefs.isKey("sched_dim_end"))   snapshot.schedule.sched_dim_end = prefs.getUShort("sched_dim_end", snapshot.schedule.sched_dim_end);
+    if (prefs.isKey("sched_dim_brt"))   snapshot.schedule.sched_dim_brt = prefs.getUChar("sched_dim_brt", snapshot.schedule.sched_dim_brt);
+
     prefs.end();
     {
         ConfigLockGuard guard;
@@ -348,6 +405,7 @@ void ConfigManager::loadFromNvs() {
         _hardware = snapshot.hardware;
         _timing = snapshot.timing;
         _network = snapshot.network;
+        _schedule = snapshot.schedule;
     }
     LOG_I("ConfigManager", "NVS values loaded");
 }
@@ -395,6 +453,13 @@ void ConfigManager::persistToNvs() {
     prefs.putString("os_client_sec", _network.opensky_client_secret);
     prefs.putString("aeroapi_key", _network.aeroapi_key);
 
+    // Schedule (Foundation release - night mode)
+    prefs.putString("timezone", _schedule.timezone);
+    prefs.putUChar("sched_enabled", _schedule.sched_enabled);
+    prefs.putUShort("sched_dim_start", _schedule.sched_dim_start);
+    prefs.putUShort("sched_dim_end", _schedule.sched_dim_end);
+    prefs.putUChar("sched_dim_brt", _schedule.sched_dim_brt);
+
     prefs.end();
     _persistScheduledAt = 0;
     _persistPending = false;
@@ -410,6 +475,7 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
         snapshot.hardware = _hardware;
         snapshot.timing = _timing;
         snapshot.network = _network;
+        snapshot.schedule = _schedule;
     }
 
     // Display — uses same key names as updateCacheFromKey / applyJson
@@ -445,6 +511,13 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     out["os_client_id"] = snapshot.network.opensky_client_id;
     out["os_client_sec"] = snapshot.network.opensky_client_secret;
     out["aeroapi_key"] = snapshot.network.aeroapi_key;
+
+    // Schedule
+    out["timezone"] = snapshot.schedule.timezone;
+    out["sched_enabled"] = snapshot.schedule.sched_enabled;
+    out["sched_dim_start"] = snapshot.schedule.sched_dim_start;
+    out["sched_dim_end"] = snapshot.schedule.sched_dim_end;
+    out["sched_dim_brt"] = snapshot.schedule.sched_dim_brt;
 }
 
 void ConfigManager::persistAllNow() {
@@ -477,6 +550,11 @@ NetworkConfig ConfigManager::getNetwork() {
     return _network;
 }
 
+ScheduleConfig ConfigManager::getSchedule() {
+    ConfigLockGuard guard;
+    return _schedule;
+}
+
 bool ConfigManager::requiresReboot(const char* key) {
     for (size_t i = 0; i < REBOOT_KEY_COUNT; i++) {
         if (strcmp(key, REBOOT_KEYS[i]) == 0) return true;
@@ -485,7 +563,7 @@ bool ConfigManager::requiresReboot(const char* key) {
 }
 
 bool ConfigManager::updateCacheFromKey(const char* key, JsonVariant value) {
-    return updateConfigValue(_display, _location, _hardware, _timing, _network, key, value);
+    return updateConfigValue(_display, _location, _hardware, _timing, _network, _schedule, key, value);
 }
 
 ApplyResult ConfigManager::applyJson(const JsonObject& settings) {
@@ -502,12 +580,13 @@ ApplyResult ConfigManager::applyJson(const JsonObject& settings) {
         snapshot.hardware = _hardware;
         snapshot.timing = _timing;
         snapshot.network = _network;
+        snapshot.schedule = _schedule;
 
         for (JsonPair kv : settings) {
             const char* key = kv.key().c_str();
             JsonVariant value = kv.value();
 
-            if (!updateConfigValue(snapshot.display, snapshot.location, snapshot.hardware, snapshot.timing, snapshot.network, key, value)) {
+            if (!updateConfigValue(snapshot.display, snapshot.location, snapshot.hardware, snapshot.timing, snapshot.network, snapshot.schedule, key, value)) {
                 LOG_E("ConfigManager", "Rejected unknown or invalid key");
                 result.applied.clear();
                 return result;
@@ -527,6 +606,7 @@ ApplyResult ConfigManager::applyJson(const JsonObject& settings) {
         _hardware = snapshot.hardware;
         _timing = snapshot.timing;
         _network = snapshot.network;
+        _schedule = snapshot.schedule;
     }
 
     if (hasRebootKey) {

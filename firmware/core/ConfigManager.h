@@ -9,6 +9,10 @@
 // os_client_id   = opensky_client_id
 // os_client_sec  = opensky_client_secret
 // scan_dir       = scan_direction
+// sched_enabled  = schedule_enabled (13 chars)
+// sched_dim_start = schedule_dim_start (15 chars - AT LIMIT)
+// sched_dim_end  = schedule_dim_end (13 chars)
+// sched_dim_brt  = schedule_dim_brightness (13 chars)
 
 struct DisplayConfig {
     uint8_t brightness;
@@ -37,6 +41,17 @@ struct NetworkConfig {
     String aeroapi_key;
 };
 
+// Schedule configuration for night mode / brightness scheduling
+// NVS keys: timezone (8), sched_enabled (13), sched_dim_start (15),
+//           sched_dim_end (13), sched_dim_brt (13) — all within 15-char limit
+struct ScheduleConfig {
+    String timezone;           // POSIX timezone string, default "UTC0", max 40 chars
+    uint8_t sched_enabled;     // 0=disabled, 1=enabled
+    uint16_t sched_dim_start;  // minutes since midnight (0-1439), default 1380 (23:00)
+    uint16_t sched_dim_end;    // minutes since midnight (0-1439), default 420 (07:00)
+    uint8_t sched_dim_brt;     // brightness during dim window (0-255), default 10
+};
+
 struct ApplyResult {
     std::vector<String> applied;
     bool reboot_required;
@@ -52,6 +67,7 @@ public:
     static HardwareConfig getHardware();
     static TimingConfig getTiming();
     static NetworkConfig getNetwork();
+    static ScheduleConfig getSchedule();
     static ApplyResult applyJson(const JsonObject& settings);
     static void dumpSettingsJson(JsonObject& out);
     static void persistAllNow();
@@ -73,6 +89,7 @@ private:
     static HardwareConfig _hardware;
     static TimingConfig _timing;
     static NetworkConfig _network;
+    static ScheduleConfig _schedule;
 
     static std::vector<std::function<void()>> _callbacks;
     static unsigned long _persistScheduledAt;

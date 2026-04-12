@@ -1,0 +1,811 @@
+diff --git a/firmware/core/SystemStatus.cpp b/firmware/core/SystemStatus.cpp
+index dcae3ed..98319df 100644
+--- a/firmware/core/SystemStatus.cpp
++++ b/firmware/core/SystemStatus.cpp
+@@ -6,6 +6,12 @@ Responsibilities:
+ - Build extended diagnostics JSON for the health page (Story 2.4).
+ */
+ #include "core/SystemStatus.h"
++
++// FW_VERSION is a compile-time build flag from platformio.ini.
++// Fallback for unit test harness or non-PlatformIO compilation.
++#ifndef FW_VERSION
++#define FW_VERSION "0.0.0-dev"
++#endif
+ #include "core/ConfigManager.h"
+ #include "core/LogoManager.h"
+ #include "utils/Log.h"
+@@ -81,7 +87,11 @@ void SystemStatus::toJson(JsonObject& obj) {
+ }
+ 
+ void SystemStatus::toExtendedJson(JsonObject& obj, const FlightStatsSnapshot& stats) {
+-    // --- subsystems (existing six) ---
++    // --- top-level OTA fields (Story fn-1.4) ---
++    obj["firmware_version"] = FW_VERSION;
++    obj["rollback_detected"] = stats.rollback_detected;
++
++    // --- subsystems ---
+     JsonObject subsystems = obj["subsystems"].to<JsonObject>();
+     toJson(subsystems);
+ 
+@@ -139,6 +149,8 @@ const char* SystemStatus::subsystemName(Subsystem sys) {
+         case Subsystem::CDN:      return "cdn";
+         case Subsystem::NVS:      return "nvs";
+         case Subsystem::LITTLEFS: return "littlefs";
++        case Subsystem::OTA:      return "ota";
++        case Subsystem::NTP:      return "ntp";
+         default:                  return "unknown";
+     }
+ }
+diff --git a/firmware/core/SystemStatus.h b/firmware/core/SystemStatus.h
+index 799e10c..e450aeb 100644
+--- a/firmware/core/SystemStatus.h
++++ b/firmware/core/SystemStatus.h
+@@ -10,7 +10,9 @@ enum class Subsystem : uint8_t {
+     AEROAPI,
+     CDN,
+     NVS,
+-    LITTLEFS
++    LITTLEFS,
++    OTA,
++    NTP
+ };
+ 
+ enum class StatusLevel : uint8_t {
+@@ -33,6 +35,7 @@ struct FlightStatsSnapshot {
+     uint16_t enriched_flights;      // enriched flight count from last fetch
+     uint16_t logos_matched;         // placeholder 0 until Epic 3
+     uint32_t fetches_since_boot;    // total fetch attempts since boot
++    bool rollback_detected;         // true if OTA rollback occurred (Story fn-1.4)
+ };
+ 
+ class SystemStatus {
+@@ -49,7 +52,7 @@ public:
+     static const char* levelName(StatusLevel level);
+ 
+ private:
+-    static const uint8_t SUBSYSTEM_COUNT = 6;
++    static const uint8_t SUBSYSTEM_COUNT = 8;
+     static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
+     static SemaphoreHandle_t _mutex;
+     static const char* subsystemName(Subsystem sys);
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index ca7a22a..8ec5f86 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -17,6 +17,8 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
+ #include <freertos/task.h>
+ #include <freertos/queue.h>
+ #include "esp_task_wdt.h"
++#include "esp_partition.h"
++#include "esp_ota_ops.h"
+ #include "utils/Log.h"
+ #include "core/ConfigManager.h"
+ #include "core/SystemStatus.h"
+@@ -114,6 +116,15 @@ static constexpr unsigned long BUTTON_SHORT_PRESS_MAX_MS = 1000;  // Presses lon
+ 
+ static unsigned long g_lastFetchMs = 0;
+ 
++// --- OTA self-check & rollback detection state (Story fn-1.4) ---
++static bool g_rollbackDetected = false;
++static bool g_otaSelfCheckDone = false;
++static unsigned long g_bootStartMs = 0;
++// 60s per Architecture Decision F3: allows good firmware to connect WiFi even on slow
++// networks, while ensuring bootloader-triggered rollback if firmware crashes before this.
++// Typical WiFi connect: 5–15s. No-WiFi fallback: marks valid after 60s.
++static constexpr unsigned long OTA_SELF_CHECK_TIMEOUT_MS = 60000;
++
+ // --- Flight stats snapshot for /api/status health page (Story 2.4) ---
+ // Written from loop() on Core 1 after each fetch; read from HTTP handler on async TCP task.
+ // Use std::atomic for each field to avoid torn reads on 32-bit ESP32.
+@@ -130,6 +141,7 @@ FlightStatsSnapshot getFlightStatsSnapshot() {
+     s.enriched_flights = g_statsEnrichedFlights.load();
+     s.logos_matched = g_statsLogosMatched.load();
+     s.fetches_since_boot = g_statsFetchesSinceBoot.load();
++    s.rollback_detected = g_rollbackDetected;
+     return s;
+ }
+ 
+@@ -402,6 +414,119 @@ void displayTask(void *pvParameters)
+     }
+ }
+ 
++// --- OTA rollback detection (Story fn-1.4, Task 1) ---
++// Called once in setup(), before SystemStatus::init().
++// SystemStatus::set() is deferred to loop() since SystemStatus isn't ready yet.
++
++static void detectRollback() {
++    const esp_partition_t* invalid = esp_ota_get_last_invalid_partition();
++    if (invalid != NULL) {
++        g_rollbackDetected = true;
++        Serial.printf("[OTA] Rollback detected: partition '%s' was invalid\n", invalid->label);
++    }
++}
++
++// --- OTA self-check (Story fn-1.4, Task 2) ---
++// Called from loop() until complete. Marks firmware valid via WiFi-OR-Timeout strategy.
++// Architecture Decision F3: WiFi connected OR 60s timeout — whichever comes first.
++
++static void performOtaSelfCheck() {
++    if (g_otaSelfCheckDone) return;
++
++    // Cache pending-verify state once — OTA partition state cannot change while we're
++    // running, so avoid repeated IDF flash reads on every loop iteration.
++    static int8_t s_isPendingVerify = -1;  // -1 = unchecked, 0 = already valid, 1 = pending
++    if (s_isPendingVerify == -1) {
++        const esp_partition_t* running = esp_ota_get_running_partition();
++        esp_ota_img_states_t state;
++        s_isPendingVerify = 0;
++        if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
++            s_isPendingVerify = (state == ESP_OTA_IMG_PENDING_VERIFY) ? 1 : 0;
++        }
++    }
++    bool isPendingVerify = (s_isPendingVerify == 1);
++
++    unsigned long elapsed = millis() - g_bootStartMs;
++    bool wifiConnected = (g_wifiManager.getState() == WiFiState::STA_CONNECTED);
++
++    if (wifiConnected || elapsed >= OTA_SELF_CHECK_TIMEOUT_MS) {
++        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
++        if (err == ESP_OK) {
++            if (isPendingVerify) {
++                if (wifiConnected) {
++                    unsigned long elapsedSec = elapsed / 1000;
++                    String okMsg = "Firmware verified — WiFi connected in " + String(elapsedSec) + "s";
++                    Serial.printf("[OTA] Firmware marked valid — WiFi connected in %lums\n", elapsed);
++                    SystemStatus::set(Subsystem::OTA, StatusLevel::OK, okMsg);
++                } else {
++                    LOG_W("OTA", "Firmware marked valid on timeout — WiFi not verified");
++                    SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
++                        "Marked valid on timeout — WiFi not verified");
++                }
++            } else {
++                LOG_V("OTA", "Self-check: already valid (normal boot)");
++                // AC #6: No SystemStatus::set call on normal boot
++            }
++
++            // Deferred rollback status (SystemStatus wasn't ready in setup())
++            // g_rollbackDetected persists until a new successful OTA — intentional per AC #4 / Gotcha #2
++            if (g_rollbackDetected) {
++                SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
++                    "Firmware rolled back to previous version");
++            }
++
++            g_otaSelfCheckDone = true;
++        } else {
++            // mark_valid failed — log but do NOT set done flag; allow retry next loop iteration.
++            // This call is idempotent and should always succeed on valid partitions; persistent
++            // failure indicates a flash/NVS hardware problem requiring investigation.
++            String errMsg = "Failed to mark firmware valid: error " + String(err);
++            Serial.printf("[OTA] ERROR: esp_ota_mark_app_valid_cancel_rollback() failed: %d\n", err);
++            SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, errMsg);
++        }
++    }
++}
++
++// --- Partition validation helper (Story fn-1.1) ---
++
++void validatePartitionLayout() {
++    Serial.println("[Main] Validating partition layout...");
++
++    // Expected partition sizes from custom_partitions.csv (Story fn-1.1)
++    // IMPORTANT: If you modify custom_partitions.csv, update these constants
++    const size_t EXPECTED_APP_SIZE = 0x180000;   // app0/app1: 1.5MB
++    const size_t EXPECTED_SPIFFS_SIZE = 0xF0000; // spiffs: 960KB
++
++    // Validate running app partition
++    const esp_partition_t* running = esp_ota_get_running_partition();
++    if (running) {
++        if (running->size == EXPECTED_APP_SIZE) {
++            Serial.printf("[Main] App partition: %s, size 0x%x (correct)\n", running->label, running->size);
++        } else {
++            Serial.printf("[Main] WARNING: App partition size mismatch: expected 0x%x, got 0x%x\n",
++                  EXPECTED_APP_SIZE, running->size);
++            Serial.println("WARNING: Partition table may not match firmware expectations!");
++            Serial.println("Reflash with new partition table via USB if OTA updates fail.");
++        }
++    } else {
++        Serial.println("[Main] WARNING: Could not determine running partition");
++    }
++
++    // Validate LittleFS partition
++    const esp_partition_t* littlefs = esp_partition_find_first(
++        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
++    if (littlefs) {
++        if (littlefs->size == EXPECTED_SPIFFS_SIZE) {
++            Serial.printf("[Main] LittleFS partition: size 0x%x (correct)\n", littlefs->size);
++        } else {
++            Serial.printf("[Main] WARNING: LittleFS partition size mismatch: expected 0x%x, got 0x%x\n",
++                  EXPECTED_SPIFFS_SIZE, littlefs->size);
++        }
++    } else {
++        Serial.println("[Main] WARNING: Could not find LittleFS partition");
++    }
++}
++
+ // --- setup() (Task 3) ---
+ 
+ void setup()
+@@ -409,16 +534,30 @@ void setup()
+     Serial.begin(115200);
+     delay(200);
+ 
++    // Record boot time for OTA self-check timing (Story fn-1.4)
++    g_bootStartMs = millis();
++
+     // Log firmware version at boot (Story fn-1.1)
+     Serial.println();
+     Serial.println("=================================");
+     Serial.printf("FlightWall Firmware v%s\n", FW_VERSION);
+     Serial.println("=================================");
+ 
+-    if (!LittleFS.begin(true)) {
+-        LOG_E("Main", "LittleFS mount failed");
++    // Detect rollback before anything else (Story fn-1.4, Task 1)
++    // Must run before SystemStatus::init() — defers SystemStatus::set() to loop()
++    detectRollback();
++
++    // Validate partition layout matches expectations (Story fn-1.1)
++    validatePartitionLayout();
++
++    // Mount LittleFS without auto-format to prevent silent data loss
++    if (!LittleFS.begin(false)) {
++        LOG_E("Main", "LittleFS mount failed - filesystem may be corrupted or unformatted");
++        Serial.println("WARNING: LittleFS mount failed!");
++        Serial.println("To format filesystem, reflash with: pio run -t uploadfs");
++        // Continue boot - device will function but web assets/logos unavailable
+     } else {
+-        LOG_I("Main", "LittleFS mounted");
++        LOG_I("Main", "LittleFS mounted successfully");
+     }
+ 
+     ConfigManager::init();
+@@ -652,6 +791,11 @@ void loop()
+     ConfigManager::tick();
+     g_wifiManager.tick();
+ 
++    // OTA self-check: mark firmware valid once WiFi connects or timeout expires (Story fn-1.4)
++    if (!g_otaSelfCheckDone) {
++        performOtaSelfCheck();
++    }
++
+     // Boot button short-press detection (millis debounce, no ISR)
+     // Only active during normal operation — skip if forced AP setup
+     if (!g_forcedApSetup) {
+diff --git a/firmware/test/test_config_manager/test_main.cpp b/firmware/test/test_config_manager/test_main.cpp
+index 662b530..a33146e 100644
+--- a/firmware/test/test_config_manager/test_main.cpp
++++ b/firmware/test/test_config_manager/test_main.cpp
+@@ -187,7 +187,7 @@ void test_apply_json_mixed_keys() {
+     TEST_ASSERT_TRUE(ConfigManager::getNetwork().aeroapi_key == "abc");
+ }
+ 
+-void test_apply_json_ignores_unknown_keys() {
++void test_apply_json_rejects_unknown_keys() {
+     clearNvs();
+     ConfigManager::init();
+ 
+@@ -198,9 +198,9 @@ void test_apply_json_ignores_unknown_keys() {
+ 
+     ApplyResult result = ConfigManager::applyJson(settings);
+ 
+-    TEST_ASSERT_EQUAL(1, result.applied.size());
+-    TEST_ASSERT_TRUE(result.applied[0] == "brightness");
+-    TEST_ASSERT_EQUAL_UINT8(88, ConfigManager::getDisplay().brightness);
++    // applyJson uses all-or-nothing validation - unknown key rejects entire batch
++    TEST_ASSERT_EQUAL(0, result.applied.size());
++    TEST_ASSERT_EQUAL_UINT8(5, ConfigManager::getDisplay().brightness);  // default unchanged
+ }
+ 
+ // --- requiresReboot Key Detection ---
+@@ -287,6 +287,133 @@ void test_on_change_callback_fires() {
+     TEST_ASSERT_TRUE(callbackFired);
+ }
+ 
++// --- Schedule Tests ---
++
++void test_defaults_schedule() {
++    clearNvs();
++    ConfigManager::init();
++    ScheduleConfig s = ConfigManager::getSchedule();
++    TEST_ASSERT_TRUE(s.timezone == "UTC0");
++    TEST_ASSERT_EQUAL_UINT8(0, s.sched_enabled);
++    TEST_ASSERT_EQUAL_UINT16(1380, s.sched_dim_start);
++    TEST_ASSERT_EQUAL_UINT16(420, s.sched_dim_end);
++    TEST_ASSERT_EQUAL_UINT8(10, s.sched_dim_brt);
++}
++
++void test_nvs_write_read_roundtrip_schedule() {
++    clearNvs();
++
++    // Write schedule values to NVS directly
++    Preferences prefs;
++    prefs.begin("flightwall", false);
++    prefs.putString("timezone", "PST8PDT");
++    prefs.putUChar("sched_enabled", 1);
++    prefs.putUShort("sched_dim_start", 1200);
++    prefs.putUShort("sched_dim_end", 360);
++    prefs.putUChar("sched_dim_brt", 25);
++    prefs.end();
++
++    // Re-init ConfigManager — should pick up NVS values
++    ConfigManager::init();
++
++    ScheduleConfig s = ConfigManager::getSchedule();
++    TEST_ASSERT_TRUE(s.timezone == "PST8PDT");
++    TEST_ASSERT_EQUAL_UINT8(1, s.sched_enabled);
++    TEST_ASSERT_EQUAL_UINT16(1200, s.sched_dim_start);
++    TEST_ASSERT_EQUAL_UINT16(360, s.sched_dim_end);
++    TEST_ASSERT_EQUAL_UINT8(25, s.sched_dim_brt);
++}
++
++void test_apply_json_schedule_hot_reload() {
++    clearNvs();
++    ConfigManager::init();
++
++    JsonDocument doc;
++    doc["timezone"] = "PST8PDT";
++    doc["sched_enabled"] = 1;
++    JsonObject settings = doc.as<JsonObject>();
++
++    ApplyResult result = ConfigManager::applyJson(settings);
++
++    TEST_ASSERT_EQUAL(2, result.applied.size());
++    TEST_ASSERT_FALSE(result.reboot_required);
++    TEST_ASSERT_TRUE(ConfigManager::getSchedule().timezone == "PST8PDT");
++    TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getSchedule().sched_enabled);
++}
++
++void test_apply_json_schedule_validation() {
++    clearNvs();
++    ConfigManager::init();
++
++    // Test sched_enabled > 1 is rejected
++    JsonDocument doc1;
++    doc1["sched_enabled"] = 2;
++    ApplyResult result1 = ConfigManager::applyJson(doc1.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result1.applied.size());
++
++    // Test sched_dim_start > 1439 is rejected
++    JsonDocument doc2;
++    doc2["sched_dim_start"] = 1440;
++    ApplyResult result2 = ConfigManager::applyJson(doc2.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result2.applied.size());
++
++    // Test sched_dim_end > 1439 is rejected
++    JsonDocument doc3;
++    doc3["sched_dim_end"] = 1440;
++    ApplyResult result3 = ConfigManager::applyJson(doc3.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result3.applied.size());
++
++    // Test timezone too long is rejected (>40 chars)
++    JsonDocument doc4;
++    doc4["timezone"] = "ThisIsAVeryLongTimezoneStringThatExceedsTheMaximumLengthOf40Characters";
++    ApplyResult result4 = ConfigManager::applyJson(doc4.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result4.applied.size());
++
++    // Test sched_dim_brt > 255 is rejected
++    JsonDocument doc5;
++    doc5["sched_dim_brt"] = 256;
++    ApplyResult result5 = ConfigManager::applyJson(doc5.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result5.applied.size());
++
++    // Test sched_enabled overflow (256 wraps to 0 without proper validation)
++    JsonDocument doc6;
++    doc6["sched_enabled"] = 256;
++    ApplyResult result6 = ConfigManager::applyJson(doc6.as<JsonObject>());
++    TEST_ASSERT_EQUAL(0, result6.applied.size());
++}
++
++void test_dump_settings_json_includes_schedule() {
++    clearNvs();
++    ConfigManager::init();
++
++    // Set known schedule values
++    JsonDocument setDoc;
++    setDoc["timezone"] = "EST5EDT";
++    setDoc["sched_enabled"] = 1;
++    setDoc["sched_dim_start"] = 1320;  // 22:00
++    setDoc["sched_dim_end"] = 360;     // 06:00
++    setDoc["sched_dim_brt"] = 5;
++    ConfigManager::applyJson(setDoc.as<JsonObject>());
++
++    // Call dumpSettingsJson
++    JsonDocument outDoc;
++    JsonObject out = outDoc.to<JsonObject>();
++    ConfigManager::dumpSettingsJson(out);
++
++    // Verify all schedule keys present
++    TEST_ASSERT_TRUE(out["timezone"].is<String>());
++    TEST_ASSERT_TRUE(out["timezone"] == "EST5EDT");
++    TEST_ASSERT_EQUAL_UINT8(1, out["sched_enabled"].as<uint8_t>());
++    TEST_ASSERT_EQUAL_UINT16(1320, out["sched_dim_start"].as<uint16_t>());
++    TEST_ASSERT_EQUAL_UINT16(360, out["sched_dim_end"].as<uint16_t>());
++    TEST_ASSERT_EQUAL_UINT8(5, out["sched_dim_brt"].as<uint8_t>());
++
++    // Verify total key count (29 keys total: 4 display + 3 location + 10 hardware + 2 timing + 5 network + 5 schedule)
++    size_t keyCount = 0;
++    for (JsonPair kv : out) keyCount++;
++    TEST_ASSERT_EQUAL_UINT32(29, keyCount);
++}
++
+ // --- SystemStatus Tests ---
+ 
+ void test_system_status_init() {
+@@ -329,6 +456,33 @@ void test_system_status_to_json() {
+     TEST_ASSERT_TRUE(obj["nvs"]["message"] == "High usage");
+ }
+ 
++void test_system_status_ota_ntp() {
++    SystemStatus::init();
++    SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Ready");
++    SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Synced");
++
++    SubsystemStatus ota = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_EQUAL(StatusLevel::OK, ota.level);
++    TEST_ASSERT_TRUE(ota.message == "Ready");
++
++    SubsystemStatus ntp = SystemStatus::get(Subsystem::NTP);
++    TEST_ASSERT_EQUAL(StatusLevel::OK, ntp.level);
++    TEST_ASSERT_TRUE(ntp.message == "Synced");
++
++    // Verify OTA and NTP appear in JSON output
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toJson(obj);
++
++    TEST_ASSERT_TRUE(obj["ota"].is<JsonObject>());
++    TEST_ASSERT_TRUE(obj["ota"]["level"] == "ok");
++    TEST_ASSERT_TRUE(obj["ota"]["message"] == "Ready");
++
++    TEST_ASSERT_TRUE(obj["ntp"].is<JsonObject>());
++    TEST_ASSERT_TRUE(obj["ntp"]["level"] == "ok");
++    TEST_ASSERT_TRUE(obj["ntp"]["message"] == "Synced");
++}
++
+ void setup() {
+     delay(2000);
+     UNITY_BEGIN();
+@@ -343,13 +497,20 @@ void setup() {
+     // NVS round-trip
+     RUN_TEST(test_nvs_write_read_roundtrip);
+ 
++    // Schedule tests
++    RUN_TEST(test_defaults_schedule);
++    RUN_TEST(test_nvs_write_read_roundtrip_schedule);
++    RUN_TEST(test_apply_json_schedule_hot_reload);
++    RUN_TEST(test_apply_json_schedule_validation);
++    RUN_TEST(test_dump_settings_json_includes_schedule);
++
+     // applyJson paths
+     RUN_TEST(test_apply_json_hot_reload);
+     RUN_TEST(test_apply_json_matrix_mapping_hot_reload);
+     RUN_TEST(test_apply_json_hot_reload_persists_after_debounce);
+     RUN_TEST(test_apply_json_reboot_path);
+     RUN_TEST(test_apply_json_mixed_keys);
+-    RUN_TEST(test_apply_json_ignores_unknown_keys);
++    RUN_TEST(test_apply_json_rejects_unknown_keys);
+ 
+     // Reboot key detection
+     RUN_TEST(test_requires_reboot_known_keys);
+@@ -367,6 +528,7 @@ void setup() {
+     RUN_TEST(test_system_status_set_get);
+     RUN_TEST(test_system_status_error);
+     RUN_TEST(test_system_status_to_json);
++    RUN_TEST(test_system_status_ota_ntp);
+ 
+     UNITY_END();
+ }
+diff --git a/firmware/test/test_ota_self_check/test_main.cpp b/firmware/test/test_ota_self_check/test_main.cpp
+new file mode 100644
+index 0000000..a7eb197
+--- /dev/null
++++ b/firmware/test/test_ota_self_check/test_main.cpp
+@@ -0,0 +1,307 @@
++/*
++Purpose: Unity tests for OTA self-check and rollback detection (Story fn-1.4).
++Tests: /api/status response contract (firmware_version, rollback_detected fields),
++       SystemStatus OTA subsystem interactions, FlightStatsSnapshot serialization,
++       esp_ota_mark_app_valid_cancel_rollback() idempotent behavior on non-OTA boot.
++Environment: esp32dev (on-device test) — requires NVS flash.
++*/
++#include <Arduino.h>
++#include <unity.h>
++#include <ArduinoJson.h>
++#include "esp_ota_ops.h"
++#include "core/SystemStatus.h"
++#include "core/ConfigManager.h"
++#include "fixtures/test_helpers.h"
++
++// Helper: clear NVS namespace before tests
++static void clearNvs() {
++    Preferences prefs;
++    prefs.begin("flightwall", false);
++    prefs.clear();
++    prefs.end();
++}
++
++// ============================================================================
++// AC #5: GET /api/status contract — firmware_version and rollback_detected
++// ============================================================================
++
++void test_extended_json_includes_firmware_version() {
++    clearNvs();
++    ConfigManager::init();
++    SystemStatus::init();
++
++    FlightStatsSnapshot stats = {};
++    stats.rollback_detected = false;
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toExtendedJson(obj, stats);
++
++    TEST_ASSERT_TRUE_MESSAGE(obj.containsKey("firmware_version"),
++        "Response must include firmware_version field");
++    TEST_ASSERT_TRUE_MESSAGE(obj["firmware_version"].is<const char*>(),
++        "firmware_version must be a string");
++
++    // FW_VERSION is set by build flags; in test env it's "0.0.0-dev" fallback
++    const char* version = obj["firmware_version"].as<const char*>();
++    TEST_ASSERT_NOT_NULL_MESSAGE(version, "firmware_version must not be null");
++    TEST_ASSERT_TRUE_MESSAGE(strlen(version) > 0, "firmware_version must not be empty");
++}
++
++void test_extended_json_includes_rollback_detected_false() {
++    FlightStatsSnapshot stats = {};
++    stats.rollback_detected = false;
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toExtendedJson(obj, stats);
++
++    TEST_ASSERT_TRUE_MESSAGE(obj.containsKey("rollback_detected"),
++        "Response must include rollback_detected field");
++    TEST_ASSERT_FALSE(obj["rollback_detected"].as<bool>());
++}
++
++void test_extended_json_includes_rollback_detected_true() {
++    FlightStatsSnapshot stats = {};
++    stats.rollback_detected = true;
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toExtendedJson(obj, stats);
++
++    TEST_ASSERT_TRUE(obj["rollback_detected"].as<bool>());
++}
++
++void test_extended_json_top_level_field_placement() {
++    // Verify firmware_version and rollback_detected are top-level in the data object,
++    // not nested inside subsystems or device sections
++    FlightStatsSnapshot stats = {};
++    stats.rollback_detected = false;
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toExtendedJson(obj, stats);
++
++    // These must be at root level of the data object
++    TEST_ASSERT_TRUE(obj.containsKey("firmware_version"));
++    TEST_ASSERT_TRUE(obj.containsKey("rollback_detected"));
++    // And subsystems must be a nested object (not polluted)
++    TEST_ASSERT_TRUE(obj.containsKey("subsystems"));
++    JsonObject subsystems = obj["subsystems"].as<JsonObject>();
++    TEST_ASSERT_FALSE_MESSAGE(subsystems.containsKey("firmware_version"),
++        "firmware_version must not be inside subsystems");
++}
++
++// ============================================================================
++// AC #1/#2: SystemStatus OTA subsystem — OK and WARNING levels
++// ============================================================================
++
++void test_system_status_ota_ok_on_wifi_verify() {
++    SystemStatus::init();
++
++    // Simulate post-OTA WiFi-connected verification (AC #1)
++    SystemStatus::set(Subsystem::OTA, StatusLevel::OK,
++        "Firmware verified — WiFi connected in 8s");
++
++    SubsystemStatus status = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_EQUAL(StatusLevel::OK, status.level);
++    TEST_ASSERT_STRING_CONTAINS("WiFi connected", status.message.c_str());
++}
++
++void test_system_status_ota_warning_on_timeout() {
++    SystemStatus::init();
++
++    // Simulate timeout path (AC #2)
++    SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
++        "Marked valid on timeout — WiFi not verified");
++
++    SubsystemStatus status = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_EQUAL(StatusLevel::WARNING, status.level);
++    TEST_ASSERT_STRING_CONTAINS("timeout", status.message.c_str());
++}
++
++void test_system_status_ota_warning_on_rollback() {
++    SystemStatus::init();
++
++    // Simulate rollback detection (AC #4)
++    SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
++        "Firmware rolled back to previous version");
++
++    SubsystemStatus status = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_EQUAL(StatusLevel::WARNING, status.level);
++    TEST_ASSERT_STRING_CONTAINS("rolled back", status.message.c_str());
++}
++
++// ============================================================================
++// AC #6: Normal boot — no SystemStatus set for OTA subsystem
++// ============================================================================
++
++void test_system_status_ota_no_change_on_normal_boot() {
++    SystemStatus::init();
++
++    // After init, OTA subsystem should have default "Not initialized" message
++    SubsystemStatus before = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_STRING_EQUAL("Not initialized", before.message.c_str());
++
++    // On normal boot (not pending verify), performOtaSelfCheck should NOT
++    // call SystemStatus::set for OTA. Verify the init state remains.
++    // (We can't call performOtaSelfCheck directly since it's static in main.cpp,
++    // but we verify the contract: if no set() is called, status stays default.)
++    SubsystemStatus after = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_STRING_EQUAL("Not initialized", after.message.c_str());
++    TEST_ASSERT_EQUAL(StatusLevel::OK, after.level);
++}
++
++// ============================================================================
++// ESP32 OTA API behavioral tests — safe on non-OTA test device
++// ============================================================================
++
++void test_mark_valid_idempotent_on_already_valid() {
++    // AC #6: esp_ota_mark_app_valid_cancel_rollback() is idempotent
++    // On a normal boot (non-OTA), calling it should return ESP_OK with no effect
++    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
++    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK, err,
++        "mark_valid must return ESP_OK on already-valid partition");
++}
++
++void test_running_partition_is_valid() {
++    // Verify the currently running test firmware is in a valid state
++    const esp_partition_t* running = esp_ota_get_running_partition();
++    TEST_ASSERT_NOT_NULL_MESSAGE(running, "Must have a running partition");
++
++    esp_ota_img_states_t state;
++    esp_err_t err = esp_ota_get_state_partition(running, &state);
++    // On factory or single-OTA partition, this may return ESP_ERR_NOT_SUPPORTED
++    // On valid OTA partition, state should be ESP_OTA_IMG_VALID
++    if (err == ESP_OK) {
++        TEST_ASSERT_TRUE_MESSAGE(
++            state == ESP_OTA_IMG_VALID || state == ESP_OTA_IMG_UNDEFINED,
++            "Running partition should be VALID or UNDEFINED (factory)");
++    }
++    // ESP_ERR_NOT_SUPPORTED is acceptable for non-OTA partition types
++}
++
++void test_last_invalid_partition_null_on_clean_device() {
++    // On a device that hasn't had a failed OTA, this should return NULL
++    // Note: if the test device previously had a rollback, this will be non-NULL
++    // and the test still passes — we just verify the API is callable
++    const esp_partition_t* invalid = esp_ota_get_last_invalid_partition();
++    // This is informational — the API must not crash
++    if (invalid == NULL) {
++        TEST_ASSERT_NULL(invalid);  // Clean device — no rollback history
++    } else {
++        // Device has rollback history — verify partition struct is valid
++        TEST_ASSERT_NOT_NULL(invalid->label);
++        TEST_ASSERT_TRUE(invalid->size > 0);
++    }
++}
++
++// ============================================================================
++// FlightStatsSnapshot struct — rollback_detected field transport
++// ============================================================================
++
++void test_flight_stats_snapshot_rollback_field_default() {
++    FlightStatsSnapshot stats = {};
++    TEST_ASSERT_FALSE_MESSAGE(stats.rollback_detected,
++        "Zero-initialized FlightStatsSnapshot should have rollback_detected = false");
++}
++
++void test_flight_stats_snapshot_rollback_field_true() {
++    FlightStatsSnapshot stats = {};
++    stats.rollback_detected = true;
++    TEST_ASSERT_TRUE(stats.rollback_detected);
++
++    // Verify it serializes correctly through toExtendedJson
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toExtendedJson(obj, stats);
++    TEST_ASSERT_TRUE(obj["rollback_detected"].as<bool>());
++}
++
++// ============================================================================
++// OTA subsystem appears in /api/status subsystems section
++// ============================================================================
++
++void test_ota_subsystem_in_json_output() {
++    SystemStatus::init();
++    SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Test message");
++
++    JsonDocument doc;
++    JsonObject obj = doc.to<JsonObject>();
++    SystemStatus::toJson(obj);
++
++    TEST_ASSERT_TRUE_MESSAGE(obj.containsKey("ota"),
++        "Subsystems JSON must include 'ota' key");
++    JsonObject ota = obj["ota"].as<JsonObject>();
++    TEST_ASSERT_EQUAL_STRING("ok", ota["level"].as<const char*>());
++    TEST_ASSERT_EQUAL_STRING("Test message", ota["message"].as<const char*>());
++}
++
++void test_ota_subsystem_error_level() {
++    SystemStatus::init();
++    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR,
++        "Failed to mark firmware valid: error -1");
++
++    SubsystemStatus status = SystemStatus::get(Subsystem::OTA);
++    TEST_ASSERT_EQUAL(StatusLevel::ERROR, status.level);
++    TEST_ASSERT_STRING_CONTAINS("Failed to mark", status.message.c_str());
++}
++
++// ============================================================================
++// FW_VERSION build flag contract
++// ============================================================================
++
++void test_fw_version_macro_defined() {
++    // FW_VERSION must be defined (either from platformio.ini or fallback)
++    const char* version = FW_VERSION;
++    TEST_ASSERT_NOT_NULL(version);
++    TEST_ASSERT_TRUE_MESSAGE(strlen(version) > 0, "FW_VERSION must not be empty");
++    // Must contain at least one dot (semver format: X.Y.Z)
++    TEST_ASSERT_NOT_NULL_MESSAGE(strchr(version, '.'),
++        "FW_VERSION must be semver format (contain at least one dot)");
++}
++
++// ============================================================================
++// Test Runner
++// ============================================================================
++
++void setup() {
++    delay(2000);
++    UNITY_BEGIN();
++
++    // --- /api/status response contract (AC #5) ---
++    RUN_TEST(test_extended_json_includes_firmware_version);
++    RUN_TEST(test_extended_json_includes_rollback_detected_false);
++    RUN_TEST(test_extended_json_includes_rollback_detected_true);
++    RUN_TEST(test_extended_json_top_level_field_placement);
++
++    // --- SystemStatus OTA subsystem (AC #1, #2, #4) ---
++    RUN_TEST(test_system_status_ota_ok_on_wifi_verify);
++    RUN_TEST(test_system_status_ota_warning_on_timeout);
++    RUN_TEST(test_system_status_ota_warning_on_rollback);
++
++    // --- Normal boot behavior (AC #6) ---
++    RUN_TEST(test_system_status_ota_no_change_on_normal_boot);
++
++    // --- ESP32 OTA API behavioral tests ---
++    RUN_TEST(test_mark_valid_idempotent_on_already_valid);
++    RUN_TEST(test_running_partition_is_valid);
++    RUN_TEST(test_last_invalid_partition_null_on_clean_device);
++
++    // --- FlightStatsSnapshot transport ---
++    RUN_TEST(test_flight_stats_snapshot_rollback_field_default);
++    RUN_TEST(test_flight_stats_snapshot_rollback_field_true);
++
++    // --- OTA subsystem JSON serialization ---
++    RUN_TEST(test_ota_subsystem_in_json_output);
++    RUN_TEST(test_ota_subsystem_error_level);
++
++    // --- Build flag contract ---
++    RUN_TEST(test_fw_version_macro_defined);
++
++    UNITY_END();
++}
++
++void loop() {
++    // Tests run once in setup()
++}

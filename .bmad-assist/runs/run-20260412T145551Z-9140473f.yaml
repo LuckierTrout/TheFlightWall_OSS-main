@@ -4,9 +4,9 @@ cli_args_masked:
 - run
 current_phase:
   model: opus
-  phase: DEV_STORY
+  phase: CODE_REVIEW
   provider: claude
-  started_at: '2026-04-12T15:02:35.919706Z'
+  started_at: '2026-04-12T15:19:11.596184Z'
 ended_at: null
 epic: fn-1
 phase_events:
@@ -96,6 +96,37 @@ phase_events:
   story: fn-1.1
   termination_metadata: null
   timestamp: '2026-04-12T15:02:35.919706Z'
+- duration_ms: 995658
+  epic: fn-1
+  error_type: null
+  event_type: completed
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  status: success
+  story: fn-1.1
+  termination_metadata:
+    termination_info:
+      max_file:
+      - /Users/christianlee/App-Development/TheFlightWall_OSS-main/_bmad-output/implementation-artifacts/stories/fn-1-1-partition-table-and-build-configuration.md
+      - 4
+      rate_triggered: false
+      terminated: false
+      terminated_reason: null
+      total_calls: 29
+    termination_reason: null
+  timestamp: '2026-04-12T15:19:11.578600Z'
+- duration_ms: null
+  epic: fn-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  status: null
+  story: fn-1.1
+  termination_metadata: null
+  timestamp: '2026-04-12T15:19:11.596184Z'
 phases:
 - duration_ms: 178976
   ended_at: '2026-04-12T14:58:50.396590Z'
@@ -123,6 +154,15 @@ phases:
   provider: claude
   provider_count: 1
   started_at: '2026-04-12T15:01:27.529505Z'
+  status: success
+- duration_ms: 995658
+  ended_at: '2026-04-12T15:19:11.578600Z'
+  error_type: null
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  provider_count: 1
+  started_at: '2026-04-12T15:02:35.919706Z'
   status: success
 project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
 run_id: 9140473f

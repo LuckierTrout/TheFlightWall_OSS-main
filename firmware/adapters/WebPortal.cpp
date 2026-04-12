@@ -24,6 +24,8 @@ GET /api/status extended JSON (Story 2.4):
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 #include <vector>
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
@@ -73,6 +75,41 @@ void clearLogoUpload(AsyncWebServerRequest* request, bool removeFile = false) {
                 LittleFS.remove(it->path);
             }
             g_logoUploads.erase(it);
+            return;
+        }
+    }
+}
+
+// OTA upload state — streams firmware directly to flash via Update library
+struct OTAUploadState {
+    AsyncWebServerRequest* request;
+    bool valid;           // false if any validation/write failed
+    bool started;         // true after Update.begin() succeeds
+    size_t bytesWritten;  // for debugging/logging only
+    String error;         // human-readable error message
+    String errorCode;     // machine-readable error code
+};
+
+std::vector<OTAUploadState> g_otaUploads;
+static bool g_otaInProgress = false;  // Enforce single-flight OTA — Update is a singleton
+
+OTAUploadState* findOTAUpload(AsyncWebServerRequest* request) {
+    for (auto& u : g_otaUploads) {
+        if (u.request == request) return &u;
+    }
+    return nullptr;
+}
+
+void clearOTAUpload(AsyncWebServerRequest* request) {
+    for (auto it = g_otaUploads.begin(); it != g_otaUploads.end(); ++it) {
+        if (it->request == request) {
+            // CRITICAL: abort in-progress update on cleanup (started=false means already completed)
+            if (it->started) {
+                Update.abort();
+                LOG_I("OTA", "Upload aborted during cleanup");
+            }
+            g_otaUploads.erase(it);
+            g_otaInProgress = false;
             return;
         }
     }
@@ -360,6 +397,168 @@ void WebPortal::_registerRoutes() {
     _server->on("/logos/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
         _handleGetLogoFile(request);
     });
+
+    // POST /api/ota/upload — firmware OTA upload (streaming to flash)
+    _server->on("/api/ota/upload", HTTP_POST,
+        // Request handler — called after upload completes
+        [this](AsyncWebServerRequest* request) {
+            auto* state = findOTAUpload(request);
+            JsonDocument doc;
+            JsonObject root = doc.to<JsonObject>();
+
+            if (!state || !state->valid) {
+                root["ok"] = false;
+                root["error"] = (state && state->error.length()) ? state->error : "Upload failed";
+                const String errCode = (state && state->errorCode.length()) ? state->errorCode : "UPLOAD_ERROR";
+                root["code"] = errCode;
+                // Map error codes to semantically correct HTTP status codes
+                int httpCode = 400;  // default: client error (e.g. bad firmware file)
+                if (errCode == "OTA_BUSY") httpCode = 409;  // Conflict
+                else if (errCode == "NO_OTA_PARTITION" || errCode == "BEGIN_FAILED" ||
+                         errCode == "WRITE_FAILED"     || errCode == "VERIFY_FAILED") httpCode = 500;
+                String output;
+                serializeJson(doc, output);
+                clearOTAUpload(request);
+                request->send(httpCode, "application/json", output);
+                return;
+            }
+
+            // Success — schedule reboot
+            root["ok"] = true;
+            root["message"] = "Rebooting...";
+            String output;
+            serializeJson(doc, output);
+            clearOTAUpload(request);
+
+            SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Update complete — rebooting");
+            LOG_I("OTA", "Upload complete, scheduling reboot");
+
+            request->send(200, "application/json", output);
+
+            // Schedule reboot after 500ms to allow response to be sent
+            static esp_timer_handle_t otaRebootTimer = nullptr;
+            if (!otaRebootTimer) {
+                esp_timer_create_args_t args = {};
+                args.callback = [](void*) { ESP.restart(); };
+                args.name = "ota_reboot";
+                esp_timer_create(&args, &otaRebootTimer);
+            }
+            esp_timer_start_once(otaRebootTimer, 500000); // 500ms in microseconds
+        },
+        // Upload handler — called for each chunk of firmware data
+        [this](AsyncWebServerRequest* request, const String& filename,
+               size_t index, uint8_t* data, size_t len, bool final) {
+            if (index == 0) {
+                // First chunk — validate magic byte and begin update
+                clearOTAUpload(request);
+
+                // Reject concurrent OTA uploads — Update singleton is not re-entrant
+                if (g_otaInProgress) {
+                    OTAUploadState busy;
+                    busy.request = request;
+                    busy.valid = false;
+                    busy.started = false;
+                    busy.bytesWritten = 0;
+                    busy.error = "Another OTA update is already in progress";
+                    busy.errorCode = "OTA_BUSY";
+                    g_otaUploads.push_back(busy);
+                    LOG_I("OTA", "Rejected concurrent OTA upload");
+                    return;
+                }
+
+                OTAUploadState state;
+                state.request = request;
+                state.valid = true;
+                state.started = false;
+                state.bytesWritten = 0;
+
+                // Register disconnect handler for WiFi interruption
+                request->onDisconnect([request]() {
+                    auto* s = findOTAUpload(request);
+                    if (s && s->started) {
+                        Update.abort();
+                        LOG_I("OTA", "Upload aborted due to disconnect");
+                    }
+                    clearOTAUpload(request);
+                });
+
+                // Validate ESP32 magic byte (0xE9)
+                if (len == 0 || data[0] != 0xE9) {
+                    state.valid = false;
+                    state.error = "Not a valid ESP32 firmware image";
+                    state.errorCode = "INVALID_FIRMWARE";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Invalid firmware image");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "Invalid firmware magic byte");
+                    return;
+                }
+
+                // Get next OTA partition
+                const esp_partition_t* partition = esp_ota_get_next_update_partition(NULL);
+                if (!partition) {
+                    state.valid = false;
+                    state.error = "No OTA partition available";
+                    state.errorCode = "NO_OTA_PARTITION";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "No OTA partition found");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "No OTA partition found");
+                    return;
+                }
+
+                // Begin update with partition size (NOT Content-Length per AR18)
+                if (!Update.begin(partition->size)) {
+                    state.valid = false;
+                    state.error = "Could not begin OTA update";
+                    state.errorCode = "BEGIN_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Could not begin OTA update");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "Update.begin() failed");
+                    return;
+                }
+
+                state.started = true;
+                g_otaInProgress = true;
+                g_otaUploads.push_back(state);
+                Serial.printf("[OTA] Writing to %s, size 0x%x\n", partition->label, partition->size);
+                SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Upload in progress");
+                LOG_I("OTA", "Update started");
+            }
+
+            auto* state = findOTAUpload(request);
+            if (!state || !state->valid) return;
+
+            // Stream write chunk to flash
+            if (len > 0) {
+                size_t written = Update.write(data, len);
+                if (written != len) {
+                    Update.abort();
+                    state->valid = false;
+                    state->error = "Write failed — flash may be worn or corrupted";
+                    state->errorCode = "WRITE_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Write failed");
+                    LOG_E("OTA", "Flash write failed");
+                    return;
+                }
+                state->bytesWritten += len;
+            }
+
+            if (final) {
+                // Finalize update
+                if (!Update.end(true)) {
+                    Update.abort();
+                    state->valid = false;
+                    state->error = "Firmware verification failed";
+                    state->errorCode = "VERIFY_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Verification failed");
+                    LOG_E("OTA", "Firmware verification failed");
+                    return;
+                }
+                // Clear started so clearOTAUpload does NOT call Update.abort() on a completed update
+                state->started = false;
+                LOG_I("OTA", "Update finalized successfully");
+            }
+        }
+    );
 
     // Shared static assets (gzipped on LittleFS)
     _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {

@@ -6,6 +6,12 @@ Responsibilities:
 - Build extended diagnostics JSON for the health page (Story 2.4).
 */
 #include "core/SystemStatus.h"
+
+// FW_VERSION is a compile-time build flag from platformio.ini.
+// Fallback for unit test harness or non-PlatformIO compilation.
+#ifndef FW_VERSION
+#define FW_VERSION "0.0.0-dev"
+#endif
 #include "core/ConfigManager.h"
 #include "core/LogoManager.h"
 #include "utils/Log.h"
@@ -81,7 +87,11 @@ void SystemStatus::toJson(JsonObject& obj) {
 }
 
 void SystemStatus::toExtendedJson(JsonObject& obj, const FlightStatsSnapshot& stats) {
-    // --- subsystems (existing six) ---
+    // --- top-level OTA fields (Story fn-1.4) ---
+    obj["firmware_version"] = FW_VERSION;
+    obj["rollback_detected"] = stats.rollback_detected;
+
+    // --- subsystems ---
     JsonObject subsystems = obj["subsystems"].to<JsonObject>();
     toJson(subsystems);
 
@@ -139,6 +149,8 @@ const char* SystemStatus::subsystemName(Subsystem sys) {
         case Subsystem::CDN:      return "cdn";
         case Subsystem::NVS:      return "nvs";
         case Subsystem::LITTLEFS: return "littlefs";
+        case Subsystem::OTA:      return "ota";
+        case Subsystem::NTP:      return "ntp";
         default:                  return "unknown";
     }
 }
