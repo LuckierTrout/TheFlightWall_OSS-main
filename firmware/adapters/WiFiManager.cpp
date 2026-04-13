@@ -129,9 +129,12 @@ void WiFiManager::_onConnected() {
         LOG_E("WiFi", "mDNS failed to start");
     }
 
-    // NTP time sync (fire-and-forget, non-blocking)
-    configTime(0, 0, "pool.ntp.org");
-    LOG_I("WiFi", "NTP configured (pool.ntp.org, UTC)");
+    // NTP time sync with timezone from ConfigManager (Story fn-2.1)
+    ScheduleConfig sched = ConfigManager::getSchedule();
+    configTzTime(sched.timezone.c_str(), "pool.ntp.org", "time.nist.gov");
+#if LOG_LEVEL >= 2
+    Serial.println("[WiFi] NTP configured: tz=" + sched.timezone + " servers=pool.ntp.org,time.nist.gov");
+#endif
 
 #if LOG_LEVEL >= 2
     Serial.println("[WiFi] Connected, IP: " + WiFi.localIP().toString());

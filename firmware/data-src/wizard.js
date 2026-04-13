@@ -1,4 +1,104 @@
 /* FlightWall Setup Wizard — Step navigation, WiFi scan polling, validation, state preservation */
+
+/**
+ * IANA-to-POSIX timezone mapping (Story fn-2.1).
+ * Shared with dashboard.js — used for settings import timezone resolution.
+ * Browser auto-detects IANA via Intl API; ESP32 needs POSIX string for configTzTime().
+ */
+var TZ_MAP = {
+  // North America
+  "America/New_York":       "EST5EDT,M3.2.0,M11.1.0",
+  "America/Chicago":        "CST6CDT,M3.2.0,M11.1.0",
+  "America/Denver":         "MST7MDT,M3.2.0,M11.1.0",
+  "America/Los_Angeles":    "PST8PDT,M3.2.0,M11.1.0",
+  "America/Phoenix":        "MST7",
+  "America/Anchorage":      "AKST9AKDT,M3.2.0,M11.1.0",
+  "Pacific/Honolulu":       "HST10",
+  "America/Toronto":        "EST5EDT,M3.2.0,M11.1.0",
+  "America/Vancouver":      "PST8PDT,M3.2.0,M11.1.0",
+  "America/Edmonton":       "MST7MDT,M3.2.0,M11.1.0",
+  "America/Winnipeg":       "CST6CDT,M3.2.0,M11.1.0",
+  "America/Halifax":        "AST4ADT,M3.2.0,M11.1.0",
+  "America/St_Johns":       "NST3:30NDT,M3.2.0,M11.1.0",
+  "America/Mexico_City":    "CST6",
+  "America/Tijuana":        "PST8PDT,M3.2.0,M11.1.0",
+  // Europe
+  "Europe/London":          "GMT0BST,M3.5.0/1,M10.5.0",
+  "Europe/Paris":           "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Berlin":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Madrid":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Rome":            "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Amsterdam":       "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Brussels":        "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Zurich":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Vienna":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Warsaw":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Stockholm":       "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Oslo":            "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Copenhagen":      "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Helsinki":        "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Athens":          "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Bucharest":       "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Istanbul":        "TRT-3",
+  "Europe/Moscow":          "MSK-3",
+  "Europe/Lisbon":          "WET0WEST,M3.5.0/1,M10.5.0",
+  "Europe/Dublin":          "IST-1GMT0,M10.5.0,M3.5.0/1",
+  // Asia
+  "Asia/Tokyo":             "JST-9",
+  "Asia/Shanghai":          "CST-8",
+  "Asia/Hong_Kong":         "HKT-8",
+  "Asia/Singapore":         "SGT-8",
+  "Asia/Kolkata":           "IST-5:30",
+  "Asia/Dubai":             "GST-4",
+  "Asia/Seoul":             "KST-9",
+  "Asia/Bangkok":           "ICT-7",
+  "Asia/Jakarta":           "WIB-7",
+  "Asia/Taipei":            "CST-8",
+  "Asia/Karachi":           "PKT-5",
+  "Asia/Dhaka":             "BST-6",
+  "Asia/Riyadh":            "AST-3",
+  "Asia/Tehran":            "IRST-3:30",
+  // Oceania
+  "Australia/Sydney":       "AEST-10AEDT,M10.1.0,M4.1.0/3",
+  "Australia/Melbourne":    "AEST-10AEDT,M10.1.0,M4.1.0/3",
+  "Australia/Perth":        "AWST-8",
+  "Australia/Brisbane":     "AEST-10",
+  "Australia/Adelaide":     "ACST-9:30ACDT,M10.1.0,M4.1.0/3",
+  "Pacific/Auckland":       "NZST-12NZDT,M9.5.0,M4.1.0/3",
+  "Pacific/Fiji":           "FJT-12",
+  // South America
+  "America/Sao_Paulo":      "BRT3",
+  "America/Argentina/Buenos_Aires": "ART3",
+  "America/Santiago":       "CLT4CLST,M9.1.6/24,M4.1.6/24",
+  "America/Bogota":         "COT5",
+  "America/Lima":           "PET5",
+  "America/Caracas":        "VET4",
+  // Africa / Middle East
+  "Africa/Cairo":           "EET-2EEST,M4.5.5/0,M10.5.4/24",
+  "Africa/Johannesburg":    "SAST-2",
+  "Africa/Lagos":           "WAT-1",
+  "Africa/Nairobi":         "EAT-3",
+  "Africa/Casablanca":      "WET0WEST,M3.5.0/2,M10.5.0/3",
+  "Asia/Jerusalem":         "IST-2IDT,M3.4.4/26,M10.5.0",
+  // UTC
+  "UTC":                    "UTC0",
+  "Etc/UTC":                "UTC0",
+  "Etc/GMT":                "GMT0"
+};
+
+/**
+ * Detect browser timezone and return IANA + POSIX pair.
+ * @returns {{ iana: string, posix: string }}
+ */
+function getTimezoneConfig() {
+  var iana = "UTC";
+  try {
+    iana = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (e) { /* Intl not available */ }
+  var posix = TZ_MAP[iana] || "UTC0";
+  return { iana: iana, posix: posix };
+}
+
 (function() {
   'use strict';
 
@@ -23,6 +123,31 @@
 
   // Valid GPIO pins for display_pin (matches ConfigManager validation)
   var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
+
+  // Keys that map to wizard form fields (12 keys)
+  var WIZARD_KEYS = [
+    'wifi_ssid', 'wifi_password',
+    'os_client_id', 'os_client_sec', 'aeroapi_key',
+    'center_lat', 'center_lon', 'radius_km',
+    'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin'
+  ];
+
+  // Non-wizard config keys preserved in POST payload
+  var KNOWN_EXTRA_KEYS = [
+    'brightness', 'text_color_r', 'text_color_g', 'text_color_b',
+    'origin_corner', 'scan_dir', 'zigzag',
+    'zone_logo_pct', 'zone_split_pct', 'zone_layout',
+    'fetch_interval', 'display_cycle',
+    'timezone', 'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
+  ];
+
+  // Extra keys from import (not shown in wizard, but sent with POST)
+  var importedExtras = {};
+
+  // DOM references — Import zone
+  var importZone = document.getElementById('settings-import-zone');
+  var importFileInput = document.getElementById('import-file-input');
+  var importStatus = document.getElementById('import-status');
 
   // DOM references — Steps 1-2
   var progress = document.getElementById('progress');
@@ -475,6 +600,14 @@
       display_pin: Number(state.display_pin)
     };
 
+    // Merge imported extra keys (brightness, timing, schedule, etc.)
+    var key;
+    for (key in importedExtras) {
+      if (importedExtras.hasOwnProperty(key)) {
+        payload[key] = importedExtras[key];
+      }
+    }
+
     FW.post('/api/settings', payload).then(function(res) {
       if (!res.body.ok) {
         throw new Error('Save failed: ' + (res.body.error || 'Unknown error'));
@@ -550,6 +683,102 @@
   tilesX.addEventListener('input', updateResolution);
   tilesY.addEventListener('input', updateResolution);
   tilePixels.addEventListener('input', updateResolution);
+
+  // --- Settings Import ---
+  function processImportedSettings(text) {
+    // Flush any in-progress DOM input to state FIRST — imported values then win over typed values
+    saveCurrentStepState();
+    // Reset UI and extras at the start of every attempt — covers re-import and error paths (AC #4)
+    importStatus.style.display = 'none';
+    importStatus.textContent = '';
+    importedExtras = {};
+    var parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      FW.showToast('Could not read settings file \u2014 invalid format', 'error');
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      FW.showToast('Could not read settings file \u2014 invalid format', 'error');
+      return;
+    }
+    var count = 0;
+    var i, key, val;
+    for (i = 0; i < WIZARD_KEYS.length; i++) {
+      key = WIZARD_KEYS[i];
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        val = parsed[key];
+        // Skip null and non-primitive values to avoid "null" / "[object Object]" in state
+        if (val !== null && typeof val !== 'object') {
+          state[key] = String(val);
+          count++;
+        }
+      }
+    }
+    for (i = 0; i < KNOWN_EXTRA_KEYS.length; i++) {
+      key = KNOWN_EXTRA_KEYS[i];
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        val = parsed[key];
+        if (val !== null && typeof val !== 'object') {
+          importedExtras[key] = val;
+          count++;
+        }
+      }
+    }
+    if (count === 0) {
+      FW.showToast('No recognized settings found in file', 'warning');
+      return;
+    }
+    FW.showToast('Imported ' + count + ' settings', 'success');
+    importStatus.textContent = count + ' settings imported';
+    importStatus.style.display = '';
+    showStep(currentStep);
+  }
+
+  function handleImportFile(file) {
+    if (!file) return;
+    // Reset state and UI on every new import attempt — covers early-return paths that never
+    // reach processImportedSettings() (file-too-large, FileReader error), preventing stale
+    // extras from a prior successful import from surviving into the POST payload (AC #4).
+    importedExtras = {};
+    importStatus.style.display = 'none';
+    importStatus.textContent = '';
+    if (file.size > 1024 * 1024) {
+      FW.showToast('Settings file too large \u2014 maximum 1\u00a0MB', 'error');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(e) { processImportedSettings(e.target.result); };
+    reader.onerror = function() { FW.showToast('Could not read settings file \u2014 invalid format', 'error'); };
+    reader.readAsText(file);
+  }
+
+  // Click / keyboard handler for import zone
+  importZone.addEventListener('click', function() { importFileInput.click(); });
+  importZone.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); importFileInput.click(); }
+  });
+  importFileInput.addEventListener('change', function() {
+    if (importFileInput.files && importFileInput.files[0]) {
+      handleImportFile(importFileInput.files[0]);
+    }
+    importFileInput.value = '';
+  });
+
+  // Drag-and-drop for import zone
+  importZone.addEventListener('dragenter', function(e) { e.preventDefault(); importZone.classList.add('drag-over'); });
+  importZone.addEventListener('dragover', function(e) { e.preventDefault(); });
+  importZone.addEventListener('dragleave', function(e) {
+    if (!importZone.contains(e.relatedTarget)) importZone.classList.remove('drag-over');
+  });
+  importZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    importZone.classList.remove('drag-over');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleImportFile(e.dataTransfer.files[0]);
+    }
+  });
 
   // --- Init ---
   hydrateDefaults();

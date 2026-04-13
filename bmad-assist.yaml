@@ -6,6 +6,10 @@ communication_language: English
 document_output_language: English
 user_skill_level: expert
 
+run:
+  skip_story_prompts: true
+  skip_epic_prompts: true
+
 paths:
   project_knowledge: "{project-root}/_bmad-output/planning-artifacts"
   output_folder: "{project-root}/_bmad-output"
@@ -101,13 +105,13 @@ compiler:
   source_context:
     budgets:
       # create-story embeds project-context + PRD + architecture + UX; estimate is ~2× token_estimate (XML overhead).
-      create_story: 45000
-      validate_story: 50000
+      create_story: 100000
+      validate_story: 100000
       validate_story_synthesis: 0
-      dev_story: 50000
-      code_review: 50000
+      dev_story: 150000
+      code_review: 150000
       code_review_synthesis: 0
-      default: 50000
+      default: 150000
 
     scoring:
       in_file_list: 50
@@ -124,7 +128,7 @@ compiler:
       max_files: 15
 
   strategic_context:
-    budget: 50000
+    budget: 100000
     tree_budget: 0
     defaults:
       include: [project-context]
@@ -184,8 +188,8 @@ testarch:
 
   context:
     enabled: true
-    budget: 10000
-    max_tokens_per_artifact: 4000
+    budget: 100000
+    max_tokens_per_artifact: 10000
     max_files_per_resolver: 10
     workflows:
       dev_story:
@@ -227,7 +231,7 @@ deep_verify:
     total_timeout_seconds: 180
 
   resource_limits:
-    max_artifact_size_bytes: 204800
+    max_artifact_size_bytes: 250000
     max_line_count: 5000
     max_findings_per_method: 50
     max_total_findings: 200

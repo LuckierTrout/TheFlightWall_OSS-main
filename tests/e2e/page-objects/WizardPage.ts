@@ -6,8 +6,8 @@
  *
  * Architecture Reference:
  * - Wizard served in AP mode (device acts as access point)
- * - Steps: WiFi → API Credentials → Location → Hardware → Test → Complete
- * - Reboot required after wizard completion
+ * - Steps: WiFi → API Credentials → Location → Hardware → Review & Connect (5 steps)
+ * - "Save & Connect" on Step 5 posts settings, triggers reboot, shows handoff message
  */
 import { type Locator, expect } from '@playwright/test';
 import { BasePage } from './BasePage.js';
@@ -17,8 +17,7 @@ export type WizardStep =
   | 'api'
   | 'location'
   | 'hardware'
-  | 'test'
-  | 'complete';
+  | 'review';
 
 export class WizardPage extends BasePage {
   // ============================================================================
@@ -38,11 +37,12 @@ export class WizardPage extends BasePage {
   // ============================================================================
 
   get stepIndicator(): Locator {
-    return this.page.locator('.step-indicator, .wizard-steps');
+    return this.page.locator('#progress');
   }
 
   get nextButton(): Locator {
-    return this.page.locator('button', { hasText: /next|continue/i });
+    // Use ID — text changes from "Next →" (steps 1-4) to "Save & Connect" (step 5)
+    return this.page.locator('#btn-next');
   }
 
   get backButton(): Locator {
@@ -125,7 +125,8 @@ export class WizardPage extends BasePage {
     return this.page.locator('#tiles-y, [name="tiles_y"]');
   }
 
-  get tilePixelsSelect(): Locator {
+  get tilePixelsInput(): Locator {
+    // #tile-pixels is <input type="text">, not a <select>
     return this.page.locator('#tile-pixels, [name="tile_pixels"]');
   }
 
@@ -138,27 +139,12 @@ export class WizardPage extends BasePage {
   }
 
   // ============================================================================
-  // Step 5: Test Display
+  // Step 5: Review & Connect
   // ============================================================================
 
-  get testPatternButton(): Locator {
-    return this.page.locator('button', { hasText: /test pattern|show test/i });
-  }
-
-  get calibrationModeToggle(): Locator {
-    return this.page.locator('#calibration-mode, [name="calibration"]');
-  }
-
-  // ============================================================================
-  // Step 6: Complete
-  // ============================================================================
-
+  /** "Configuration Saved" heading shown after Save & Connect triggers the reboot handoff. */
   get completeMessage(): Locator {
-    return this.page.locator('text=/setup complete|ready to use/i');
-  }
-
-  get rebootButton(): Locator {
-    return this.page.locator('button', { hasText: /reboot|finish|start/i });
+    return this.page.locator('h1', { hasText: 'Configuration Saved' });
   }
 
   // ============================================================================
@@ -166,11 +152,16 @@ export class WizardPage extends BasePage {
   // ============================================================================
 
   get importSettingsButton(): Locator {
-    return this.page.locator('button', { hasText: /import/i });
+    // Import zone is a div[role="button"], not a <button> element
+    return this.page.locator('#settings-import-zone');
   }
 
   get importFileInput(): Locator {
     return this.page.locator('input[type="file"]');
+  }
+
+  get importStatus(): Locator {
+    return this.page.locator('#import-status');
   }
 
   // ============================================================================
@@ -207,19 +198,16 @@ export class WizardPage extends BasePage {
    * Get the current step number (1-based).
    */
   async getCurrentStep(): Promise<number> {
-    // Try to extract from step indicator or URL
+    // Primary: parse the "#progress" indicator text ("Step N of 5")
     const indicator = await this.stepIndicator.textContent();
     const match = indicator?.match(/step\s*(\d+)/i);
     if (match) {
       return parseInt(match[1], 10);
     }
-    // Fallback: check which step elements are visible
-    if (await this.wifiSsidInput.isVisible()) return 1;
-    if (await this.openSkyClientIdInput.isVisible()) return 2;
-    if (await this.centerLatInput.isVisible()) return 3;
-    if (await this.tilesXInput.isVisible()) return 4;
-    if (await this.testPatternButton.isVisible()) return 5;
-    if (await this.completeMessage.isVisible()) return 6;
+    // Fallback: check which #step-N section is visible (5 steps total)
+    for (let i = 1; i <= 5; i++) {
+      if (await this.page.locator(`#step-${i}`).isVisible()) return i;
+    }
     return 0;
   }
 
@@ -236,17 +224,12 @@ export class WizardPage extends BasePage {
   }
 
   /**
-   * Scan for available WiFi networks.
+   * Wait for the automatic WiFi scan to complete and results to appear.
+   * Scanning starts automatically when the wizard loads — there is no explicit scan button.
    */
   async scanForNetworks(): Promise<void> {
-    await this.wifiScanButton.click();
-    // Wait for scan to complete
-    await this.page.waitForResponse(
-      (res) => res.url().includes('/api/wifi/scan'),
-      { timeout: 30_000 }
-    );
-    // Wait for results to render
-    await expect(this.wifiNetworkList).toBeVisible();
+    // #scan-status hides and #scan-results shows when scan completes (or times out to empty)
+    await expect(this.page.locator('#scan-results')).toBeVisible({ timeout: 10_000 });
   }
 
   /**
@@ -324,7 +307,7 @@ export class WizardPage extends BasePage {
   ): Promise<void> {
     await this.fillInput(this.tilesXInput, String(tilesX));
     await this.fillInput(this.tilesYInput, String(tilesY));
-    await this.tilePixelsSelect.selectOption(String(tilePixels));
+    await this.fillInput(this.tilePixelsInput, String(tilePixels));
   }
 
   /**
@@ -335,38 +318,18 @@ export class WizardPage extends BasePage {
   }
 
   // ============================================================================
-  // Step 5: Test Actions
+  // Step 5: Review & Connect Actions
   // ============================================================================
 
   /**
-   * Trigger a test pattern on the display.
-   */
-  async showTestPattern(): Promise<void> {
-    await this.testPatternButton.click();
-    // Wait for pattern to be sent to device
-    await this.page.waitForResponse(
-      (res) =>
-        res.url().includes('/api/calibration') ||
-        res.url().includes('/api/test'),
-      { timeout: 5_000 }
-    );
-  }
-
-  // ============================================================================
-  // Step 6: Complete Actions
-  // ============================================================================
-
-  /**
-   * Complete the wizard and reboot the device.
+   * On Step 5, click "Save & Connect" to post settings and trigger device reboot.
+   * The wizard replaces its content with a "Configuration Saved" handoff message.
    */
   async completeWizard(): Promise<void> {
-    await expect(this.completeMessage).toBeVisible();
-    await this.rebootButton.click();
-    // Device will reboot, connection will be lost
-    await this.page.waitForResponse(
-      (res) => res.url().includes('/api/reboot'),
-      { timeout: 5_000 }
-    );
+    // Step 5 shows "Save & Connect" as the next-button label
+    await this.nextButton.click();
+    // Wait for the handoff message — device is now saving and rebooting
+    await expect(this.completeMessage).toBeVisible({ timeout: 10_000 });
   }
 
   // ============================================================================
@@ -374,7 +337,8 @@ export class WizardPage extends BasePage {
   // ============================================================================
 
   /**
-   * Complete the entire wizard with provided configuration.
+   * Complete the entire 5-step wizard with provided configuration.
+   * Steps: WiFi (1) → API Keys (2) → Location (3) → Hardware (4) → Review & Connect (5).
    */
   async completeSetup(config: {
     wifi: { ssid: string; password: string };
@@ -384,7 +348,7 @@ export class WizardPage extends BasePage {
       aeroApiKey: string;
     };
     location: { lat: number; lon: number; radiusKm: number };
-    hardware: { tilesX: number; tilesY: number; tilePixels: number };
+    hardware: { tilesX: number; tilesY: number; tilePixels: number; displayPin?: number };
   }): Promise<void> {
     // Step 1: WiFi
     await this.configureWifi(config.wifi.ssid, config.wifi.password);
@@ -412,12 +376,12 @@ export class WizardPage extends BasePage {
       config.hardware.tilesY,
       config.hardware.tilePixels
     );
+    if (config.hardware.displayPin !== undefined) {
+      await this.setDisplayPin(config.hardware.displayPin);
+    }
     await this.goNext();
 
-    // Step 5: Test (optional, skip for speed)
-    await this.skipStep();
-
-    // Step 6: Complete
+    // Step 5: Review & Connect — click "Save & Connect" to complete
     await this.completeWizard();
   }
 
@@ -434,14 +398,14 @@ export class WizardPage extends BasePage {
   }
 
   /**
-   * Assert WiFi scan results are displayed.
+   * Assert WiFi scan results are displayed and contain at least one network.
    */
   async expectNetworksVisible(): Promise<void> {
     await expect(this.wifiNetworkList).toBeVisible();
-    const networks = this.wifiNetworkList.locator('li, .network-item');
-    await expect(networks).toHaveCount(
-      expect.any(Number) as unknown as number
-    );
+    // Scan rows are .scan-row divs rendered by showScanResults() in wizard.js
+    const networks = this.wifiNetworkList.locator('.scan-row');
+    const count = await networks.count();
+    expect(count).toBeGreaterThan(0);
   }
 
   /**

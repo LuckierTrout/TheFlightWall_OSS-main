@@ -1,0 +1,33 @@
+cli_args:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+cli_args_masked:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+current_phase:
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  started_at: '2026-04-13T00:02:39.190136Z'
+ended_at: null
+epic: dl-1
+phase_events:
+- duration_ms: null
+  epic: dl-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  status: null
+  story: dl-1.5
+  termination_metadata: null
+  timestamp: '2026-04-13T00:02:39.190136Z'
+phases: []
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 1a0dfbb2
+started_at: '2026-04-13T00:02:39.182319Z'
+status: running
+story: dl-1.5

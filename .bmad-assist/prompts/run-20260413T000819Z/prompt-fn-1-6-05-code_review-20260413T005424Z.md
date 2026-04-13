@@ -1,0 +1,6608 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BMAD Prompt Run Metadata -->
+<!-- Epic: fn-1 -->
+<!-- Story: 6 -->
+<!-- Phase: code-review -->
+<!-- Timestamp: 20260413T005424Z -->
+<compiled-workflow>
+<mission><![CDATA[
+
+Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+
+Target: Story fn-1.6 - dashboard-firmware-card-and-ota-upload-ui
+Find 3-10 specific issues. Challenge every claim.
+
+]]></mission>
+<context>
+<file id="ed7fe483" path="_bmad-output/project-context.md" label="PROJECT CONTEXT"><![CDATA[
+
+---
+project_name: TheFlightWall_OSS-main
+date: '2026-04-12'
+---
+
+# Project Context for AI Agents
+
+Lean rules for implementing FlightWall (ESP32 LED flight display + captive-portal web UI). Prefer existing patterns in `firmware/` over new abstractions.
+
+## Technology Stack
+
+- **Firmware:** C++11, ESP32 (Arduino/PlatformIO), FastLED + Adafruit GFX + FastLED NeoMatrix, ArduinoJson ^7.4.2.
+- **Web on device:** ESPAsyncWebServer (**mathieucarbou fork**), AsyncTCP (**Carbou fork**), LittleFS (`board_build.filesystem = littlefs`), custom `custom_partitions.csv` (~2MB app + ~2MB LittleFS).
+- **Dashboard assets:** Editable sources under `firmware/data-src/`; served bundles are **gzip** under `firmware/data/`. After editing a source file, regenerate the matching `.gz` from `firmware/` (e.g. `gzip -9 -c data-src/common.js > data/common.js.gz`).
+
+## Critical Implementation Rules
+
+- **Core pinning:** Display/task driving LEDs on **Core 0**; WiFi, HTTP server, and flight fetch pipeline on **Core 1** (FastLED + WiFi ISR constraints).
+- **Config:** `ConfigManager` + NVS; debounce writes; atomic saves; use category getters; `POST /api/settings` JSON envelope `{ ok, data, error, code }` pattern for REST responses.
+- **Heap / concurrency:** Cap concurrent web clients (~2–3); stream LittleFS reads; use ArduinoJson filter/streaming for large JSON; avoid full-file RAM buffering for uploads.
+- **WiFi:** WiFiManager-style state machine (AP setup → STA → reconnect / AP fallback); mDNS `flightwall.local` in STA.
+- **Structure:** Extend hexagonal layout — `firmware/core/`, `firmware/adapters/` (e.g. `WebPortal.cpp`), `firmware/interfaces/`, `firmware/models/`, `firmware/config/`, `firmware/utils/`.
+- **Tooling:** Build from `firmware/` with `pio run`. On macOS serial: use `/dev/cu.*` (not `tty.*`); release serial monitor before upload.
+- **Scope for code reviews:** Product code under `firmware/` and tests under `firmware/test/` and repo `tests/`; do not treat BMAD-only paths as product defects unless the task says so.
+
+## Planning Artifacts
+
+- Requirements and design: `_bmad-output/planning-artifacts/` (`architecture.md`, `epics.md`, PRDs).
+- Stories and sprint line items: `_bmad-output/implementation-artifacts/` (e.g. `sprint-status.yaml`, per-story markdown).
+
+
+]]></file>
+<file id="893ad01d" path="_bmad-output/planning-artifacts/architecture.md" label="ARCHITECTURE"><![CDATA[
+
+# Architecture Decision Document — TheFlightWall OSS
+
+## Project Context
+
+**Functional Requirements:** 48 FRs across 9 groups: Device Setup & Onboarding (FR1-8), Configuration (FR9-14), Calibration (FR15-18), Flight Data (FR19-25), Logo Display (FR26-29), Responsive Layout (FR30-33), Logo Management (FR34-37), System Ops (FR38-48).
+
+**Key Non-Functional Requirements:**
+| NFR | Target | Driver |
+|-----|--------|--------|
+| Hot-reload latency | <1s | ConfigManager atomic flag, no polling |
+| Page load | <3s | Gzipped assets, minimal JS, ~280KB RAM ceiling |
+| WiFi recovery | <60s | Auto-reconnect + AP fallback |
+| Flash budget | 4MB total: 2MB app + 2MB LittleFS | Monitor usage, gzip web assets |
+| Concurrent ops | Web + flight + display | FreeRTOS task pinning: display Core 0, WiFi/web/API Core 1 |
+
+**Technology Stack (Locked):**
+- Language: C++11 (Arduino ESP32)
+- Platform: ESP32 with PlatformIO
+- Dependencies: FastLED ^3.6.0, Adafruit GFX ^1.11.9, FastLED NeoMatrix ^1.2, ArduinoJson ^7.4.2, **ESPAsyncWebServer (mathieucarbou fork) ^3.6.0**, **AsyncTCP (mathieucarbou fork)**, LittleFS (built-in), ESPmDNS (built-in)
+
+## Core Architectural Decisions
+
+### D1: ConfigManager — Singleton with Category Struct Getters
+Central singleton initialized first. Config values grouped into structs (DisplayConfig, LocationConfig, HardwareConfig, TimingConfig, NetworkConfig) for clean API and efficient access.
+
+**NVS Key Abbreviations (15-char limit):**
+| Key | Type | Default | Category |
+|-----|------|---------|----------|
+| brightness | uint8 | 5 | display |
+| text_color_r/g/b | uint8 | 255 | display |
+| center_lat/lon | double | 37.7749/-122.4194 | location |
+| radius_km | double | 10.0 | location |
+| tiles_x, tiles_y, tile_pixels | uint8 | 10,2,16 | hardware |
+| display_pin | uint8 | 25 | hardware |
+| origin_corner, scan_dir, zigzag | uint8 | 0 | hardware |
+| fetch_interval, display_cycle | uint16 | 30,3 | timing |
+| wifi_ssid, wifi_password | string | "" | network |
+| os_client_id, os_client_sec | string | "" | network |
+| aeroapi_key | string | "" | network |
+
+**Config flow:** Compile-time defaults → NVS read on boot → RAM cache (struct fields) → runtime changes via web UI → debounced NVS write (2s quiet period) → hot-reload via atomic flag (config) or FreeRTOS queue (flight data).
+
+**Reboot-required keys:** wifi_ssid, wifi_password, opensky credentials, aeroapi_key, display_pin. **Hot-reload keys:** brightness, text color, fetch/display intervals, layout params.
+
+### D2: Inter-Task Communication — Hybrid (Atomic Flags + FreeRTOS Queue)
+**Config changes:** `std::atomic<bool> configChanged` signals display task to re-read from ConfigManager.
+**Flight data:** `QueueHandle_t flightQueue` with `xQueueOverwrite()` — display task always gets latest data.
+
+### D3: WiFi State Machine — WiFiManager
+**States:** WIFI_AP_SETUP → WIFI_CONNECTING → WIFI_STA_CONNECTED ↔ WIFI_STA_RECONNECTING → WIFI_AP_FALLBACK
+
+**Transitions:** No WiFi config = AP_SETUP. Connected successfully = STA_CONNECTED. WiFi lost = STA_RECONNECTING (configurable timeout) → AP_FALLBACK. Long press GPIO 0 during boot = force AP_SETUP.
+
+### D4: Web API Endpoints (11 REST)
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/` | wizard.html (AP) or dashboard.html (STA) |
+| GET/POST | `/api/settings` | Get/apply config (reboot flag in response) |
+| GET | `/api/status` | System health |
+| GET | `/api/wifi/scan` | Async WiFi scan |
+| POST | `/api/reboot` | Save + reboot |
+| POST | `/api/reset` | Factory reset |
+| GET/POST/DELETE | `/api/logos` | Logo management |
+| GET | `/api/layout` | Zone layout (initial load) |
+
+Response envelope: `{ "ok": bool, "data": {...} }` or `{ "ok": false, "error": "message", "code": "..." }`
+
+### D5: Component Integration
+**Init sequence:** ConfigManager → SystemStatus → LogoManager → LayoutEngine → WiFiManager → WebPortal → FlightDataFetcher → displayTask on Core 0.
+
+**Dependency graph:** ConfigManager (all depend on). DisplayTask is read-only (atomic flag + queue peel). WebPortal is only write path.
+
+### D6: SystemStatus Registry
+Health tracking for subsystems (WIFI, OPENSKY, AEROAPI, CDN, NVS, LITTLEFS) with levels (OK/Warning/Error) and human-readable messages. API call counter with monthly NTP-based reset.
+
+### D7: Shared Zone Calculation Algorithm
+**Critical:** Implemented identically in C++ (LayoutEngine) and JavaScript (dashboard.js) to ensure canvas preview matches LEDs.
+
+**Test vectors:**
+| Config | Matrix | Mode | Logo Zone | Flight Card | Telemetry |
+|--------|--------|------|-----------|-------------|-----------|
+| 10x2 @ 16px | 160x32 | full | 0,0→32x32 | 32,0→128x16 | 32,16→128x16 |
+| 5x2 @ 16px | 80x32 | full | 0,0→32x32 | 32,0→48x16 | 32,16→48x16 |
+
+## Project Structure
+
+**Complete directory tree (44 files, 13 existing → updated, 5 new):**
+
+```
+firmware/
+├── platformio.ini (board_build.filesystem=littlefs, custom_partitions.csv)
+├── custom_partitions.csv (nvs 20KB, otadata 8KB, app0 2MB, spiffs 2MB)
+├── src/main.cpp (init sequence, loop, display task, FreeRTOS)
+├── core/
+│   ├── ConfigManager.h/.cpp
+│   ├── FlightDataFetcher.h/.cpp (updated: ConfigManager)
+│   ├── LayoutEngine.h/.cpp
+│   ├── LogoManager.h/.cpp
+│   └── SystemStatus.h/.cpp
+├── adapters/
+│   ├── NeoMatrixDisplay.h/.cpp
+│   ├── WebPortal.h/.cpp (11 endpoints)
+│   ├── WiFiManager.h/.cpp
+│   ├── OpenSkyFetcher.h/.cpp (updated: ConfigManager)
+│   ├── AeroAPIFetcher.h/.cpp (updated: ConfigManager)
+│   └── FlightWallFetcher.h/.cpp
+├── interfaces/ (unchanged: BaseDisplay, BaseFlightFetcher, BaseStateVectorFetcher)
+├── models/ (unchanged: FlightInfo, StateVector, AirportInfo)
+├── config/ (unchanged: compile-time defaults, migrated to ConfigManager)
+├── utils/
+│   └── Log.h (LOG_E/I/V compile-time macros, LOG_LEVEL build flag)
+├── data/ (LittleFS: *.gz web assets + logos/)
+└── test/ (test_config_manager, test_layout_engine)
+```
+
+## Foundation Release — OTA, Night Mode, Settings Export
+
+**4 new NVS keys (schedule):**
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| timezone | string | "UTC0" | POSIX timezone (from browser-side IANA-to-POSIX mapping) |
+| sched_enabled | uint8 | 0 | Schedule enable flag |
+| sched_dim_start, sched_dim_end | uint16 | 1380, 420 | Minutes since midnight (23:00 - 07:00) |
+| sched_dim_brt | uint8 | 10 | Brightness during dim window |
+
+**F1: Dual-OTA Partition Table**
+```
+nvs (20KB) | otadata (8KB) | app0 (1.5MB) | app1 (1.5MB) | spiffs (960KB)
+```
+Flash budget: 4MB total. LittleFS reduces 56% (2MB→960KB). One-time USB reflash required.
+
+**F2: OTA Handler (WebPortal + main.cpp)**
+Upload via `POST /api/ota/upload` multipart. Stream-to-partition via `Update.write()` per chunk. No RAM buffering of binary. Validate magic byte 0xE9 on first chunk. Reboot after successful `Update.end(true)`.
+
+**F3: OTA Self-Check — WiFi-OR-Timeout (60s)**
+Mark firmware valid when WiFi connects OR after 60-second timeout (whichever first). No self-HTTP-request. Watchdog handles crash-on-boot. If timeout path taken (WiFi down), device remains reachable via AP fallback for re-flash.
+
+**F4: IANA-to-POSIX Timezone Mapping — Browser-Side**
+JS object in wizard.js/dashboard.js: `{ "America/Los_Angeles": "PST8PDT,M3.2.0,M11.1.0", ... }`. Auto-detect via `Intl.DateTimeFormat()`. Send POSIX string to ESP32 via POST /api/settings.
+
+**F5: Night Mode Scheduler — Non-Blocking Main Loop**
+Schedule times as `uint16` minutes since midnight (0-1439). Midnight-crossing logic: if (dimStart <= dimEnd) then (current >= start && current < end), else (current >= start || current < end). Brightness scheduler overrides ConfigManager brightness. NTP sync via `configTzTime()` after WiFi connect. LWIP auto-resync every 1 hour.
+
+**F6: ConfigManager Expansion — 5 new keys + ScheduleConfig struct**
+All hot-reload, no reboot required. Timezone change calls `configTzTime()` immediately.
+
+**F7: API Endpoint Additions**
+| Endpoint | Purpose |
+|----------|---------|
+| POST `/api/ota/upload` | Multipart firmware upload |
+| GET `/api/settings/export` | Download JSON config file |
+| Updated `/api/status` | +firmware_version, +rollback_detected |
+
+**Settings export:** Flat JSON with `flightwall_settings_version: 1`, all NVS keys. Import is client-side only (wizard pre-fills form fields).
+
+## Display System Release — Mode System, Classic Card, Live Flight Card
+
+**4 new components: DisplayMode interface, ModeRegistry, ClassicCardMode, LiveFlightCardMode.**
+
+### DS1: DisplayMode Interface — Abstract Class with RenderContext
+```cpp
+class DisplayMode {
+    bool init(const RenderContext& ctx);
+    void render(const RenderContext& ctx, const std::vector<FlightInfo>& flights);
+    void teardown();
+    const char* getName() const;
+    const ModeZoneDescriptor& getZoneDescriptor() const;  // static metadata
+};
+
+struct RenderContext {
+    Adafruit_NeoMatrix* matrix;     // GFX primitives
+    LayoutResult layout;             // zone bounds
+    uint16_t textColor;              // pre-computed
+    uint8_t brightness;              // read-only
+    uint16_t* logoBuffer;            // shared 2KB
+    uint16_t displayCycleMs;         // cycle timing
+};
+```
+
+**Key rules:** Modes receive RenderContext const ref (cannot modify shared state). Modes own flight cycling state (_currentFlightIndex, _lastCycleMs). Empty flight vector is valid (modes decide idle state). Modes must NOT call FastLED.show() — frame commit is display task's responsibility.
+
+### DS2: ModeRegistry — Static Table with Cooperative Switch Serialization
+```cpp
+struct ModeEntry {
+    const char* id;           // e.g., "classic_card"
+    const char* displayName;
+    DisplayMode* (*factory)();  // factory function
+    uint32_t (*memoryRequirement)();  // static function, no instance
+    uint8_t priority;
+};
+
+class ModeRegistry {
+    static void init(const ModeEntry* table, uint8_t count);
+    static bool requestSwitch(const char* modeId);  // Core 1
+    static void tick(const RenderContext& ctx, const std::vector<FlightInfo>& flights);  // Core 0
+    static DisplayMode* getActiveMode();
+    static SwitchState getSwitchState();
+};
+```
+
+**Switch flow (in tick()):**
+1. _switchState = SWITCHING
+2. Teardown current mode
+3. Heap check: `ESP.getFreeHeap()` vs `memoryRequirement()`
+4. If sufficient: factory() → new mode → init(). If init() fails: restore previous.
+5. If insufficient: re-init previous, set error
+6. Debounced NVS write (2s quiet period)
+
+**Switch restoration pattern:** Teardown-but-don't-delete previous mode shell, enabling safe re-init on failure without re-allocation.
+
+### DS3: NeoMatrixDisplay Responsibility Split
+**Retained:** Hardware init, brightness control, frame commit (show()), fallback card rendering, calibration/positioning modes, shared resources (logo buffer, matrix, layout).
+
+**Extracted:** renderZoneFlight(), renderFlightZone(), renderTelemetryZone(), renderLogoZone() → ClassicCardMode.
+
+**New methods:** `RenderContext buildRenderContext()` (assembles context from internals), `show()` (wraps FastLED.show()).
+
+### DS4: Display Task Integration
+**In setup():** ModeRegistry::init(MODE_TABLE, MODE_COUNT). Restore last mode from NVS, default to "classic_card".
+
+**In displayTask():**
+```cpp
+if (g_configChanged.exchange(false)) {
+    cachedCtx = g_display.buildRenderContext();
+}
+if (calibrationMode) { ... }
+else if (positioningMode) { ... }
+else if (statusMessage) { ... }
+else {
+    ModeRegistry::tick(cachedCtx, flights);  // mode rendering
+}
+g_display.show();  // frame commit after mode renders
+```
+
+### DS5: Mode Switch API
+| Endpoint | Response |
+|----------|----------|
+| GET `/api/display/modes` | modes[], active, switch_state, upgrade_notification |
+| POST `/api/display/mode` | { switching_to: "mode_id" } or error |
+
+Response includes mode metadata (zones, description) for wireframe UI.
+
+### DS6: NVS Persistence — Single Key
+**Key:** `display_mode` (string, mode ID). **Default:** `"classic_card"`. **Debounce:** 2s after successful switch. Boot restoration reads from NVS, defaults to classic_card if absent.
+
+### DS7: Mode Picker UI
+Dashboard section with CSS Grid wireframe schematics. Each mode card is entire tap target. Tap triggers synchronous POST (returns after mode is rendering or fails). Transition feedback: card in "Switching..." state during POST, sibling cards disabled. All three dismiss actions (Try, Browse, X) clear notification via localStorage + POST /api/display/ack-notification.
+
+**NVS key pattern:** `display_mode` (unique with all MVP + Foundation keys, within namespace "flightwall").
+
+**Enforcement:** ClassicCardMode extraction — 3-phase (copy, validate parity, delete from source). Terminal fallback: if mode init fails twice, displayFallbackCard() renders single-flight legacy card.
+
+## Delight Release — Clock Mode, Departures Board, Scheduling, OTA Pull
+
+**New components: ModeOrchestrator (state machine), OTAUpdater (GitHub API client), ClockMode, DeparturesBoardMode.**
+
+### DL1: Fade Transition — RGB888 Dual Buffers (Transient)
+**Buffers:** ~30KB RGB888 (two CRGB arrays, 160x32 @ 3 bytes/pixel). Allocate at transition start, free immediately after fade completes. If malloc() fails: instant cut (graceful degradation, not error).
+
+**Blend:** 15 frames @ 66ms/frame = ~1s. Per-pixel linear interpolation: `r = (out*15 + in*step)/15`.
+
+### DL2: Mode Orchestration — State Machine
+**States:** MANUAL (user selection), SCHEDULED (time-based rule active), IDLE_FALLBACK (zero flights).
+**Priority:** SCHEDULED > IDLE_FALLBACK > MANUAL.
+
+**ModeOrchestrator::tick() (Core 1, ~1/sec):**
+1. Evaluate schedule rules (first match wins)
+2. If rule matches: SCHEDULED state, switch to rule mode
+3. If no rule && was SCHEDULED: MANUAL state, restore user selection
+4. If zero flights && MANUAL state: IDLE_FALLBACK, switch to Clock Mode
+5. If flights > 0 && IDLE_FALLBACK state: MANUAL, restore selection
+
+**Flight count signaling:** `std::atomic<uint8_t> g_flightCount` updated by FlightDataFetcher after queue write.
+
+### DL3: OTAUpdater — GitHub Releases API Client with SHA-256
+**Check (synchronous, ~1-2s):** GET releases/latest, parse JSON, compare tag_name vs FW_VERSION.
+
+**Download (FreeRTOS task, Core 1):**
+1. ModeRegistry::prepareForOTA() (teardown mode, set _switchState = SWITCHING)
+2. Download .sha256 (64-char hex string)
+3. Update.begin(partitionSize)
+4. Stream .bin: Update.write() + mbedtls_sha256_update() per chunk
+5. mbedtls_sha256_finish(), compare vs downloaded hash
+6. If match: Update.end(true) → ESP.restart(). If mismatch: Update.abort() → ERROR.
+
+**Error paths:** All errors after Update.begin() must call Update.abort(). Task self-deletes via `_downloadTask = nullptr; vTaskDelete(NULL)`.
+
+### DL4: Schedule Rules NVS Storage
+**Max 8 rules, indexed keys:**
+```
+sched_r{N}_start (uint16)    minutes since midnight
+sched_r{N}_end (uint16)      minutes since midnight
+sched_r{N}_mode (string)     mode ID
+sched_r{N}_ena (uint8)       enabled flag
+sched_r_count (uint8)        active rule count
+```
+Rules always compacted (no index gaps on delete).
+
+### DL5: Per-Mode Settings Schema
+**Mode declares settings as static const:**
+```cpp
+struct ModeSettingDef {
+    const char* key;      // ≤7 chars (NVS suffix)
+    const char* label;    // UI display name
+    const char* type;     // "uint8", "enum", etc.
+    int32_t defaultValue, minValue, maxValue;
+    const char* enumOptions;
+};
+
+struct ModeSettingsSchema {
+    const char* modeAbbrev;   // ≤5 chars for NVS prefix
+    const ModeSettingDef* settings;
+    uint8_t settingCount;
+};
+```
+
+**NVS key format:** `m_{abbrev}_{key}` (total ≤15 chars). ConfigManager helpers: `getModeSetting()` / `setModeSetting()`. API iterates settingsSchema dynamically (never hardcode field names).
+
+### DL6: API Endpoint Additions
+| Endpoint | Purpose |
+|----------|---------|
+| GET `/api/ota/check` | Check GitHub for update |
+| POST `/api/ota/pull` | Start download (spawns FreeRTOS task) |
+| GET `/api/ota/status` | Poll progress (state, %) |
+| GET `/api/schedule` | Get rules |
+| POST `/api/schedule` | Save rules |
+
+Updated `/api/display/modes`: includes `settings` array per mode (schema + current values, null for modes without settings).
+
+## Implementation Patterns & Consistency Rules
+
+**MVP Naming Conventions:**
+- Classes: PascalCase (ConfigManager, FlightDataFetcher)
+- Methods: camelCase (applyJson, fetchFlights)
+- Private members: _camelCase (_matrix, _currentFlightIndex)
+- Struct fields: snake_case (brightness, text_color_r, center_lat)
+- Constants: UPPER_SNAKE_CASE
+- Namespaces: PascalCase
+- Files: PascalCase.h/.cpp
+- Headers: #pragma once
+
+**NVS Key Convention:** snake_case, max 15 chars. Abbreviations documented in ConfigManager.h.
+
+**Logging Pattern:** #include "utils/Log.h", use LOG_E/LOG_I/LOG_V macros (compile-time levels).
+
+**Error Handling:** Boolean return + output parameter (no exceptions). SystemStatus reporting + log macros. JSON API responses: { "ok": bool, "data": {...} } or { "ok": false, "error": "message", "code": "..." }.
+
+**Memory:** String for dynamic text, const char* for constants. Avoid new/delete. Stream LittleFS files.
+
+**Web Assets:** Every fetch() must check json.ok and call showToast() on failure.
+
+**Enforcement Rules (30 total):**
+
+1-11 MVP: naming, NVS keys, includes, memory, logging, error handling, web patterns.
+
+12-16 Foundation: OTA validation (header before write), streaming (no RAM buffer), getLocalTime non-blocking (timeout=0), schedule times as uint16 minutes, settings import client-side only.
+
+17-23 Display System: modes in firmware/modes/, RenderContext isolation (no ConfigManager/WiFiManager from modes), modes never call FastLED.show(), heap allocation only in init/teardown, shared utils from DisplayUtils.h, adding mode = 2 touch points (file + MODE_TABLE line), MEMORY_REQUIREMENT static constexpr.
+
+24-30 Delight: ModeRegistry::requestSwitch() called from exactly 2 methods (ModeOrchestrator::tick/onManualSwitch), OTA SHA-256 incremental + Update.abort() on errors, prepareForOTA() sets _switchState=SWITCHING, fade buffers malloc/free in single call + alloc failure uses instant cut, per-mode settings via ConfigManager helpers + dynamic schema iteration, settings schemas in mode .h files not centralized, cross-core atomics in main.cpp only (modes/adapters don't access directly).
+
+## Validation Summary
+
+**Coverage:** 48 MVP + 37 Foundation + 36 Display System + 43 Delight = 164 FRs. All mapped to specific files and decisions. 21 MVP NFRs + 8 Foundation + 12 Display System + 21 Delight NFRs all addressed architecturally.
+
+**No critical gaps.** Party mode reviews across 3+ sessions incorporated 30+ refinements. Key catches: platformio.ini build filter blocker, DisplayMode interface vs instance methods contradiction, terminal fallback for mode init failure, flight cycling timing as highest-risk extraction point.
+
+**Readiness:** All decisions have code examples, struct definitions, API formats, state diagrams. File change maps complete. Enforcement rules with anti-patterns. Boot/loop integration points specified. Implementation sequence with dependencies. Tests required for ConfigManager, LayoutEngine, ModeRegistry, ModeOrchestrator, OTAUpdater, schedule NVS.
+
+**MVP implementation handoff:** Add ESPAsyncWebServer Carbou fork + LittleFS to platformio.ini, create custom_partitions.csv, build and verify existing flight pipeline still works, then implement ConfigManager + SystemStatus as foundation.
+
+**Foundation handoff:** Pre-implementation size gate (binary ≤1.3MB), then update partitions, expand ConfigManager (schedule), add OTA upload + self-check, integrate NTP + scheduler.
+
+**Display System handoff:** Measure heap baseline post-Foundation, create DisplayMode interface, ModeRegistry, extract ClassicCardMode with pixel-parity validation gate (human confirmation required), then LiveFlightCardMode, then Mode Picker UI.
+
+**Delight handoff:** ModeOrchestrator state machine, ClockMode + DeparturesBoardMode, OTAUpdater with GitHub API + SHA-256, schedule CRUD, mode settings schemas, UI for OTA Pull + scheduling.
+
+]]></file>
+<file id="60733e24" path="_bmad-output/implementation-artifacts/stories/fn-1-6-dashboard-firmware-card-and-ota-upload-ui.md" label="DOCUMENTATION"><![CDATA[
+
+
+# Story fn-1.6: Dashboard Firmware Card & OTA Upload UI
+
+Status: Ready for Review
+
+<!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
+
+## Story
+
+As a **user**,
+I want **a Firmware card on the dashboard where I can upload firmware, see progress, view the current version, and be notified of rollbacks**,
+So that **I can manage firmware updates from my phone**.
+
+## Acceptance Criteria
+
+1. **Given** the dashboard loads **When** `GET /api/status` returns firmware data **Then** the Firmware card displays the current firmware version (e.g., "v1.0.0") **And** the Firmware card is always expanded (not collapsed by default) **And** the dashboard loads within 3 seconds on the local network
+
+2. **Given** the Firmware card is visible **When** no file is selected **Then** the OTA Upload Zone (`.ota-upload-zone`) shows: dashed border, "Drag .bin file here or tap to select" text **And** the zone has `role="button"`, `tabindex="0"`, `aria-label="Select firmware file for upload"` **And** Enter/Space keyboard triggers the file picker
+
+3. **Given** a file is dragged over the upload zone **When** the drag enters the zone **Then** the border becomes solid `--accent` and background lightens slightly
+
+4. **Given** a valid `.bin` file is selected (≤1.5MB, first byte `0xE9`) **When** client-side validation passes **Then** the filename is displayed and the "Upload Firmware" primary button is enabled
+
+5. **Given** an invalid file is selected (wrong size or missing magic byte) **When** client-side validation fails **Then** an error toast fires with a specific message (e.g., "File too large — maximum 1.5MB for OTA partition" or "Not a valid ESP32 firmware image") **And** the upload zone resets to empty state
+
+6. **Given** "Upload Firmware" is tapped **When** the upload begins via XMLHttpRequest **Then** the upload zone is replaced by the OTA Progress Bar (`.ota-progress`) **And** the progress bar shows percentage (0-100%) with `role="progressbar"`, `aria-valuenow`/`min`/`max` **And** the percentage updates at least every 2 seconds
+
+7. **Given** the upload completes successfully **When** the server responds with `{ "ok": true }` **Then** a 3-second countdown displays ("Rebooting in 3... 2... 1...") **And** polling begins for device reachability (`GET /api/status`) **And** on successful poll, the new version string is displayed **And** a success toast shows "Updated to v[new version]"
+
+8. **Given** the device is unreachable after 60 seconds of polling **When** the timeout expires **Then** an amber message shows "Device unreachable — try refreshing" with explanatory text
+
+9. **Given** `rollback_detected` is `true` in `/api/status` **When** the dashboard loads **Then** a Persistent Banner (`.banner-warning`) appears in the Firmware card: "Firmware rolled back to previous version" **And** the banner has `role="alert"`, `aria-live="polite"`, hardcoded `#2d2738` background **And** a dismiss button sends `POST /api/ota/ack-rollback` and removes the banner **And** the banner persists across page refreshes until dismissed (NVS-backed)
+
+10. **Given** the System card on the dashboard **When** rendered **Then** a "Download Settings" secondary button triggers `GET /api/settings/export` **And** helper text in the Firmware card links to the System card: "Before migrating, download your settings backup from System below"
+
+11. **Given** all new CSS for OTA components **When** added to `style.css` **Then** total addition is approximately 35 lines (~150 bytes gzipped) **And** all components meet WCAG 2.1 AA contrast requirements **And** all interactive elements have 44x44px minimum touch targets **And** all components work at 320px minimum viewport width
+
+12. **Given** updated web assets (dashboard.html, dashboard.js, style.css) **When** gzipped and placed in `firmware/data/` **Then** the gzipped copies replace existing ones for LittleFS upload
+
+## Tasks / Subtasks
+
+- [x] **Task 1: Add Firmware card HTML to dashboard.html** (AC: #1, #2, #3, #10)
+  - [x] Add new `<section class="card" id="firmware-card">` between the Logos card and System card
+  - [x] Card content: `<h2>Firmware</h2>`, version display `<p id="fw-version">`, rollback banner placeholder `<div id="rollback-banner">`, OTA upload zone, progress bar placeholder, reboot countdown placeholder
+  - [x] OTA Upload Zone: `<div class="ota-upload-zone" id="ota-upload-zone" role="button" tabindex="0" aria-label="Select firmware file for upload">` with prompt text "Drag .bin file here or tap to select" and hidden file input `<input type="file" id="ota-file-input" accept=".bin" hidden>`
+  - [x] File selection display: `<div class="ota-file-info" id="ota-file-info" style="display:none">` with filename span and "Upload Firmware" primary button
+  - [x] Progress bar: `<div class="ota-progress" id="ota-progress" style="display:none">` with inner bar, percentage text, and `role="progressbar"` attributes
+  - [x] Reboot countdown: `<div class="ota-reboot" id="ota-reboot" style="display:none">` with countdown text
+  - [x] Add helper text: `<p class="helper-copy">Before migrating, download your settings backup from <a href="#system-card">System</a> below.</p>`
+  - [x] Add `id="system-card"` to the existing System card `<section>` for the anchor link
+
+- [x] **Task 2: Add "Download Settings" button to System card** (AC: #10)
+  - [x] In the System card section (currently has only Reset to Defaults), add a "Download Settings" secondary button: `<button type="button" class="btn-secondary" id="btn-export-settings">Download Settings</button>`
+  - [x] Add helper text below: `<p class="helper-copy">Download your configuration as a JSON file before partition migration or reflash.</p>`
+  - [x] Place this ABOVE the danger zone reset button (less destructive action first)
+
+- [x] **Task 3: Add new endpoint POST /api/ota/ack-rollback** (AC: #9)
+  - [x] In `WebPortal.cpp`, in `_registerRoutes()`, add handler for `POST /api/ota/ack-rollback`
+  - [x] Handler: set NVS key `ota_rb_ack` to `1` (uint8), respond `{ "ok": true }`
+  - [x] In `WebPortal.h`, no new method needed — can be inline lambda in `_registerRoutes()` (same pattern as positioning handlers)
+
+- [x] **Task 4: Add GET /api/settings/export endpoint** (AC: #10)
+  - [x] In `WebPortal.cpp`, in `_registerRoutes()`, add handler for `GET /api/settings/export`
+  - [x] Handler builds JSON using existing `ConfigManager::dumpSettingsJson()` method
+  - [x] Add metadata fields: `"flightwall_settings_version": 1`, `"exported_at": "<ISO-8601 timestamp>"` (use `time()` with NTP or `millis()` fallback)
+  - [x] Set response header: `Content-Disposition: attachment; filename=flightwall-settings.json`
+  - [x] Response content-type: `application/json`
+
+- [x] **Task 5: Expose rollback acknowledgment state in /api/status** (AC: #9)
+  - [x] Add NVS key `ota_rb_ack` (uint8, default 0) — stored directly via `Preferences` in WebPortal (not via ConfigManager; this is a simple transient flag, not a user config key)
+  - [x] In `SystemStatus::toExtendedJson()`, add `"rollback_acknowledged"` field: `true` if NVS key `ota_rb_ack` == 1
+  - [x] When a NEW OTA upload completes successfully (fn-1.3 handler, after `Update.end(true)` returns true and before the reboot delay), clear the `ota_rb_ack` key by setting it to `0` — so a subsequent rollback will show the banner again. Do NOT clear at upload start; if the upload fails the ack must remain intact.
+
+- [x] **Task 6: Add OTA CSS to style.css** (AC: #11)
+  - [x] `.ota-upload-zone` — Reuse pattern from `.logo-upload-zone`: dashed border `2px dashed var(--border)`, padding, min-height 80px, cursor pointer, text-align center, flex column
+  - [x] `.ota-upload-zone.drag-over` — Solid border `var(--primary)`, background rgba tint
+  - [x] `.ota-file-info` — Filename + button row; flexbox with gap
+  - [x] `.ota-progress` — Container for progress bar: height 28px, border-radius, background `var(--border)`
+  - [x] `.ota-progress-bar` — Inner fill: height 100%, background `var(--primary)`, transition width 0.3s, border-radius
+  - [x] `.ota-progress-text` — Centered percentage text over bar: position absolute, color white
+  - [x] `.ota-reboot` — Countdown text: text-align center, padding, font-size larger
+  - [x] `.banner-warning` — Persistent amber banner: background `#2d2738`, border-left 4px solid `var(--warning, #d29922)`, padding 12px 16px, border-radius, display flex, justify-content space-between, align-items center
+  - [x] `.banner-warning .dismiss-btn` — Small X button: min 44x44px touch target
+  - [x] `.btn-secondary` — If not already existing: outline style button, border `var(--border)`, background transparent, color `var(--text)`
+  - [x] Target: ~35 lines, ~150 bytes gzipped
+  - [x] All interactive elements ≥ 44x44px touch targets
+  - [x] Verify contrast ratios meet WCAG 2.1 AA (4.5:1 for text, 3:1 for UI components)
+
+- [x] **Task 7: Implement firmware card JavaScript in dashboard.js** (AC: #1, #2, #3, #4, #5, #6, #7, #8, #9)
+  - [x] **Version display**: In `loadSettings()` or a new `loadFirmwareStatus()` function, call `GET /api/status`, extract `firmware_version` and `rollback_detected`, populate `#fw-version` text
+  - [x] **Rollback banner**: If `rollback_detected === true` AND not acknowledged (check via `rollback_acknowledged` field in status response), show `.banner-warning` with dismiss button. Dismiss handler: `FW.post('/api/ota/ack-rollback')`, then hide banner.
+  - [x] **File selection via click**: Click on `.ota-upload-zone` or Enter/Space key → trigger hidden `#ota-file-input` click
+  - [x] **Drag and drop**: `dragenter`/`dragover` on zone → add `.drag-over` class, prevent default. `dragleave`/`drop` → remove class. On `drop`, extract `e.dataTransfer.files[0]`
+  - [x] **Client-side validation**: Read first 4 bytes via `FileReader.readAsArrayBuffer()`. Check: (a) file size ≤ 1,572,864 bytes (1.5MB = 0x180000), (b) first byte === 0xE9 (ESP32 magic). On failure: `FW.showToast(message, 'error')` and reset zone.
+  - [x] **File info display**: On valid file, hide upload zone, show `#ota-file-info` with filename and enabled "Upload Firmware" button
+  - [x] **Upload via XMLHttpRequest**: Use `XMLHttpRequest` (not `fetch`) for upload progress events. `xhr.upload.onprogress` → update progress bar width and `aria-valuenow`. `FormData` with file appended. POST to `/api/ota/upload`.
+  - [x] **Progress bar**: Hide file info, show `#ota-progress`. Update bar width as percentage. Ensure updates at least every 2 seconds (XHR progress events are browser-driven; add a minimum interval check if needed).
+  - [x] **Success handler**: On `xhr.status === 200` and `response.ok === true`, show countdown "Rebooting in 3... 2... 1..." via `setInterval` decrementing. After countdown, begin polling.
+  - [x] **Reboot polling**: `setInterval` every 3 seconds calling `GET /api/status`. On success: extract new `firmware_version`, show success toast "Updated to v[version]", update version display, reset OTA zone to initial state. Clear interval.
+  - [x] **Polling timeout**: After 60 seconds (20 attempts at 3s each), stop polling, show amber message "Device unreachable — try refreshing. The device may have changed IP address after reboot."
+  - [x] **Error handling**: On upload failure (non-200 response), parse error JSON, show error toast with specific message from server. Reset upload zone to initial state.
+  - [x] **Cancel/reset**: Provide a way to cancel file selection (click zone again or select new file)
+
+- [x] **Task 8: Add settings export JavaScript** (AC: #10)
+  - [x] Click handler on `#btn-export-settings`: trigger `window.location.href = '/api/settings/export'` — browser downloads the JSON file via Content-Disposition header
+  - [x] Alternative: `fetch('/api/settings/export')` then create blob URL and trigger download — but direct navigation is simpler and works universally
+
+- [x] **Task 9: Gzip updated web assets** (AC: #12)
+  - [x] From `firmware/` directory, regenerate gzipped assets:
+    ```
+    gzip -9 -c data-src/dashboard.html > data/dashboard.html.gz
+    gzip -9 -c data-src/dashboard.js > data/dashboard.js.gz
+    gzip -9 -c data-src/style.css > data/style.css.gz
+    ```
+  - [x] Verify gzipped files replaced in `firmware/data/`
+
+- [x] **Task 10: Build and verify** (AC: #1-#12)
+  - [x] Run `~/.platformio/penv/bin/pio run` from `firmware/` — verify clean build
+  - [x] Verify binary size remains under 1.5MB limit
+  - [x] Measure total gzipped web asset size (should remain well under 50KB budget)
+
+## Dev Notes
+
+### Critical Architecture Constraints
+
+**Web Asset Build Pipeline (MANUAL)**
+Per project memory: No automated gzip build script. After editing any file in `firmware/data-src/`, manually run:
+```bash
+cd firmware
+gzip -9 -c data-src/dashboard.html > data/dashboard.html.gz
+gzip -9 -c data-src/dashboard.js > data/dashboard.js.gz  
+gzip -9 -c data-src/style.css > data/style.css.gz
+```
+
+**Dashboard Card Ordering**
+The dashboard currently has these cards in order:
+1. Display
+2. Display Mode (Mode Picker)
+3. Timing
+4. Network & API
+5. Hardware
+6. Calibration (collapsible)
+7. Location (collapsible)
+8. Logos
+9. System (danger zone)
+
+The Firmware card should be inserted between **Logos** and **System** — this matches the UX spec's dashboard ordering (Firmware before System) and keeps the danger zone at the bottom.
+
+**Existing API Patterns**
+- All API calls use `FW.get()` / `FW.post()` from `common.js`
+- Error responses always: `{ "ok": false, "error": "message", "code": "CODE" }`
+- Success responses: `{ "ok": true, "data": {...} }` or `{ "ok": true, "message": "..." }`
+- Toast notifications: `FW.showToast(message, 'success'|'warning'|'error')`
+
+**OTA Upload is ALREADY IMPLEMENTED server-side (fn-1.3)**
+The `POST /api/ota/upload` endpoint exists in `WebPortal.cpp`. It:
+- Accepts multipart form upload
+- Validates magic byte `0xE9` on first chunk
+- Streams directly to flash via `Update.write()`
+- Returns `{ "ok": true, "message": "Rebooting..." }` on success
+- Returns error with code (INVALID_FIRMWARE, OTA_BUSY, etc.) on failure
+- Reboots after 500ms delay on success
+
+**You do NOT need to modify the upload endpoint** — only create the client-side UI.
+
+**OTA Self-Check (fn-1.4) provides version and rollback data**
+`GET /api/status` returns:
+```json
+{
+  "ok": true,
+  "data": {
+    "firmware_version": "1.0.0",
+    "rollback_detected": false,
+    ...
+  }
+}
+```
+
+**Rollback persistence behavior (fn-1.4 Gotcha #2):**
+`rollback_detected` remains `true` on every boot until a new successful OTA clears the invalid partition. The banner must handle this — show persistently until user acknowledges via `POST /api/ota/ack-rollback`.
+
+### XMLHttpRequest vs Fetch for Upload
+
+Use `XMLHttpRequest` instead of `fetch()` for the firmware upload because:
+1. `xhr.upload.onprogress` provides real upload progress events (bytes sent / total)
+2. `fetch()` does not support upload progress in any browser
+3. The existing logo upload in `dashboard.js` uses `fetch()` but without progress — OTA needs progress
+
+**Pattern:**
+```javascript
+function uploadFirmware(file) {
+  const xhr = new XMLHttpRequest();
+  const formData = new FormData();
+  formData.append('firmware', file, file.name);
+  
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      updateProgressBar(pct);
+    }
+  };
+  
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      const resp = JSON.parse(xhr.responseText);
+      if (resp.ok) startRebootCountdown();
+      else showUploadError(resp.error);
+    } else {
+      try {
+        const resp = JSON.parse(xhr.responseText);
+        showUploadError(resp.error || 'Upload failed');
+      } catch(e) {
+        showUploadError('Upload failed — status ' + xhr.status);
+      }
+    }
+  };
+  
+  xhr.onerror = function() {
+    showUploadError('Connection lost during upload');
+  };
+  
+  xhr.open('POST', '/api/ota/upload');
+  xhr.send(formData);
+}
+```
+
+### Client-Side File Validation
+
+The ESP32 magic byte validation MUST happen client-side before upload to provide immediate feedback (AC #5). Read the first byte using FileReader:
+
+```javascript
+function validateFirmwareFile(file) {
+  return new Promise((resolve, reject) => {
+    if (file.size > 1572864) {  // 1.5MB = 0x180000
+      reject('File too large — maximum 1.5MB for OTA partition');
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const bytes = new Uint8Array(e.target.result);
+      if (bytes[0] !== 0xE9) {
+        reject('Not a valid ESP32 firmware image');
+        return;
+      }
+      resolve();
+    };
+    reader.onerror = function() {
+      reject('Could not read file');
+    };
+    reader.readAsArrayBuffer(file.slice(0, 4));  // Only read first 4 bytes
+  });
+}
+```
+
+### Reboot Polling Strategy
+
+After successful upload, the device reboots after 500ms. The dashboard must:
+1. Show 3-second countdown ("Rebooting in 3... 2... 1...")
+2. After countdown, poll `GET /api/status` every 3 seconds
+3. On success: extract `firmware_version`, show success toast
+4. On timeout (60s / 20 polls): show amber warning
+
+The device typically takes 5-15s to reboot and reconnect to WiFi. Total expected wait: countdown (3s) + reboot (5-15s) = 8-18s.
+
+**Important:** The device's IP may change after reboot if DHCP reassigns. The polling should use the current window location's hostname. If the device got a new IP, the polling will time out and the user needs to find the new IP (via router or mDNS `flightwall.local`).
+
+### NVS Key for Rollback Acknowledgment
+
+**Key:** `ota_rb_ack` (uint8, default 0)
+- Set to `1` when user dismisses the rollback banner (POST /api/ota/ack-rollback)
+- Reset to `0` when a new OTA upload begins (in the OTA upload handler, fn-1.3 code)
+- Read in `/api/status` response or as a separate query
+
+**Implementation choice:** Rather than adding this to ConfigManager's formal config structs (overkill for a simple flag), use direct NVS access in WebPortal:
+```cpp
+#include <Preferences.h>
+// In ack-rollback handler:
+Preferences prefs;
+prefs.begin("flightwall", false);
+prefs.putUChar("ota_rb_ack", 1);
+prefs.end();
+```
+
+And expose in the status response by adding to `FlightStatsSnapshot`:
+```cpp
+// In main.cpp getFlightStatsSnapshot():
+Preferences prefs;
+prefs.begin("flightwall", true);  // read-only
+s.rollback_acked = prefs.getUChar("ota_rb_ack", 0) == 1;
+prefs.end();
+```
+
+Then in `SystemStatus::toExtendedJson()`:
+```cpp
+obj["rollback_acknowledged"] = stats.rollback_acked;
+```
+
+**ALTERNATIVE (simpler):** Add the ack check directly in the ack-rollback POST handler and the status GET handler in WebPortal.cpp, avoiding any changes to FlightStatsSnapshot or SystemStatus. The handler reads/writes NVS directly. The status handler reads NVS when building the response. This keeps the scope minimal.
+
+### Settings Export Endpoint
+
+The data layer already exists: `ConfigManager::dumpSettingsJson(JsonObject& out)` writes all config keys to a JSON object. The endpoint just needs to:
+1. Create a JsonDocument
+2. Call `dumpSettingsJson()` on it
+3. Add metadata (`flightwall_settings_version`, `exported_at`)
+4. Set Content-Disposition header
+5. Send response
+
+```cpp
+// In _registerRoutes():
+_server->on("/api/settings/export", HTTP_GET, [](AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["flightwall_settings_version"] = 1;
+    
+    // Timestamp — use NTP time if available, else uptime
+    time_t now;
+    time(&now);
+    if (now > 1000000000) {  // NTP synced (past year 2001)
+        char buf[32];
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+        root["exported_at"] = String(buf);
+    } else {
+        root["exported_at"] = String("uptime_ms_") + String(millis());
+    }
+    
+    ConfigManager::dumpSettingsJson(root);
+    
+    String output;
+    serializeJson(doc, output);
+    
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", output);
+    response->addHeader("Content-Disposition", "attachment; filename=flightwall-settings.json");
+    request->send(response);
+});
+```
+
+### Reset ota_rb_ack on New OTA Upload
+
+When a new OTA upload **completes successfully** (in the existing upload handler in WebPortal.cpp, after `Update.end(true)` returns `true` and before the 500ms reboot delay), clear the rollback ack:
+```cpp
+// In the OTA upload handler, after Update.end(true) succeeds, before ESP.restart():
+Preferences prefs;
+prefs.begin("flightwall", false);
+prefs.putUChar("ota_rb_ack", 0);
+prefs.end();
+```
+
+**Important:** Clear the flag only on successful completion — NOT at upload start (`index == 0`). If the upload fails mid-stream, the existing acknowledgment must remain so the rollback banner stays dismissed until the user explicitly re-acknowledges or a good OTA succeeds.
+
+### Dashboard Load Sequence
+
+The dashboard currently calls `loadSettings()` on DOMContentLoaded. For the Firmware card, add a new `loadFirmwareStatus()` call that:
+1. Fetches `GET /api/status` (the health endpoint already exists)
+2. Extracts `firmware_version` → displays in `#fw-version`
+3. Extracts `rollback_detected` and `rollback_acknowledged` → shows/hides banner
+4. This can run in parallel with `loadSettings()` since they hit different endpoints
+
+### CSS Design System Tokens to Reuse
+
+From the existing `style.css`:
+- `--bg: #0d1117` — background
+- `--surface: #161b22` — card background
+- `--border: #30363d` — borders, dashed upload zone border
+- `--text: #e6edf3` — primary text
+- `--text-muted: #8b949e` — helper text, secondary info
+- `--primary: #58a6ff` — buttons, progress bar fill, drag-over border
+- `--error: #f85149` — error states
+- `--success: #3fb950` — success toast
+- `--radius: 8px` — border radius
+- `--gap: 16px` — spacing
+
+New token: rollback banner background `#2d2738` (hardcoded per AC #9).
+
+### Accessibility Requirements Summary
+
+- Upload zone: `role="button"`, `tabindex="0"`, `aria-label`
+- Progress bar: `role="progressbar"`, `aria-valuenow`, `aria-valuemin="0"`, `aria-valuemax="100"`
+- Rollback banner: `role="alert"`, `aria-live="polite"`
+- All touch targets ≥ 44x44px
+- Works at 320px viewport width
+- WCAG 2.1 AA contrast ratios
+
+### Project Structure Notes
+
+**Files to modify:**
+1. `firmware/data-src/dashboard.html` — Add Firmware card HTML, System card ID, Download Settings button
+2. `firmware/data-src/dashboard.js` — Add firmware status loading, OTA upload UI logic, settings export trigger
+3. `firmware/data-src/style.css` — Add OTA component styles (~35 lines)
+4. `firmware/adapters/WebPortal.cpp` — Add `POST /api/ota/ack-rollback` and `GET /api/settings/export` endpoints, clear `ota_rb_ack` on successful OTA completion (before reboot)
+5. `firmware/core/SystemStatus.cpp` — Add `rollback_acknowledged` to `toExtendedJson()` (or handle in WebPortal directly)
+6. `firmware/data/dashboard.html.gz` — Regenerated
+7. `firmware/data/dashboard.js.gz` — Regenerated
+8. `firmware/data/style.css.gz` — Regenerated
+
+**Files NOT to modify:**
+- `firmware/adapters/WebPortal.h` — No new class methods needed; new endpoints use inline lambdas
+- `firmware/core/ConfigManager.h/.cpp` — `ota_rb_ack` is a simple NVS flag, not a formal config key
+- `firmware/src/main.cpp` — No changes needed; `FlightStatsSnapshot` could optionally be extended but the simpler approach is NVS-direct in WebPortal
+- `firmware/data-src/common.js` — `FW.get/post/showToast` already sufficient
+- `firmware/data-src/health.html/.js` — Health page already displays `firmware_version` from `/api/status`
+
+### References
+
+- [Source: epic-fn-1.md#Story fn-1.6 — All acceptance criteria]
+- [Source: architecture.md#D4 — REST endpoint patterns, JSON envelope]
+- [Source: architecture.md#F7 — POST /api/ota/upload, GET /api/settings/export endpoints]
+- [Source: prd.md#Update Mechanism — OTA via web UI]
+- [Source: prd.md#FR10 — Persist configuration to NVS]
+- [Source: prd.md#NFR Performance — Dashboard loads within 3 seconds]
+- [Source: ux-design-specification-delight.md#OTA Progress Display — States and patterns]
+- [Source: fn-1-3 story — OTA upload endpoint implementation details]
+- [Source: fn-1-4 story — Rollback detection, firmware_version in /api/status]
+- [Source: WebPortal.cpp lines 458-620 — Existing OTA upload handler]
+- [Source: SystemStatus.cpp lines 89-90 — firmware_version/rollback_detected in toExtendedJson()]
+- [Source: ConfigManager.cpp line 469 — dumpSettingsJson() for settings export]
+- [Source: dashboard.js — Logo upload zone pattern for reuse]
+
+### Dependencies
+
+**This story depends on:**
+- fn-1.1 (Partition Table) — COMPLETE (partition size 0x180000 = 1.5MB used for file validation)
+- fn-1.3 (OTA Upload Endpoint) — COMPLETE (POST /api/ota/upload server-side handler)
+- fn-1.4 (OTA Self-Check) — COMPLETE (firmware_version and rollback_detected in /api/status)
+
+**Stories that depend on this:**
+- fn-1.7: Settings Import in Setup Wizard — uses the exported JSON format from `/api/settings/export`
+
+**Cross-reference (same epic, not a dependency):**
+- fn-1.5: Settings Export Endpoint — marked "done" in sprint status, but `GET /api/settings/export` is NOT yet implemented in WebPortal.cpp. This story (fn-1.6) implements that endpoint as Task 4. The `ConfigManager::dumpSettingsJson()` data layer method exists from fn-1.2.
+
+### Previous Story Intelligence
+
+**From fn-1.1:** Binary size 1.15MB (76.8%). Partition size 0x180000 (1,572,864 bytes) — this is the file size limit for client-side validation. `FW_VERSION` build flag established.
+
+**From fn-1.2:** `ConfigManager::dumpSettingsJson()` method exists and dumps all 27+ config keys as flat JSON. NVS namespace is `"flightwall"`. SUBSYSTEM_COUNT = 8.
+
+**From fn-1.3:** OTA upload endpoint complete. Key patterns:
+- `g_otaInProgress` flag prevents concurrent uploads (returns 409)
+- `clearOTAUpload()` resets `g_otaInProgress = false` on completion/error
+- After `Update.end(true)`, `state->started = false` to prevent cleanup from aborting
+- 500ms delay before `ESP.restart()` allows response transmission
+- Error codes: INVALID_FIRMWARE, NO_OTA_PARTITION, BEGIN_FAILED, WRITE_FAILED, VERIFY_FAILED, OTA_BUSY
+
+**From fn-1.4:** `rollback_detected` persists across reboots until next successful OTA. `firmware_version` comes from `FW_VERSION` build flag. Both are in `/api/status` response under `data` object.
+
+**Antipatterns from previous stories to avoid:**
+- Don't hardcode version strings — always use the API response value
+- Don't assume the device IP stays the same after reboot (DHCP reassignment possible)
+- Ensure all error paths reset the upload UI to initial state (learned from fn-1.3 cleanup patterns)
+- Use named String variables for `SystemStatus::set()` calls — avoid `.c_str()` on temporaries
+
+### Existing Logo Upload Zone Pattern (Reuse Reference)
+
+The existing logo upload zone in `dashboard.html` and `dashboard.js` provides the exact pattern to follow:
+
+**HTML (lines 218-224 of dashboard.html):**
+```html
+<div class="logo-upload-zone" id="logo-upload-zone">
+  <p class="upload-prompt">Drag & drop .bin logo files here or</p>
+  <label class="upload-label" for="logo-file-input">Choose files</label>
+  <input type="file" id="logo-file-input" accept=".bin" multiple hidden>
+  <p class="upload-hint">32×32 RGB565, 2048 bytes each</p>
+</div>
+```
+
+**CSS (style.css) — `.logo-upload-zone` styles are already defined and can be reused/adapted for `.ota-upload-zone`.**
+
+**JS patterns in dashboard.js:**
+- Drag events: `dragenter`, `dragover` (prevent default), `dragleave`, `drop`
+- File validation before upload
+- Upload via fetch/FormData
+- Error handling with `FW.showToast()`
+
+The OTA upload zone differs from logos in:
+1. Single file only (no `multiple` attribute)
+2. Uses XMLHttpRequest instead of fetch (for progress events)
+3. Has a progress bar phase
+4. Has a reboot countdown phase
+5. Binary validation (magic byte check via FileReader)
+
+### Testing Strategy
+
+**Build verification:**
+```bash
+cd firmware && ~/.platformio/penv/bin/pio run
+# Expect: SUCCESS, binary < 1.5MB
+```
+
+**Gzip verification:**
+```bash
+cd firmware
+gzip -9 -c data-src/dashboard.html > data/dashboard.html.gz
+gzip -9 -c data-src/dashboard.js > data/dashboard.js.gz
+gzip -9 -c data-src/style.css > data/style.css.gz
+ls -la data/dashboard.html.gz data/dashboard.js.gz data/style.css.gz
+# Verify files exist and are reasonable size
+```
+
+**Manual test cases:**
+
+1. **Dashboard load — version display:**
+   - Load dashboard in browser
+   - Expect: Firmware card visible with version (e.g., "v1.0.0")
+   - Expect: Card is expanded, not collapsed
+
+2. **Upload zone — drag and drop:**
+   - Drag a .bin file over the upload zone
+   - Expect: Border becomes solid, background lightens
+   - Drop file
+   - Expect: If valid, filename shown with "Upload Firmware" button
+   - Expect: If invalid, error toast and zone resets
+
+3. **Upload zone — click to select:**
+   - Click/tap the upload zone
+   - Expect: File picker opens
+
+4. **Upload zone — keyboard:**
+   - Tab to upload zone, press Enter or Space
+   - Expect: File picker opens
+
+5. **Client-side validation — oversized file:**
+   - Select a file > 1.5MB
+   - Expect: Toast "File too large — maximum 1.5MB for OTA partition"
+
+6. **Client-side validation — wrong magic byte:**
+   - Select a non-firmware .bin file (e.g., a logo file)
+   - Expect: Toast "Not a valid ESP32 firmware image"
+
+7. **Successful upload flow:**
+   - Select valid firmware file, tap "Upload Firmware"
+   - Expect: Progress bar appears, fills 0-100%
+   - Expect: "Rebooting in 3... 2... 1..." countdown
+   - Expect: Polling starts, eventually shows "Updated to v[version]"
+
+8. **Upload error handling:**
+   - Upload while another upload is in progress (if possible)
+   - Expect: Error toast with server error message
+
+9. **Rollback banner:**
+   - If `rollback_detected` is true, expect persistent amber banner
+   - Click dismiss → banner disappears
+   - Refresh page → banner stays dismissed
+
+10. **Download Settings:**
+    - Click "Download Settings" in System card
+    - Expect: JSON file downloads with all config keys
+
+11. **Responsive — 320px viewport:**
+    - Resize browser to 320px width
+    - Expect: All Firmware card elements visible and usable
+
+### Risk Mitigation
+
+1. **Dashboard.js file size:** At 87KB, this is already the largest web asset. Adding ~200 lines of OTA UI logic is proportional (~3% increase). Monitor gzip output stays reasonable.
+
+2. **XHR vs Fetch consistency:** The rest of the dashboard uses `FW.get()`/`FW.post()` from common.js (which use `fetch`). The OTA upload is the only place using raw `XMLHttpRequest`. Document this inconsistency clearly in a comment: `// XHR required for upload progress events — fetch() does not support upload progress`
+
+3. **IP change after reboot:** If DHCP assigns a new IP, polling will fail after 60s. The timeout message should suggest checking the router's device list or using mDNS (`flightwall.local`).
+
+4. **NVS write during OTA:** The `ota_rb_ack` NVS write in the ack-rollback handler is small and fast. The NVS write clearing the flag on successful OTA completion happens after `Update.end(true)` but before `ESP.restart()`, when no streaming is active — no heap conflict.
+
+5. **Settings export without NTP:** If NTP hasn't synced, `time()` returns near-zero. The export includes an `exported_at` field — use an uptime-based fallback string rather than a misleading timestamp.
+
+## Dev Agent Record
+
+### Agent Model Used
+
+Claude Opus 4 (Story Creation), Claude Opus 4.6 (Implementation)
+
+### Debug Log References
+
+N/A
+
+### Completion Notes List
+
+**2026-04-12: Implementation completed**
+- All 10 tasks and subtasks implemented and verified
+- Firmware card HTML added between Logos and System cards with full accessibility attributes (role, tabindex, aria-label, aria-live)
+- OTA upload zone with drag-and-drop, click, and keyboard (Enter/Space) triggers
+- Client-side validation: file size ≤1.5MB check, ESP32 magic byte (0xE9) check via FileReader
+- XHR-based upload with real-time progress bar (not fetch — XHR needed for upload.onprogress)
+- 3-second reboot countdown + polling (3s intervals, 60s timeout with amber warning)
+- Rollback banner with NVS-backed persistence (ota_rb_ack key), dismiss via POST /api/ota/ack-rollback
+- ota_rb_ack cleared only on successful OTA completion (not at upload start)
+- GET /api/settings/export endpoint with Content-Disposition header, metadata fields, NTP-aware timestamp
+- Download Settings button in System card (above danger zone)
+- ~35 lines CSS added for OTA components, banner-warning, btn-secondary
+- Build succeeds: 1.17MB binary (78.1%), 38KB total gzipped web assets
+- No regressions — all existing code paths preserved
+
+**2026-04-12: Ultimate context engine analysis completed**
+- Comprehensive analysis of epic-fn-1.md extracted all 12 acceptance criteria with BDD format
+- Full dashboard.html structure analyzed (258 lines, 9 cards) — Firmware card insertion point identified between Logos and System
+- Full dashboard.js analyzed (87KB) — existing patterns for upload zones, settings loading, toast notifications, and mode picker documented
+- Full style.css analyzed (20KB) — CSS custom properties and component classes documented for reuse
+- WebPortal.cpp analyzed (1065 lines) — existing OTA upload handler (fn-1.3) fully mapped, new endpoint insertion points identified
+- SystemStatus.cpp analyzed — firmware_version and rollback_detected already in toExtendedJson() (fn-1.4)
+- ConfigManager.cpp analyzed — dumpSettingsJson() method exists for settings export data layer
+- common.js analyzed — FW.get/post/del/showToast API documented
+- All 4 prerequisite stories (fn-1.1 through fn-1.4) completion notes reviewed for binary size, patterns, and lessons learned
+- fn-1.5 discrepancy noted: marked "done" in sprint-status.yaml but GET /api/settings/export endpoint NOT implemented in WebPortal.cpp; this story includes that implementation
+- 10 tasks created with explicit code references, patterns, and implementation guidance
+- XMLHttpRequest usage justified for upload progress events (fetch limitation)
+- Rollback banner NVS persistence pattern designed (ota_rb_ack key)
+- Client-side validation patterns provided with exact byte values and FileReader approach
+- Antipatterns from fn-1.3/fn-1.4 incorporated (cleanup patterns, temporary String avoidance)
+
+### Change Log
+
+| Date | Change | Author |
+|------|--------|--------|
+| 2026-04-12 | Story created with comprehensive developer context | BMad |
+| 2026-04-12 | Validation synthesis: removed conflicting localStorage reference from Task 5; corrected ota_rb_ack reset timing from upload-start to successful-completion in Task 5, Dev Notes, Project Structure, and Risk Mitigation | BMad |
+| 2026-04-12 | All 10 tasks implemented: Firmware card HTML/CSS/JS, OTA upload UI with progress, rollback banner, settings export endpoint, ack-rollback endpoint. Build verified at 1.17MB (78.1%). | Claude Opus 4.6 |
+| 2026-04-12 | Code review synthesis fixes: cancel button for file-info state, polling race condition guard, resetOtaUploadState color/text reset, zero-byte file check, dragleave child-element fix, dismiss-btn focus style, NVS write error checking. Build re-verified at 1.17MB (78.1%). | AI Synthesis |
+| 2026-04-12 | Second code review synthesis fixes: WCAG AA contrast fix for progress text (text-shadow), upload button disabled during upload, cache-busting for polling requests, --warning CSS variable added. Build re-verified at 1.22MB (77.7%). | AI Synthesis |
+
+### File List
+
+- `firmware/data-src/dashboard.html` (MODIFIED) — Added Firmware card HTML between Logos and System, System card id="system-card", Download Settings button, Cancel button in ota-file-info
+- `firmware/data-src/dashboard.js` (MODIFIED) — Added loadFirmwareStatus(), OTA upload with XHR progress, client-side validation, reboot countdown/polling, rollback banner, settings export click handler; synthesis fixes: polling done-guard, zero-byte check, dragleave relatedTarget, resetOtaUploadState color/text reset, cancel button handler
+- `firmware/data-src/style.css` (MODIFIED) — Added ~35 lines OTA component styles (.ota-upload-zone, .ota-progress, .banner-warning, .btn-secondary, etc.); synthesis fixes: dismiss-btn :focus-visible, .btn-ota-cancel override
+- `firmware/adapters/WebPortal.cpp` (MODIFIED) — Added POST /api/ota/ack-rollback, GET /api/settings/export endpoints; added rollback_acknowledged to /api/status; clear ota_rb_ack on successful OTA completion; added #include <Preferences.h>; synthesis fix: NVS write error handling in ack-rollback handler
+- `firmware/data/dashboard.html.gz` (REGENERATED) — 3,313 bytes
+- `firmware/data/dashboard.js.gz` (REGENERATED) — 22,046 bytes (updated)
+- `firmware/data/style.css.gz` (REGENERATED) — 4,694 bytes (updated)
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-12 (Pass 1)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** A=7.1 (REJECT) / B=2.6 (APPROVED) / C=13.1 (MAJOR REWORK) → weighted: ~7.6 → **Changes Requested**
+- **Issues Found:** 7 verified (3 critical, 2 high, 2 medium/low)
+- **Issues Fixed:** 7 (all verified issues addressed in this synthesis pass)
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI) — Pass 1
+_All verified issues were fixed in this synthesis pass. No open action items remain._
+
+### Review: 2026-04-12 (Pass 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** A=6.9 (MAJOR REWORK) / B=7.3 (REJECT) / C=7.9 (MAJOR REWORK) → weighted: ~7.4 → **Changes Requested**
+- **Issues Found:** 4 verified (1 high, 1 medium, 2 low); 14 dismissed as false positives
+- **Issues Fixed:** 4 (all verified issues addressed in this synthesis pass)
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI) — Pass 2
+_All verified issues were fixed in this synthesis pass. No open action items remain._
+
+
+]]></file>
+<file id="17deba99" path="firmware/adapters/WebPortal.cpp" label="SOURCE CODE"><![CDATA[
+
+/*
+Purpose: Web server adapter serving gzipped HTML pages and REST API endpoints.
+Responsibilities:
+- Serve wizard.html.gz in AP mode, dashboard.html.gz in STA mode via GET /.
+- Expose JSON API: GET/POST /api/settings, GET /api/status, GET /api/layout, POST /api/reboot, POST /api/reset, GET /api/wifi/scan.
+- Use consistent JSON envelope: { "ok": bool, "data": ..., "error": "...", "code": "..." }.
+Architecture: ESPAsyncWebServer (mathieucarbou fork) — non-blocking, runs on AsyncTCP task.
+
+JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
+  Display:   brightness, text_color_r, text_color_g, text_color_b
+  Location:  center_lat, center_lon, radius_km
+  Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
+  Timing:    fetch_interval, display_cycle
+  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
+
+GET /api/status extended JSON (Story 2.4):
+  data.subsystems   — existing six subsystem objects (wifi, opensky, aeroapi, cdn, nvs, littlefs)
+  data.wifi_detail  — SSID, RSSI, IP, mode
+  data.device       — uptime_ms, free_heap, fs_total, fs_used
+  data.flight       — last_fetch_ms, state_vectors, enriched_flights, logos_matched
+  data.quota        — fetches_since_boot, limit, fetch_interval_s, estimated_monthly_polls, over_pace
+*/
+#include "adapters/WebPortal.h"
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <Update.h>
+#include <Preferences.h>
+#include <esp_ota_ops.h>
+#include <vector>
+#include "core/ConfigManager.h"
+#include "core/SystemStatus.h"
+#include "core/LogoManager.h"
+#include "utils/Log.h"
+
+// Defined in main.cpp — provides thread-safe flight stats for the health page
+extern FlightStatsSnapshot getFlightStatsSnapshot();
+
+#include "core/LayoutEngine.h"
+#include "core/ModeOrchestrator.h"
+
+namespace {
+struct PendingRequestBody {
+    AsyncWebServerRequest* request;
+    String body;
+};
+
+std::vector<PendingRequestBody> g_pendingBodies;
+constexpr size_t MAX_SETTINGS_BODY_BYTES = 4096;
+
+// Logo upload state — streams file data directly to LittleFS
+struct LogoUploadState {
+    AsyncWebServerRequest* request;
+    String filename;
+    String path;
+    File file;
+    bool valid;
+    bool written;
+    String error;
+    String errorCode;
+};
+
+std::vector<LogoUploadState> g_logoUploads;
+
+LogoUploadState* findLogoUpload(AsyncWebServerRequest* request) {
+    for (auto& u : g_logoUploads) {
+        if (u.request == request) return &u;
+    }
+    return nullptr;
+}
+
+void clearLogoUpload(AsyncWebServerRequest* request, bool removeFile = false) {
+    for (auto it = g_logoUploads.begin(); it != g_logoUploads.end(); ++it) {
+        if (it->request == request) {
+            if (it->file) it->file.close();
+            if (removeFile && it->path.length()) {
+                LittleFS.remove(it->path);
+            }
+            g_logoUploads.erase(it);
+            return;
+        }
+    }
+}
+
+// OTA upload state — streams firmware directly to flash via Update library
+struct OTAUploadState {
+    AsyncWebServerRequest* request;
+    bool valid;           // false if any validation/write failed
+    bool started;         // true after Update.begin() succeeds
+    size_t bytesWritten;  // for debugging/logging only
+    String error;         // human-readable error message
+    String errorCode;     // machine-readable error code
+};
+
+std::vector<OTAUploadState> g_otaUploads;
+static bool g_otaInProgress = false;  // Enforce single-flight OTA — Update is a singleton
+
+OTAUploadState* findOTAUpload(AsyncWebServerRequest* request) {
+    for (auto& u : g_otaUploads) {
+        if (u.request == request) return &u;
+    }
+    return nullptr;
+}
+
+void clearOTAUpload(AsyncWebServerRequest* request) {
+    for (auto it = g_otaUploads.begin(); it != g_otaUploads.end(); ++it) {
+        if (it->request == request) {
+            // CRITICAL: abort in-progress update on cleanup (started=false means already completed)
+            if (it->started) {
+                Update.abort();
+                LOG_I("OTA", "Upload aborted during cleanup");
+            }
+            g_otaUploads.erase(it);
+            g_otaInProgress = false;
+            return;
+        }
+    }
+}
+
+PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
+    for (auto& pending : g_pendingBodies) {
+        if (pending.request == request) {
+            return &pending;
+        }
+    }
+    return nullptr;
+}
+
+void clearPendingBody(AsyncWebServerRequest* request) {
+    for (auto it = g_pendingBodies.begin(); it != g_pendingBodies.end(); ++it) {
+        if (it->request == request) {
+            g_pendingBodies.erase(it);
+            return;
+        }
+    }
+}
+} // namespace
+
+void WebPortal::init(AsyncWebServer& server, WiFiManager& wifiMgr) {
+    _server = &server;
+    _wifiMgr = &wifiMgr;
+    _registerRoutes();
+    LOG_I("WebPortal", "Routes registered");
+}
+
+void WebPortal::begin() {
+    if (!_server) return;
+    _server->begin();
+    LOG_I("WebPortal", "Server started on port 80");
+}
+
+void WebPortal::onReboot(RebootCallback callback) {
+    _rebootCallback = callback;
+}
+
+void WebPortal::onCalibration(CalibrationCallback callback) {
+    _calibrationCallback = callback;
+}
+
+void WebPortal::onPositioning(PositioningCallback callback) {
+    _positioningCallback = callback;
+}
+
+void WebPortal::_registerRoutes() {
+    // GET / — serve wizard or dashboard based on WiFi mode
+    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleRoot(request);
+    });
+
+    // GET /api/settings
+    _server->on("/api/settings", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetSettings(request);
+    });
+
+    // POST /api/settings — uses body handler for JSON parsing
+    _server->on("/api/settings", HTTP_POST,
+        // request handler (called after body is received)
+        [](AsyncWebServerRequest* request) {
+            // no-op: response sent in body handler
+        },
+        nullptr, // upload handler
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (data == nullptr || total == 0) {
+                clearPendingBody(request);
+                _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
+                return;
+            }
+
+            if (total > MAX_SETTINGS_BODY_BYTES) {
+                clearPendingBody(request);
+                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
+                return;
+            }
+
+            if (index == 0) {
+                clearPendingBody(request);
+                PendingRequestBody pending{request, String()};
+                pending.body.reserve(total);
+                g_pendingBodies.push_back(pending);
+                request->onDisconnect([request]() {
+                    clearPendingBody(request);
+                });
+            }
+
+            PendingRequestBody* pending = findPendingBody(request);
+            if (pending == nullptr) {
+                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
+                return;
+            }
+
+            for (size_t i = 0; i < len; ++i) {
+                pending->body += static_cast<char>(data[i]);
+            }
+
+            if (index + len == total) {
+                _handlePostSettings(
+                    request,
+                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
+                    pending->body.length()
+                );
+                clearPendingBody(request);
+            }
+        }
+    );
+
+    // GET /api/status
+    _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetStatus(request);
+    });
+
+    // POST /api/reboot
+    _server->on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostReboot(request);
+    });
+
+    // POST /api/reset — factory reset (erase NVS + restart)
+    _server->on("/api/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostReset(request);
+    });
+
+    // GET /api/wifi/scan
+    _server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetWifiScan(request);
+    });
+
+    // GET /api/layout (Story 3.1)
+    _server->on("/api/layout", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLayout(request);
+    });
+
+    // POST /api/calibration/start (Story 4.2) — gradient pattern
+    _server->on("/api/calibration/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostCalibrationStart(request);
+    });
+
+    // POST /api/positioning/start — panel positioning guide (independent from calibration)
+    _server->on("/api/positioning/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_positioningCallback) {
+            _positioningCallback(true);
+        }
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["message"] = "Positioning mode started";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // POST /api/positioning/stop
+    _server->on("/api/positioning/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_positioningCallback) {
+            _positioningCallback(false);
+        }
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["message"] = "Positioning mode stopped";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // POST /api/calibration/stop (Story 4.2)
+    _server->on("/api/calibration/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostCalibrationStop(request);
+    });
+
+    // GET /api/display/modes (Story dl-1.5) — mode list with orchestrator state
+    _server->on("/api/display/modes", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetDisplayModes(request);
+    });
+
+    // POST /api/display/mode (Story dl-1.5) — manual mode switch
+    _server->on("/api/display/mode", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (total == 0 || data == nullptr) {
+                _sendJsonError(request, 400, "Empty request body", "EMPTY_PAYLOAD");
+                return;
+            }
+            if (index + len == total) {
+                // Parse the mode_id from request body (use `len` not `total`: data points to the
+                // current chunk only; passing `total` would read past the buffer on multi-chunk bodies)
+                JsonDocument reqDoc;
+                DeserializationError err = deserializeJson(reqDoc, data, len);
+                if (err) {
+                    _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
+                    return;
+                }
+                const char* modeId = reqDoc["mode_id"] | (const char*)nullptr;
+                if (!modeId) {
+                    _sendJsonError(request, 400, "Missing mode_id field", "MISSING_FIELD");
+                    return;
+                }
+
+                // Resolve mode name from ID (simple lookup)
+                const char* modeName = nullptr;
+                if (strcmp(modeId, "classic_card") == 0) modeName = "Classic Card";
+                else if (strcmp(modeId, "live_flight") == 0) modeName = "Live Flight Card";
+                else if (strcmp(modeId, "clock") == 0) modeName = "Clock";
+                else {
+                    _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
+                    return;
+                }
+
+                // Switch via orchestrator (Rule 24: always go through orchestrator)
+                ModeOrchestrator::onManualSwitch(modeId, modeName);
+
+                JsonDocument doc;
+                JsonObject root = doc.to<JsonObject>();
+                root["ok"] = true;
+                JsonObject respData = root["data"].to<JsonObject>();
+                respData["switching_to"] = modeId;
+                respData["orchestrator_state"] = ModeOrchestrator::getStateString();
+                respData["state_reason"] = ModeOrchestrator::getStateReason();
+                String output;
+                serializeJson(doc, output);
+                request->send(200, "application/json", output);
+            }
+        }
+    );
+
+    // GET /api/logos — list uploaded logos
+    _server->on("/api/logos", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLogos(request);
+    });
+
+    // POST /api/logos — multipart file upload (streaming to LittleFS)
+    _server->on("/api/logos", HTTP_POST,
+        // Request handler — called after upload completes
+        [this](AsyncWebServerRequest* request) {
+            auto* state = findLogoUpload(request);
+            JsonDocument doc;
+            JsonObject root = doc.to<JsonObject>();
+
+            if (!state || !state->valid) {
+                root["ok"] = false;
+                root["error"] = (state && state->error.length()) ? state->error : "Upload failed";
+                root["code"] = (state && state->errorCode.length()) ? state->errorCode : "UPLOAD_ERROR";
+                String output;
+                serializeJson(doc, output);
+                clearLogoUpload(request, true);
+                request->send(400, "application/json", output);
+                return;
+            }
+
+            root["ok"] = true;
+            JsonObject data = root["data"].to<JsonObject>();
+            data["filename"] = state->filename;
+            data["size"] = LOGO_BUFFER_BYTES;
+
+            String output;
+            serializeJson(doc, output);
+            clearLogoUpload(request);
+            LogoManager::scanLogoCount();
+            request->send(200, "application/json", output);
+        },
+        // Upload handler — called for each chunk of file data
+        [this](AsyncWebServerRequest* request, const String& filename,
+               size_t index, uint8_t* data, size_t len, bool final) {
+            if (index == 0) {
+                // First chunk — validate and open file for writing
+                clearLogoUpload(request);
+                LogoUploadState state;
+                state.request = request;
+                state.filename = filename;
+                state.path = String("/logos/") + filename;
+                state.valid = true;
+                state.written = false;
+
+                // Validate filename before touching LittleFS.
+                if (!LogoManager::isSafeLogoFilename(filename)) {
+                    state.valid = false;
+                    state.error = filename + " - invalid filename";
+                    state.errorCode = "INVALID_NAME";
+                    g_logoUploads.push_back(state);
+                    return;
+                }
+
+                request->onDisconnect([request]() {
+                    clearLogoUpload(request, true);
+                });
+
+                // Open file for streaming write
+                state.file = LittleFS.open(state.path, "w");
+                if (!state.file) {
+                    state.valid = false;
+                    state.error = "LittleFS full or write error";
+                    state.errorCode = "FS_WRITE_ERROR";
+                }
+                g_logoUploads.push_back(state);
+            }
+
+            auto* state = findLogoUpload(request);
+            if (!state || !state->valid) return;
+
+            // Stream write chunk to file
+            if (state->file && len > 0) {
+                size_t written = state->file.write(data, len);
+                if (written != len) {
+                    state->valid = false;
+                    state->error = "LittleFS full";
+                    state->errorCode = "FS_FULL";
+                    state->file.close();
+                    LittleFS.remove(state->path);
+                    return;
+                }
+            }
+
+            if (final) {
+                size_t totalSize = index + len;
+                if (state->file) state->file.close();
+
+                if (totalSize != LOGO_BUFFER_BYTES) {
+                    state->valid = false;
+                    state->error = state->filename + " - invalid size (" + String((unsigned long)totalSize) + " bytes, expected 2048)";
+                    state->errorCode = "INVALID_SIZE";
+                    LittleFS.remove(state->path);
+                    return;
+                }
+
+                state->written = true;
+            }
+        }
+    );
+
+    // DELETE /api/logos/:name
+    _server->on("/api/logos/*", HTTP_DELETE, [this](AsyncWebServerRequest* request) {
+        _handleDeleteLogo(request);
+    });
+
+    // GET /logos/:name — serve raw logo binary for thumbnail rendering
+    _server->on("/logos/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLogoFile(request);
+    });
+
+    // POST /api/ota/upload — firmware OTA upload (streaming to flash)
+    _server->on("/api/ota/upload", HTTP_POST,
+        // Request handler — called after upload completes
+        [this](AsyncWebServerRequest* request) {
+            auto* state = findOTAUpload(request);
+            JsonDocument doc;
+            JsonObject root = doc.to<JsonObject>();
+
+            if (!state || !state->valid) {
+                root["ok"] = false;
+                root["error"] = (state && state->error.length()) ? state->error : "Upload failed";
+                const String errCode = (state && state->errorCode.length()) ? state->errorCode : "UPLOAD_ERROR";
+                root["code"] = errCode;
+                // Map error codes to semantically correct HTTP status codes
+                int httpCode = 400;  // default: client error (e.g. bad firmware file)
+                if (errCode == "OTA_BUSY") httpCode = 409;  // Conflict
+                else if (errCode == "NO_OTA_PARTITION" || errCode == "BEGIN_FAILED" ||
+                         errCode == "WRITE_FAILED"     || errCode == "VERIFY_FAILED") httpCode = 500;
+                String output;
+                serializeJson(doc, output);
+                clearOTAUpload(request);
+                request->send(httpCode, "application/json", output);
+                return;
+            }
+
+            // Success — schedule reboot
+            root["ok"] = true;
+            root["message"] = "Rebooting...";
+            String output;
+            serializeJson(doc, output);
+            clearOTAUpload(request);
+
+            SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Update complete — rebooting");
+            LOG_I("OTA", "Upload complete, scheduling reboot");
+
+            request->send(200, "application/json", output);
+
+            // Schedule reboot after 500ms to allow response to be sent
+            static esp_timer_handle_t otaRebootTimer = nullptr;
+            if (!otaRebootTimer) {
+                esp_timer_create_args_t args = {};
+                args.callback = [](void*) { ESP.restart(); };
+                args.name = "ota_reboot";
+                esp_timer_create(&args, &otaRebootTimer);
+            }
+            esp_timer_start_once(otaRebootTimer, 500000); // 500ms in microseconds
+        },
+        // Upload handler — called for each chunk of firmware data
+        [this](AsyncWebServerRequest* request, const String& filename,
+               size_t index, uint8_t* data, size_t len, bool final) {
+            if (index == 0) {
+                // First chunk — validate magic byte and begin update
+                clearOTAUpload(request);
+
+                // Reject concurrent OTA uploads — Update singleton is not re-entrant
+                if (g_otaInProgress) {
+                    OTAUploadState busy;
+                    busy.request = request;
+                    busy.valid = false;
+                    busy.started = false;
+                    busy.bytesWritten = 0;
+                    busy.error = "Another OTA update is already in progress";
+                    busy.errorCode = "OTA_BUSY";
+                    g_otaUploads.push_back(busy);
+                    LOG_I("OTA", "Rejected concurrent OTA upload");
+                    return;
+                }
+
+                OTAUploadState state;
+                state.request = request;
+                state.valid = true;
+                state.started = false;
+                state.bytesWritten = 0;
+
+                // Register disconnect handler for WiFi interruption
+                request->onDisconnect([request]() {
+                    auto* s = findOTAUpload(request);
+                    if (s && s->started) {
+                        Update.abort();
+                        LOG_I("OTA", "Upload aborted due to disconnect");
+                    }
+                    clearOTAUpload(request);
+                });
+
+                // Validate ESP32 magic byte (0xE9)
+                if (len == 0 || data[0] != 0xE9) {
+                    state.valid = false;
+                    state.error = "Not a valid ESP32 firmware image";
+                    state.errorCode = "INVALID_FIRMWARE";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Invalid firmware image");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "Invalid firmware magic byte");
+                    return;
+                }
+
+                // Get next OTA partition
+                const esp_partition_t* partition = esp_ota_get_next_update_partition(NULL);
+                if (!partition) {
+                    state.valid = false;
+                    state.error = "No OTA partition available";
+                    state.errorCode = "NO_OTA_PARTITION";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "No OTA partition found");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "No OTA partition found");
+                    return;
+                }
+
+                // Begin update with partition size (NOT Content-Length per AR18)
+                if (!Update.begin(partition->size)) {
+                    state.valid = false;
+                    state.error = "Could not begin OTA update";
+                    state.errorCode = "BEGIN_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Could not begin OTA update");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "Update.begin() failed");
+                    return;
+                }
+
+                state.started = true;
+                g_otaInProgress = true;
+                g_otaUploads.push_back(state);
+                Serial.printf("[OTA] Writing to %s, size 0x%x\n", partition->label, partition->size);
+                SystemStatus::set(Subsystem::OTA, StatusLevel::OK, "Upload in progress");
+                LOG_I("OTA", "Update started");
+            }
+
+            auto* state = findOTAUpload(request);
+            if (!state || !state->valid) return;
+
+            // Stream write chunk to flash
+            if (len > 0) {
+                size_t written = Update.write(data, len);
+                if (written != len) {
+                    Update.abort();
+                    state->valid = false;
+                    state->error = "Write failed — flash may be worn or corrupted";
+                    state->errorCode = "WRITE_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Write failed");
+                    LOG_E("OTA", "Flash write failed");
+                    return;
+                }
+                state->bytesWritten += len;
+            }
+
+            if (final) {
+                // Finalize update
+                if (!Update.end(true)) {
+                    Update.abort();
+                    state->valid = false;
+                    state->error = "Firmware verification failed";
+                    state->errorCode = "VERIFY_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Verification failed");
+                    LOG_E("OTA", "Firmware verification failed");
+                    return;
+                }
+                // Clear started so clearOTAUpload does NOT call Update.abort() on a completed update
+                state->started = false;
+
+                // Reset rollback acknowledgment so a future rollback shows the banner again (Story fn-1.6)
+                Preferences otaPrefs;
+                otaPrefs.begin("flightwall", false);
+                otaPrefs.putUChar("ota_rb_ack", 0);
+                otaPrefs.end();
+
+                LOG_I("OTA", "Update finalized successfully");
+            }
+        }
+    );
+
+    // POST /api/ota/ack-rollback — dismiss rollback banner (Story fn-1.6)
+    _server->on("/api/ota/ack-rollback", HTTP_POST, [](AsyncWebServerRequest* request) {
+        Preferences prefs;
+        if (!prefs.begin("flightwall", false)) {
+            request->send(500, "application/json", "{\"ok\":false,\"error\":\"NVS access failed\",\"code\":\"NVS_ERROR\"}");
+            return;
+        }
+        size_t written = prefs.putUChar("ota_rb_ack", 1);
+        prefs.end();
+        if (written == 0) {
+            request->send(500, "application/json", "{\"ok\":false,\"error\":\"Failed to save acknowledgment\",\"code\":\"NVS_WRITE_ERROR\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // GET /api/settings/export — download config as JSON file (Story fn-1.6)
+    _server->on("/api/settings/export", HTTP_GET, [](AsyncWebServerRequest* request) {
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["flightwall_settings_version"] = 1;
+
+        // Timestamp — use NTP time if available, else uptime
+        time_t now;
+        time(&now);
+        if (now > 1000000000) {  // NTP synced (past year 2001)
+            char buf[32];
+            struct tm timeinfo;
+            localtime_r(&now, &timeinfo);
+            strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+            root["exported_at"] = String(buf);
+        } else {
+            root["exported_at"] = String("uptime_ms_") + String(millis());
+        }
+
+        ConfigManager::dumpSettingsJson(root);
+
+        String output;
+        serializeJson(doc, output);
+
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", output);
+        response->addHeader("Content-Disposition", "attachment; filename=flightwall-settings.json");
+        request->send(response);
+    });
+
+    // Shared static assets (gzipped on LittleFS)
+    _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/style.css.gz", "text/css");
+    });
+    _server->on("/common.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/common.js.gz", "application/javascript");
+    });
+    _server->on("/wizard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/wizard.js.gz", "application/javascript");
+    });
+    _server->on("/dashboard.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/dashboard.js.gz", "application/javascript");
+    });
+    _server->on("/health.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/health.html.gz", "text/html");
+    });
+    _server->on("/health.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/health.js.gz", "application/javascript");
+    });
+}
+
+void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
+    WiFiState state = _wifiMgr->getState();
+    const char* file;
+    if (state == WiFiState::AP_SETUP || state == WiFiState::AP_FALLBACK) {
+        file = "/wizard.html.gz";
+    } else {
+        // STA_CONNECTED, CONNECTING, STA_RECONNECTING — serve dashboard
+        file = "/dashboard.html.gz";
+    }
+
+    if (!LittleFS.exists(file)) {
+        _sendJsonError(request, 404, "Asset not found", "ASSET_MISSING");
+        return;
+    }
+
+    AsyncWebServerResponse* response = request->beginResponse(LittleFS, file, "text/html");
+    response->addHeader("Content-Encoding", "gzip");
+    request->send(response);
+}
+
+void WebPortal::_handleGetSettings(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+    ConfigManager::dumpSettingsJson(data);
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, data, len);
+    if (err) {
+        _sendJsonError(request, 400, "Invalid JSON", "PARSE_ERROR");
+        return;
+    }
+
+    if (!doc.is<JsonObject>()) {
+        _sendJsonError(request, 400, "Expected JSON object", "INVALID_PAYLOAD");
+        return;
+    }
+
+    JsonObject settings = doc.as<JsonObject>();
+    if (settings.size() == 0) {
+        _sendJsonError(request, 400, "Empty settings object", "EMPTY_PAYLOAD");
+        return;
+    }
+
+    ApplyResult result = ConfigManager::applyJson(settings);
+    if (result.applied.size() != settings.size()) {
+        _sendJsonError(request, 400, "Unknown or invalid settings key", "INVALID_SETTING");
+        return;
+    }
+
+    JsonDocument respDoc;
+    JsonObject resp = respDoc.to<JsonObject>();
+    resp["ok"] = true;
+    JsonArray applied = resp["applied"].to<JsonArray>();
+    for (const String& key : result.applied) {
+        applied.add(key);
+    }
+    resp["reboot_required"] = result.reboot_required;
+
+    String output;
+    serializeJson(respDoc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+    FlightStatsSnapshot stats = getFlightStatsSnapshot();
+    SystemStatus::toExtendedJson(data, stats);
+
+    // Rollback acknowledgment state (Story fn-1.6) — NVS-backed, not via ConfigManager
+    Preferences prefs;
+    prefs.begin("flightwall", true);  // read-only
+    data["rollback_acknowledged"] = prefs.getUChar("ota_rb_ack", 0) == 1;
+    prefs.end();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostReboot(AsyncWebServerRequest* request) {
+    // Flush all pending NVS writes before restart
+    ConfigManager::persistAllNow();
+
+    // Notify main coordinator to show "Saving config..." on LED
+    if (_rebootCallback) {
+        _rebootCallback();
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Rebooting...";
+
+    String output;
+    serializeJson(doc, output);
+
+    // Send response first, then schedule restart
+    request->send(200, "application/json", output);
+
+    // Delay restart slightly so the HTTP response can be sent
+    // Use a one-shot timer to avoid blocking the async callback
+    static esp_timer_handle_t rebootTimer = nullptr;
+    if (!rebootTimer) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void*) { ESP.restart(); };
+        args.name = "reboot";
+        esp_timer_create(&args, &rebootTimer);
+    }
+    esp_timer_start_once(rebootTimer, 1000000); // 1 second in microseconds
+}
+
+void WebPortal::_handlePostReset(AsyncWebServerRequest* request) {
+    // Erase NVS config and restore compile-time defaults
+    if (!ConfigManager::factoryReset()) {
+        _sendJsonError(request, 500, "Factory reset failed", "RESET_FAILED");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Factory reset complete. Rebooting...";
+
+    String output;
+    serializeJson(doc, output);
+
+    // Send response first, then schedule restart (reuse reboot timer pattern)
+    request->send(200, "application/json", output);
+
+    static esp_timer_handle_t resetTimer = nullptr;
+    if (!resetTimer) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void*) { ESP.restart(); };
+        args.name = "reset";
+        esp_timer_create(&args, &resetTimer);
+    }
+    esp_timer_start_once(resetTimer, 1000000); // 1 second in microseconds
+}
+
+void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
+    int16_t scanResult = WiFi.scanComplete();
+
+    if (scanResult == WIFI_SCAN_FAILED) {
+        // No scan running — kick off an async scan
+        WiFi.scanNetworks(true); // async=true
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["scanning"] = true;
+        root["data"].to<JsonArray>();
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+        return;
+    }
+
+    if (scanResult == WIFI_SCAN_RUNNING) {
+        // Scan still in progress
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        root["scanning"] = true;
+        root["data"].to<JsonArray>();
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+        return;
+    }
+
+    // Scan complete — return results
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["scanning"] = false;
+    JsonArray data = root["data"].to<JsonArray>();
+
+    for (int i = 0; i < scanResult; i++) {
+        JsonObject net = data.add<JsonObject>();
+        net["ssid"] = WiFi.SSID(i);
+        net["rssi"] = WiFi.RSSI(i);
+    }
+
+    // Free scan memory for next scan
+    WiFi.scanDelete();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    // Mode list (static for now; will grow with ModeRegistry in future stories)
+    JsonArray modes = data["modes"].to<JsonArray>();
+
+    const char* activeId = ModeOrchestrator::getActiveModeId();
+
+    // Classic Card mode
+    JsonObject mClassic = modes.add<JsonObject>();
+    mClassic["id"] = "classic_card";
+    mClassic["name"] = "Classic Card";
+    mClassic["active"] = (strcmp(activeId, "classic_card") == 0);
+
+    // Live Flight Card mode
+    JsonObject mLive = modes.add<JsonObject>();
+    mLive["id"] = "live_flight";
+    mLive["name"] = "Live Flight Card";
+    mLive["active"] = (strcmp(activeId, "live_flight") == 0);
+
+    // Clock mode
+    JsonObject mClock = modes.add<JsonObject>();
+    mClock["id"] = "clock";
+    mClock["name"] = "Clock";
+    mClock["active"] = (strcmp(activeId, "clock") == 0);
+
+    data["active"] = activeId;
+    data["switch_state"] = "idle";
+    data["orchestrator_state"] = ModeOrchestrator::getStateString();
+    data["state_reason"] = ModeOrchestrator::getStateReason();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLayout(AsyncWebServerRequest* request) {
+    HardwareConfig hw = ConfigManager::getHardware();
+    LayoutResult layout = LayoutEngine::compute(hw);
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    data["mode"] = layout.mode;
+
+    JsonObject matrix = data["matrix"].to<JsonObject>();
+    matrix["width"] = layout.matrixWidth;
+    matrix["height"] = layout.matrixHeight;
+
+    JsonObject logo = data["logo_zone"].to<JsonObject>();
+    logo["x"] = layout.logoZone.x;
+    logo["y"] = layout.logoZone.y;
+    logo["w"] = layout.logoZone.w;
+    logo["h"] = layout.logoZone.h;
+
+    JsonObject flight = data["flight_zone"].to<JsonObject>();
+    flight["x"] = layout.flightZone.x;
+    flight["y"] = layout.flightZone.y;
+    flight["w"] = layout.flightZone.w;
+    flight["h"] = layout.flightZone.h;
+
+    JsonObject telemetry = data["telemetry_zone"].to<JsonObject>();
+    telemetry["x"] = layout.telemetryZone.x;
+    telemetry["y"] = layout.telemetryZone.y;
+    telemetry["w"] = layout.telemetryZone.w;
+    telemetry["h"] = layout.telemetryZone.h;
+
+    JsonObject hardware = data["hardware"].to<JsonObject>();
+    hardware["tiles_x"] = hw.tiles_x;
+    hardware["tiles_y"] = hw.tiles_y;
+    hardware["tile_pixels"] = hw.tile_pixels;
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType) {
+    if (!LittleFS.exists(path)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+    AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, contentType);
+    response->addHeader("Content-Encoding", "gzip");
+    request->send(response);
+}
+
+void WebPortal::_handlePostCalibrationStart(AsyncWebServerRequest* request) {
+    if (_calibrationCallback) {
+        _calibrationCallback(true);
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Calibration mode started";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostCalibrationStop(AsyncWebServerRequest* request) {
+    if (_calibrationCallback) {
+        _calibrationCallback(false);
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Calibration mode stopped";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLogos(AsyncWebServerRequest* request) {
+    std::vector<LogoEntry> logos;
+    if (!LogoManager::listLogos(logos)) {
+        _sendJsonError(request, 500, "Logo storage unavailable. Reboot the device and try again.", "STORAGE_UNAVAILABLE");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonArray data = root["data"].to<JsonArray>();
+
+    for (const auto& logo : logos) {
+        JsonObject entry = data.add<JsonObject>();
+        entry["name"] = logo.name;
+        entry["size"] = logo.size;
+    }
+
+    // Storage usage metadata
+    size_t usedBytes = 0, totalBytes = 0;
+    LogoManager::getLittleFSUsage(usedBytes, totalBytes);
+    JsonObject storage = root["storage"].to<JsonObject>();
+    storage["used"] = usedBytes;
+    storage["total"] = totalBytes;
+    storage["logo_count"] = LogoManager::getLogoCount();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleDeleteLogo(AsyncWebServerRequest* request) {
+    // Extract filename from URL: /api/logos/FILENAME
+    String url = request->url();
+    int lastSlash = url.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == (int)(url.length() - 1)) {
+        _sendJsonError(request, 400, "Missing logo filename", "MISSING_FILENAME");
+        return;
+    }
+    String filename = url.substring(lastSlash + 1);
+    int queryStart = filename.indexOf('?');
+    if (queryStart >= 0) {
+        filename = filename.substring(0, queryStart);
+    }
+
+    if (!LogoManager::isSafeLogoFilename(filename)) {
+        _sendJsonError(request, 400, "Invalid logo filename", "INVALID_NAME");
+        return;
+    }
+
+    if (!LogoManager::hasLogo(filename)) {
+        _sendJsonError(request, 404, "Logo not found", "NOT_FOUND");
+        return;
+    }
+
+    if (!LogoManager::deleteLogo(filename)) {
+        _sendJsonError(request, 500, "Could not delete logo. Check storage health and try again.", "FS_DELETE_ERROR");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["message"] = "Logo deleted";
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLogoFile(AsyncWebServerRequest* request) {
+    // Extract filename from URL: /logos/FILENAME
+    String url = request->url();
+    int lastSlash = url.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == (int)(url.length() - 1)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+    String filename = url.substring(lastSlash + 1);
+    int queryStart = filename.indexOf('?');
+    if (queryStart >= 0) {
+        filename = filename.substring(0, queryStart);
+    }
+
+    if (!LogoManager::isSafeLogoFilename(filename)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    String path = String("/logos/") + filename;
+    if (!LittleFS.exists(path)) {
+        request->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    request->send(LittleFS, path, "application/octet-stream");
+}
+
+void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = false;
+    root["error"] = error;
+    root["code"] = code;
+    String output;
+    serializeJson(doc, output);
+    request->send(httpCode, "application/json", output);
+}
+
+
+]]></file>
+<file id="a8a8403c" path="firmware/data-src/dashboard.html" label="HTML TEMPLATE"><![CDATA[
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FlightWall</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="dashboard">
+  <header class="dash-header">
+    <h1>FlightWall</h1>
+    <p class="dash-ip" id="device-ip"></p>
+    <nav><a href="/health.html">System Health</a></nav>
+  </header>
+
+  <main class="dash-cards">
+    <!-- Display Settings Card -->
+    <section class="card">
+      <h2>Display</h2>
+
+      <label for="brightness">Brightness</label>
+      <div class="range-row">
+        <input type="range" id="brightness" min="0" max="255" value="128">
+        <span class="range-val" id="brightness-val">128</span>
+      </div>
+
+      <label>Text Color</label>
+      <div class="rgb-row">
+        <div class="rgb-field">
+          <input type="number" id="color-r" min="0" max="255" value="255">
+          <span class="rgb-label">R</span>
+        </div>
+        <div class="rgb-field">
+          <input type="number" id="color-g" min="0" max="255" value="255">
+          <span class="rgb-label">G</span>
+        </div>
+        <div class="rgb-field">
+          <input type="number" id="color-b" min="0" max="255" value="255">
+          <span class="rgb-label">B</span>
+        </div>
+      </div>
+      <div class="color-preview" id="color-preview"></div>
+    </section>
+
+    <!-- Mode Picker Card (Story dl-1.5) -->
+    <section class="card" id="mode-picker-card">
+      <h2>Display Mode</h2>
+      <div class="mode-status-line" id="modeStatusLine">
+        Active: <span class="mode-status-name" id="modeStatusName">&mdash;</span>
+        (<span class="mode-status-reason" id="modeStatusReason">loading</span>)
+      </div>
+      <div class="mode-cards-list" id="modeCardsList"></div>
+    </section>
+
+    <!-- Timing Card -->
+    <section class="card">
+      <h2>Timing</h2>
+
+      <label for="fetch-interval">Check for flights every: <span id="fetch-label">10 min</span></label>
+      <div class="range-row">
+        <input type="range" id="fetch-interval" min="30" max="3600" step="30" value="600">
+      </div>
+      <p class="estimate-line" id="fetch-estimate"></p>
+      <p class="estimate-note">OpenSky poll estimate; AeroAPI/CDN calls not included.</p>
+
+      <label for="display-cycle">Cycle flights every: <span id="cycle-label">3 s</span></label>
+      <div class="range-row">
+        <input type="range" id="display-cycle" min="1" max="120" step="1" value="3">
+      </div>
+    </section>
+
+    <!-- Network & API Card -->
+    <section class="card">
+      <h2>Network &amp; API</h2>
+      <div class="form-fields">
+        <label for="d-wifi-ssid">WiFi Network</label>
+        <div class="scan-row-inline" id="d-scan-area" style="display:none">
+          <button type="button" class="link-btn" id="d-btn-scan">Scan for networks</button>
+          <div id="d-scan-results" class="scan-results" style="display:none"></div>
+        </div>
+        <input type="text" id="d-wifi-ssid" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-wifi-pass">WiFi Password</label>
+        <input type="password" id="d-wifi-pass" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-os-client-id">OpenSky Client ID</label>
+        <input type="text" id="d-os-client-id" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-os-client-sec">OpenSky Client Secret</label>
+        <input type="password" id="d-os-client-sec" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <label for="d-aeroapi-key">AeroAPI Key</label>
+        <input type="password" id="d-aeroapi-key" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </div>
+    </section>
+
+    <!-- Hardware Card -->
+    <section class="card">
+      <h2>Hardware</h2>
+      <div class="form-fields">
+        <label for="d-tiles-x">Tiles X</label>
+        <input type="number" id="d-tiles-x" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-tiles-y">Tiles Y</label>
+        <input type="number" id="d-tiles-y" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-tile-pixels">Pixels per tile</label>
+        <input type="number" id="d-tile-pixels" inputmode="numeric" min="1" step="1" autocomplete="off">
+
+        <label for="d-display-pin">Display data pin (GPIO)</label>
+        <input type="number" id="d-display-pin" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-origin-corner">Origin corner</label>
+        <input type="number" id="d-origin-corner" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-scan-dir">Scan direction</label>
+        <input type="number" id="d-scan-dir" inputmode="numeric" min="0" step="1" autocomplete="off">
+
+        <label for="d-zigzag">Zigzag</label>
+        <input type="number" id="d-zigzag" inputmode="numeric" min="0" step="1" autocomplete="off">
+      </div>
+      <p class="resolution-text" id="d-resolution-text"></p>
+
+      <label for="d-zone-layout">Layout Style</label>
+      <select id="d-zone-layout">
+        <option value="0">Classic</option>
+        <option value="1">Full-width bottom</option>
+      </select>
+
+      <div class="preview-container" id="preview-container">
+        <canvas id="layout-preview"></canvas>
+        <div class="preview-legend" id="preview-legend">
+          <span class="legend-chip" style="background:#58a6ff"></span> Logo
+          <span class="legend-chip" style="background:#3fb950"></span> Flight
+          <span class="legend-chip" style="background:#d29922"></span> Telemetry
+        </div>
+        <h3 class="wiring-label">Panel Wiring Path</h3>
+        <canvas id="wiring-preview"></canvas>
+        <div class="preview-legend" id="wiring-legend">
+          <span class="legend-chip" style="background:#3fb950"></span> Data in
+          <span class="legend-chip" style="background:#58a6ff"></span> Cable path
+        </div>
+        <p class="helper-copy">Predictive preview — actual LED wall updates after Apply.</p>
+      </div>
+
+    </section>
+
+    <!-- Calibration Card -->
+    <section class="card" id="calibration-card">
+      <h2 class="calibration-toggle">Calibration</h2>
+      <div class="calibration-body" id="calibration-body" style="display:none">
+        <p class="helper-copy" style="margin-top:0;margin-bottom:12px">Adjust wiring flags and see the test pattern update in real-time on the LED wall and canvas preview.</p>
+
+        <label>Test Pattern</label>
+        <div class="cal-pattern-toggle" id="cal-pattern-toggle">
+          <button type="button" class="cal-pattern-btn active" data-pattern="0">Scan Order</button>
+          <button type="button" class="cal-pattern-btn" data-pattern="1">Panel Position</button>
+        </div>
+
+        <div class="form-fields">
+          <label for="cal-origin-corner">Origin Corner</label>
+          <select id="cal-origin-corner" class="cal-select">
+            <option value="0">0 — Top-Left</option>
+            <option value="1">1 — Top-Right</option>
+            <option value="2">2 — Bottom-Left</option>
+            <option value="3">3 — Bottom-Right</option>
+          </select>
+
+          <label for="cal-scan-dir">Scan Direction</label>
+          <select id="cal-scan-dir" class="cal-select">
+            <option value="0">0 — Rows (Horizontal)</option>
+            <option value="1">1 — Columns (Vertical)</option>
+          </select>
+
+          <label for="cal-zigzag">Zigzag</label>
+          <select id="cal-zigzag" class="cal-select">
+            <option value="0">0 — Progressive (same direction)</option>
+            <option value="1">1 — Zigzag (alternating)</option>
+          </select>
+        </div>
+
+        <div class="cal-preview-container" id="cal-preview-container">
+          <canvas id="cal-preview-canvas"></canvas>
+          <div class="preview-legend">
+            <span class="legend-chip" style="background:#f85149"></span> Pixel 0 (start)
+            <span class="legend-chip" style="background:#58a6ff"></span> Pixel N (end)
+          </div>
+        </div>
+
+        <p class="helper-copy">Form &rarr; Canvas preview (instant) &rarr; LED wall (50-200ms)</p>
+      </div>
+    </section>
+
+    <!-- Location Card -->
+    <section class="card" id="location-card">
+      <h2 class="location-toggle">Location</h2>
+      <div class="location-body" id="location-body" style="display:none">
+        <div id="location-map-wrap">
+          <div id="location-map"></div>
+          <p class="map-loading" id="map-loading">Loading map...</p>
+        </div>
+        <div class="form-fields" id="location-fallback">
+          <label for="d-center-lat">Latitude</label>
+          <input type="number" id="d-center-lat" step="any" autocomplete="off">
+          <label for="d-center-lon">Longitude</label>
+          <input type="number" id="d-center-lon" step="any" autocomplete="off">
+          <label for="d-radius-km">Radius (km)</label>
+          <input type="number" id="d-radius-km" step="any" min="0.1" autocomplete="off">
+        </div>
+        <p class="helper-copy" id="location-helper">Drag the center marker or radius handle to update your capture area.</p>
+      </div>
+    </section>
+
+    <!-- Logos Card -->
+    <section class="card" id="logos-card">
+      <h2>Logos</h2>
+      <div class="logo-upload-zone" id="logo-upload-zone">
+        <p class="upload-prompt">Drag &amp; drop <code>.bin</code> logo files here or</p>
+        <label class="upload-label" for="logo-file-input">Choose files</label>
+        <input type="file" id="logo-file-input" accept=".bin" multiple hidden>
+        <p class="upload-hint">32×32 RGB565, 2048 bytes each</p>
+      </div>
+      <div class="logo-file-list" id="logo-file-list"></div>
+      <button type="button" class="apply-btn" id="btn-upload-logos" style="display:none">Upload</button>
+      <p class="logo-storage-summary" id="logo-storage-summary"></p>
+      <div class="logo-list-container" id="logo-list-container">
+        <p class="logo-empty-state" id="logo-empty-state" style="display:none">No logos uploaded yet. Drag .bin files here to add airline logos.</p>
+        <div class="logo-list" id="logo-list"></div>
+      </div>
+    </section>
+
+    <!-- Firmware Card (Story fn-1.6) -->
+    <section class="card" id="firmware-card">
+      <h2>Firmware</h2>
+      <p id="fw-version" class="fw-version-text"></p>
+      <div id="rollback-banner" class="banner-warning" role="alert" aria-live="polite" style="display:none">
+        <span>Firmware rolled back to previous version</span>
+        <button type="button" class="dismiss-btn" id="btn-dismiss-rollback" aria-label="Dismiss rollback warning">&times;</button>
+      </div>
+      <div class="ota-upload-zone" id="ota-upload-zone" role="button" tabindex="0" aria-label="Select firmware file for upload">
+        <p class="upload-prompt">Drag .bin file here or tap to select</p>
+        <input type="file" id="ota-file-input" accept=".bin" hidden>
+      </div>
+      <div class="ota-file-info" id="ota-file-info" style="display:none">
+        <span id="ota-file-name"></span>
+        <button type="button" class="apply-btn" id="btn-upload-firmware">Upload Firmware</button>
+        <button type="button" class="btn-secondary btn-ota-cancel" id="btn-cancel-ota">Cancel</button>
+      </div>
+      <div class="ota-progress" id="ota-progress" style="display:none" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div class="ota-progress-bar" id="ota-progress-bar"></div>
+        <span class="ota-progress-text" id="ota-progress-text">0%</span>
+      </div>
+      <div class="ota-reboot" id="ota-reboot" style="display:none">
+        <p id="ota-reboot-text"></p>
+      </div>
+      <p class="helper-copy">Before migrating, download your settings backup from <a href="#system-card">System</a> below.</p>
+    </section>
+
+    <!-- System / Danger Zone Card -->
+    <section class="card card-danger" id="system-card">
+      <h2>System</h2>
+      <button type="button" class="btn-secondary" id="btn-export-settings">Download Settings</button>
+      <p class="helper-copy" style="margin-top:4px">Download your configuration as a JSON file before partition migration or reflash.</p>
+      <div id="reset-default" class="reset-row">
+        <button type="button" class="btn-danger" id="btn-reset">Reset to Defaults</button>
+      </div>
+      <div id="reset-confirm" class="reset-row" style="display:none">
+        <p class="reset-warning">All settings will be erased and the device will restart in setup mode.</p>
+        <div class="reset-actions">
+          <button type="button" class="btn-danger" id="btn-reset-confirm">Confirm</button>
+          <button type="button" class="btn-cancel" id="btn-reset-cancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="apply-bar" id="apply-bar" style="display:none">
+    <span class="apply-bar-text">Unsaved changes</span>
+    <button type="button" class="apply-bar-btn" id="btn-apply-all">Apply Changes</button>
+  </div>
+</div>
+
+<script src="/common.js"></script>
+<script src="/dashboard.js"></script>
+</body>
+</html>
+
+
+]]></file>
+<file id="6ca8ed8c" path="firmware/data-src/dashboard.js" label="SOURCE CODE"><![CDATA[
+
+/* FlightWall Dashboard — Display, Timing, Network/API, and Hardware settings */
+
+/**
+ * Shared zone calculation algorithm (must match C++ LayoutEngine::compute exactly).
+ * @param {number} tilesX - Number of horizontal tiles
+ * @param {number} tilesY - Number of vertical tiles
+ * @param {number} tilePixels - Pixels per tile edge
+ * @returns {object} { matrixWidth, matrixHeight, mode, logoZone, flightZone, telemetryZone, valid }
+ */
+function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct, layoutMode) {
+  if (!tilesX || !tilesY || !tilePixels) {
+    return { matrixWidth: 0, matrixHeight: 0, mode: 'compact',
+      logoZone: {x:0,y:0,w:0,h:0}, flightZone: {x:0,y:0,w:0,h:0},
+      telemetryZone: {x:0,y:0,w:0,h:0}, valid: false };
+  }
+
+  var mw = tilesX * tilePixels;
+  var mh = tilesY * tilePixels;
+
+  if (mw < mh) {
+    return { matrixWidth: mw, matrixHeight: mh, mode: 'compact',
+      logoZone: {x:0,y:0,w:0,h:0}, flightZone: {x:0,y:0,w:0,h:0},
+      telemetryZone: {x:0,y:0,w:0,h:0}, valid: false };
+  }
+
+  var mode;
+  if (mh < 32) { mode = 'compact'; }
+  else if (mh < 48) { mode = 'full'; }
+  else { mode = 'expanded'; }
+
+  var logoW = mh; // default: square logo
+  if (logoWidthPct > 0 && logoWidthPct <= 99) {
+    logoW = Math.round(mw * logoWidthPct / 100);
+    logoW = Math.max(1, Math.min(mw - 1, logoW));
+  }
+
+  var splitY = Math.floor(mh / 2); // default: 50/50
+  if (flightHeightPct > 0 && flightHeightPct <= 99) {
+    splitY = Math.round(mh * flightHeightPct / 100);
+    splitY = Math.max(1, Math.min(mh - 1, splitY));
+  }
+
+  var logoZone, flightZone, telemetryZone;
+  if (layoutMode === 1) {
+    // Full-width bottom: logo top-left, flight top-right, telemetry spans full width
+    logoZone      = { x: 0,     y: 0,      w: logoW,      h: splitY };
+    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
+    telemetryZone = { x: 0,     y: splitY, w: mw,         h: mh - splitY };
+  } else {
+    // Classic: logo full-height left, flight/telemetry stacked right
+    logoZone      = { x: 0,     y: 0,      w: logoW,      h: mh };
+    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
+    telemetryZone = { x: logoW, y: splitY, w: mw - logoW, h: mh - splitY };
+  }
+
+  return {
+    matrixWidth: mw,
+    matrixHeight: mh,
+    mode: mode,
+    logoZone: logoZone,
+    flightZone: flightZone,
+    telemetryZone: telemetryZone,
+    valid: true
+  };
+}
+
+(function() {
+  'use strict';
+
+  // --- Display card DOM ---
+  var brightness = document.getElementById('brightness');
+  var brightnessVal = document.getElementById('brightness-val');
+  var colorR = document.getElementById('color-r');
+  var colorG = document.getElementById('color-g');
+  var colorB = document.getElementById('color-b');
+  var colorPreview = document.getElementById('color-preview');
+  var deviceIp = document.getElementById('device-ip');
+
+  // --- Timing card DOM ---
+  var fetchInterval = document.getElementById('fetch-interval');
+  var fetchLabel = document.getElementById('fetch-label');
+  var fetchEstimate = document.getElementById('fetch-estimate');
+  var displayCycle = document.getElementById('display-cycle');
+  var cycleLabel = document.getElementById('cycle-label');
+
+  // --- Network & API card DOM ---
+  var dWifiSsid = document.getElementById('d-wifi-ssid');
+  var dWifiPass = document.getElementById('d-wifi-pass');
+  var dOsClientId = document.getElementById('d-os-client-id');
+  var dOsClientSec = document.getElementById('d-os-client-sec');
+  var dAeroKey = document.getElementById('d-aeroapi-key');
+  var dBtnScan = document.getElementById('d-btn-scan');
+  var dScanArea = document.getElementById('d-scan-area');
+  var dScanResults = document.getElementById('d-scan-results');
+
+  // --- Hardware card DOM ---
+  var dTilesX = document.getElementById('d-tiles-x');
+  var dTilesY = document.getElementById('d-tiles-y');
+  var dTilePixels = document.getElementById('d-tile-pixels');
+  var dDisplayPin = document.getElementById('d-display-pin');
+  var dOriginCorner = document.getElementById('d-origin-corner');
+  var dScanDir = document.getElementById('d-scan-dir');
+  var dZigzag = document.getElementById('d-zigzag');
+  var dResText = document.getElementById('d-resolution-text');
+
+  // --- Unified apply bar ---
+  var applyBar = document.getElementById('apply-bar');
+  var btnApplyAll = document.getElementById('btn-apply-all');
+  var dirtySections = { display: false, timing: false, network: false, hardware: false };
+
+  function markSectionDirty(section) {
+    dirtySections[section] = true;
+    applyBar.style.display = '';
+  }
+
+  function clearDirtyState() {
+    dirtySections.display = false;
+    dirtySections.timing = false;
+    dirtySections.network = false;
+    dirtySections.hardware = false;
+    applyBar.style.display = 'none';
+  }
+
+  function collectPayload() {
+    var payload = {};
+    if (dirtySections.display) {
+      payload.brightness = parseInt(brightness.value, 10);
+      payload.text_color_r = clamp(parseInt(colorR.value, 10) || 0);
+      payload.text_color_g = clamp(parseInt(colorG.value, 10) || 0);
+      payload.text_color_b = clamp(parseInt(colorB.value, 10) || 0);
+    }
+    if (dirtySections.timing) {
+      payload.fetch_interval = parseInt(fetchInterval.value, 10);
+      payload.display_cycle = parseInt(displayCycle.value, 10);
+    }
+    if (dirtySections.network) {
+      payload.wifi_ssid = dWifiSsid.value;
+      payload.wifi_password = dWifiPass.value;
+      payload.os_client_id = dOsClientId.value.trim();
+      payload.os_client_sec = dOsClientSec.value.trim();
+      payload.aeroapi_key = dAeroKey.value.trim();
+    }
+    if (dirtySections.hardware) {
+      var tilesX = parseUint8Field(dTilesX, 'Tiles X', false);
+      if (tilesX === null) return null;
+      var tilesY = parseUint8Field(dTilesY, 'Tiles Y', false);
+      if (tilesY === null) return null;
+      var tilePixels = parseUint8Field(dTilePixels, 'Pixels per tile', false);
+      if (tilePixels === null) return null;
+      var dp = parseUint8Field(dDisplayPin, 'Display data pin', true);
+      if (dp === null || VALID_PINS.indexOf(dp) === -1) {
+        FW.showToast('Invalid GPIO pin. Supported: ' + VALID_PINS.join(', '), 'error');
+        return null;
+      }
+      var originCorner = parseUint8Field(dOriginCorner, 'Origin corner', true);
+      if (originCorner === null) return null;
+      var scanDir = parseUint8Field(dScanDir, 'Scan direction', true);
+      if (scanDir === null) return null;
+      var zigzag = parseUint8Field(dZigzag, 'Zigzag', true);
+      if (zigzag === null) return null;
+      payload.tiles_x = tilesX;
+      payload.tiles_y = tilesY;
+      payload.tile_pixels = tilePixels;
+      payload.display_pin = dp;
+      payload.origin_corner = originCorner;
+      payload.scan_dir = scanDir;
+      payload.zigzag = zigzag;
+      payload.zone_logo_pct = customLogoPct;
+      payload.zone_split_pct = customSplitPct;
+      payload.zone_layout = zoneLayout;
+    }
+    return payload;
+  }
+
+  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
+
+  var debounceTimer = null;
+  var DEBOUNCE_MS = 400;
+  var SECONDS_PER_MONTH = 2592000;
+  var OPENSKY_WARN_THRESHOLD = 4000;
+  var previewLastLayout = null;
+  var hardwareInputDirty = false;
+  var suppressHardwareInputHandler = false;
+  var customLogoPct = 0;   // 0 = auto
+  var customSplitPct = 0;  // 0 = auto
+  var zoneLayout = 0;      // 0 = classic, 1 = full-width bottom
+  var dZoneLayout = document.getElementById('d-zone-layout');
+
+  deviceIp.textContent = window.location.hostname || '';
+
+  // --- Load current settings ---
+  function loadSettings() {
+    return FW.get('/api/settings').then(function(res) {
+      if (!res.body.ok || !res.body.data) {
+        FW.showToast('Failed to load settings', 'error');
+        return;
+      }
+      var d = res.body.data;
+
+      // Display
+      if (d.brightness !== undefined) {
+        brightness.value = d.brightness;
+        brightnessVal.textContent = d.brightness;
+      }
+      if (d.text_color_r !== undefined) colorR.value = d.text_color_r;
+      if (d.text_color_g !== undefined) colorG.value = d.text_color_g;
+      if (d.text_color_b !== undefined) colorB.value = d.text_color_b;
+      updatePreview();
+
+      // Timing
+      if (d.fetch_interval !== undefined) {
+        fetchInterval.value = d.fetch_interval;
+        fetchLabel.textContent = formatInterval(d.fetch_interval);
+        updateFetchEstimate(d.fetch_interval);
+      }
+      if (d.display_cycle !== undefined) {
+        displayCycle.value = d.display_cycle;
+        updateCycleLabel(d.display_cycle);
+      }
+
+      // Network & API
+      if (d.wifi_ssid !== undefined) dWifiSsid.value = d.wifi_ssid;
+      if (d.wifi_password !== undefined) dWifiPass.value = d.wifi_password;
+      if (d.os_client_id !== undefined) dOsClientId.value = d.os_client_id;
+      if (d.os_client_sec !== undefined) dOsClientSec.value = d.os_client_sec;
+      if (d.aeroapi_key !== undefined) dAeroKey.value = d.aeroapi_key;
+
+      // Location
+      var loadedLocation = normalizeLocationValues({
+        center_lat: d.center_lat,
+        center_lon: d.center_lon,
+        radius_km: d.radius_km
+      });
+      if (loadedLocation) {
+        writeLocationFields(loadedLocation);
+        rememberValidLocation(loadedLocation);
+        if (mapInstance) {
+          updateMapFromValues(loadedLocation, { fit: false, pan: false });
+        } else if (leafletLoaded && isLocationCardOpen() && !mapFailureHandled) {
+          maybeInitLocationMap();
+        }
+      }
+
+      // Hardware
+      if (d.tiles_x !== undefined) dTilesX.value = d.tiles_x;
+      if (d.tiles_y !== undefined) dTilesY.value = d.tiles_y;
+      if (d.tile_pixels !== undefined) dTilePixels.value = d.tile_pixels;
+      if (d.display_pin !== undefined) dDisplayPin.value = d.display_pin;
+      if (d.origin_corner !== undefined) dOriginCorner.value = d.origin_corner;
+      if (d.scan_dir !== undefined) dScanDir.value = d.scan_dir;
+      if (d.zigzag !== undefined) dZigzag.value = d.zigzag;
+      if (d.zone_logo_pct !== undefined) customLogoPct = d.zone_logo_pct;
+      if (d.zone_split_pct !== undefined) customSplitPct = d.zone_split_pct;
+      if (d.zone_layout !== undefined) {
+        zoneLayout = d.zone_layout;
+        if (dZoneLayout) dZoneLayout.value = zoneLayout;
+      }
+      updateHwResolution();
+
+      // Sync calibration selectors from loaded hardware values
+      syncCalibrationFromSettings();
+
+      // Show scan button now that we're in STA mode
+      dScanArea.style.display = '';
+    }).catch(function() {
+      FW.showToast('Cannot reach device', 'error');
+    });
+  }
+
+  // --- Apply settings (hot-reload, no reboot) ---
+  function applySettings(payload) {
+    FW.post('/api/settings', payload).then(function(res) {
+      if (res.body.ok) {
+        FW.showToast('Applied', 'success');
+      } else {
+        FW.showToast(res.body.error || 'Save failed', 'error');
+      }
+    }).catch(function() {
+      FW.showToast('Network error', 'error');
+    });
+  }
+
+  // --- Apply settings with reboot awareness ---
+  function applyWithReboot(payload, btn, originalText) {
+    btn.disabled = true;
+    btn.textContent = 'Applying...';
+    var rebootRequested = false;
+
+    FW.post('/api/settings', payload).then(function(res) {
+      if (!res.body.ok) {
+        throw new Error(res.body.error || 'Save failed');
+      }
+      if (res.body.reboot_required) {
+        FW.showToast('Rebooting to apply changes...', 'warning');
+        rebootRequested = true;
+        return FW.post('/api/reboot', {});
+      }
+      FW.showToast('Applied', 'success');
+      btn.disabled = false;
+      btn.textContent = originalText;
+      return null;
+    }).then(function(res) {
+      if (!rebootRequested) return;
+      if (!res || !res.body || !res.body.ok) {
+        throw new Error((res && res.body && res.body.error) || 'Reboot failed');
+      }
+      btn.textContent = 'Rebooting...';
+    }).catch(function(err) {
+      if (rebootRequested && err && err.name === 'TypeError') {
+        // Connection loss after reboot request is expected
+        btn.textContent = 'Rebooting...';
+        return;
+      }
+      FW.showToast(err && err.message ? err.message : 'Network error', 'error');
+      btn.disabled = false;
+      btn.textContent = originalText;
+    });
+  }
+
+  function debouncedApply(payload) {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(function() {
+      applySettings(payload);
+    }, DEBOUNCE_MS);
+  }
+
+  // --- Color preview ---
+  function updatePreview() {
+    var r = clamp(parseInt(colorR.value, 10) || 0);
+    var g = clamp(parseInt(colorG.value, 10) || 0);
+    var b = clamp(parseInt(colorB.value, 10) || 0);
+    colorPreview.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  function clamp(v) {
+    return Math.max(0, Math.min(255, v));
+  }
+
+  function parseStrictInteger(raw) {
+    var text = String(raw === undefined || raw === null ? '' : raw).trim();
+    if (!/^\d+$/.test(text)) return null;
+    return parseInt(text, 10);
+  }
+
+  function parseUint8Field(el, label, allowZero) {
+    var value = parseStrictInteger(el.value);
+    var min = allowZero ? 0 : 1;
+    if (value === null || value < min || value > 255) {
+      FW.showToast(label + ' must be a whole number from ' + min + ' to 255', 'error');
+      return null;
+    }
+    return value;
+  }
+
+  // --- Brightness slider ---
+  brightness.addEventListener('input', function() {
+    brightnessVal.textContent = brightness.value;
+  });
+  brightness.addEventListener('change', function() {
+    markSectionDirty('display');
+  });
+
+  // --- RGB inputs ---
+  function onColorChange() {
+    var r = clamp(parseInt(colorR.value, 10) || 0);
+    var g = clamp(parseInt(colorG.value, 10) || 0);
+    var b = clamp(parseInt(colorB.value, 10) || 0);
+    colorR.value = r;
+    colorG.value = g;
+    colorB.value = b;
+    updatePreview();
+    markSectionDirty('display');
+  }
+
+  colorR.addEventListener('change', onColorChange);
+  colorG.addEventListener('change', onColorChange);
+  colorB.addEventListener('change', onColorChange);
+  colorR.addEventListener('input', updatePreview);
+  colorG.addEventListener('input', updatePreview);
+  colorB.addEventListener('input', updatePreview);
+
+  // --- Timing: fetch interval ---
+  function formatInterval(seconds) {
+    var s = parseInt(seconds, 10);
+    var min = Math.floor(s / 60);
+    var rem = s % 60;
+    if (min === 0) return s + ' s';
+    if (rem === 0) return min + ' min';
+    return min + ' min ' + rem + ' s';
+  }
+
+  function updateFetchEstimate(seconds) {
+    var s = parseInt(seconds, 10);
+    if (s <= 0) s = 1;
+    var n = Math.round(SECONDS_PER_MONTH / s);
+    fetchEstimate.textContent = '~' + n.toLocaleString() + ' calls/month';
+    if (n > OPENSKY_WARN_THRESHOLD) {
+      fetchEstimate.classList.add('estimate-warning');
+    } else {
+      fetchEstimate.classList.remove('estimate-warning');
+    }
+  }
+
+  fetchInterval.addEventListener('input', function() {
+    fetchLabel.textContent = formatInterval(fetchInterval.value);
+    updateFetchEstimate(fetchInterval.value);
+  });
+  fetchInterval.addEventListener('change', function() {
+    markSectionDirty('timing');
+  });
+
+  // --- Timing: display cycle ---
+  function updateCycleLabel(seconds) {
+    cycleLabel.textContent = parseInt(seconds, 10) + ' s';
+  }
+
+  displayCycle.addEventListener('input', function() {
+    updateCycleLabel(displayCycle.value);
+  });
+  displayCycle.addEventListener('change', function() {
+    markSectionDirty('timing');
+  });
+
+  // --- Network & API: mark dirty on change ---
+  function onNetworkInput() { markSectionDirty('network'); }
+  dWifiSsid.addEventListener('input', onNetworkInput);
+  dWifiPass.addEventListener('input', onNetworkInput);
+  dOsClientId.addEventListener('input', onNetworkInput);
+  dOsClientSec.addEventListener('input', onNetworkInput);
+  dAeroKey.addEventListener('input', onNetworkInput);
+
+  // --- Hardware: Resolution text ---
+  function updateHwResolution() {
+    var dims = parseHardwareDimensionsFromInputs();
+    setResolutionText(dims);
+  }
+
+  function setResolutionText(dims) {
+    if (!dims || dims.matrixWidth <= 0 || dims.matrixHeight <= 0) {
+      dResText.textContent = '';
+      return;
+    }
+    dResText.textContent = 'Display: ' + dims.matrixWidth + ' x ' + dims.matrixHeight + ' pixels';
+  }
+
+  function parseHardwareDimensionsFromInputs() {
+    var tx = parseStrictInteger(dTilesX.value);
+    var ty = parseStrictInteger(dTilesY.value);
+    var tp = parseStrictInteger(dTilePixels.value);
+    if (tx === null || ty === null || tp === null) return null;
+    if (tx < 1 || ty < 1 || tp < 1 || tx > 255 || ty > 255 || tp > 255) return null;
+    return {
+      tilesX: tx,
+      tilesY: ty,
+      tilePixels: tp,
+      matrixWidth: tx * tp,
+      matrixHeight: ty * tp
+    };
+  }
+
+  function normalizeZone(zone) {
+    if (!zone || typeof zone !== 'object') return null;
+    var x = Number(zone.x);
+    var y = Number(zone.y);
+    var w = Number(zone.w);
+    var h = Number(zone.h);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+    return { x: x, y: y, w: w, h: h };
+  }
+
+  function normalizeLayoutFromApi(data) {
+    if (!data || typeof data !== 'object' || !data.matrix || !data.hardware) return null;
+    var mw = Number(data.matrix.width);
+    var mh = Number(data.matrix.height);
+    var tx = Number(data.hardware.tiles_x);
+    var ty = Number(data.hardware.tiles_y);
+    var tp = Number(data.hardware.tile_pixels);
+    var logo = normalizeZone(data.logo_zone);
+    var flight = normalizeZone(data.flight_zone);
+    var telemetry = normalizeZone(data.telemetry_zone);
+    if (!Number.isFinite(mw) || !Number.isFinite(mh)) return null;
+    if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tp)) return null;
+    if (!logo || !flight || !telemetry) return null;
+    return {
+      matrixWidth: mw,
+      matrixHeight: mh,
+      mode: String(data.mode || 'compact'),
+      logoZone: logo,
+      flightZone: flight,
+      telemetryZone: telemetry,
+      valid: mw > 0 && mh > 0 && mw >= mh,
+      hardware: { tilesX: tx, tilesY: ty, tilePixels: tp }
+    };
+  }
+
+  // --- Canvas layout preview ---
+  var layoutCanvas = document.getElementById('layout-preview');
+  var previewContainer = document.getElementById('preview-container');
+
+  var ZONE_COLORS = {
+    logo: '#58a6ff',
+    flight: '#3fb950',
+    telemetry: '#d29922'
+  };
+
+  function renderLayoutCanvas(layout) {
+    if (!layoutCanvas || !layoutCanvas.getContext || !previewContainer) return;
+    var ctx = layoutCanvas.getContext('2d');
+
+    if (!layout || !layout.valid) {
+      layoutCanvas.width = 0;
+      layoutCanvas.height = 0;
+      previewContainer.style.display = 'none';
+      previewLastLayout = null;
+      return;
+    }
+
+    previewLastLayout = layout;
+    previewContainer.style.display = '';
+
+    // Scale canvas to fit container width while preserving aspect ratio
+    var containerWidth = previewContainer.clientWidth || 300;
+    var aspect = layout.matrixWidth / layout.matrixHeight;
+    var drawWidth = Math.min(containerWidth, 480);
+    var drawHeight = Math.round(drawWidth / aspect);
+
+    layoutCanvas.width = drawWidth;
+    layoutCanvas.height = drawHeight;
+
+    var sx = drawWidth / layout.matrixWidth;
+    var sy = drawHeight / layout.matrixHeight;
+
+    // Background (matrix bounds)
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, drawWidth, drawHeight);
+
+    // Draw tile grid when hardware dimensions are known.
+    if (layout.hardware && layout.hardware.tilePixels > 0) {
+      var tileStepX = layout.hardware.tilePixels * sx;
+      var tileStepY = layout.hardware.tilePixels * sy;
+      if (tileStepX >= 2 && tileStepY >= 2) {
+        ctx.strokeStyle = '#21262d';
+        ctx.lineWidth = 1;
+        for (var gx = tileStepX; gx < drawWidth; gx += tileStepX) {
+          var x = Math.round(gx) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, drawHeight);
+          ctx.stroke();
+        }
+        for (var gy = tileStepY; gy < drawHeight; gy += tileStepY) {
+          var y = Math.round(gy) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(drawWidth, y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw zones
+    var zones = [
+      { zone: layout.logoZone, color: ZONE_COLORS.logo, label: 'Logo' },
+      { zone: layout.flightZone, color: ZONE_COLORS.flight, label: 'Flight' },
+      { zone: layout.telemetryZone, color: ZONE_COLORS.telemetry, label: 'Telemetry' }
+    ];
+
+    // Helper: truncate text to fit pixel columns (mirrors firmware truncateToColumns)
+    function truncPreview(text, maxCols) {
+      if (text.length <= maxCols) return text;
+      if (maxCols <= 3) return text.substring(0, maxCols);
+      return text.substring(0, maxCols - 3) + '...';
+    }
+
+    zones.forEach(function(z) {
+      if (!z.zone || z.zone.w <= 0 || z.zone.h <= 0) return;
+      var rx = Math.round(z.zone.x * sx);
+      var ry = Math.round(z.zone.y * sy);
+      var rw = Math.round(z.zone.w * sx);
+      var rh = Math.round(z.zone.h * sy);
+      if (rw <= 0 || rh <= 0) return;
+
+      ctx.fillStyle = z.color;
+      ctx.globalAlpha = 0.3;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.globalAlpha = 1.0;
+      ctx.strokeStyle = z.color;
+      ctx.lineWidth = 2;
+      if (rw > 2 && rh > 2) {
+        ctx.strokeRect(rx + 1, ry + 1, rw - 2, rh - 2);
+      }
+
+      // Firmware uses 6x8px characters. Compute how many lines/cols fit.
+      var charW = 6, charH = 8;
+      var maxCols = Math.floor(z.zone.w / charW);
+      var linesAvail = Math.floor(z.zone.h / charH);
+      var fontSize = Math.max(7, Math.min(13, Math.round(charH * sy)));
+      var lineH = fontSize * 1.15;
+
+      if (maxCols <= 0 || linesAvail <= 0 || rw < 20 || rh < 10) {
+        // Too small for text — just show zone color label
+        if (rw > 30 && rh > 12) {
+          ctx.fillStyle = z.color;
+          ctx.font = '9px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(z.label, rx + rw / 2, ry + rh / 2);
+        }
+        return;
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rx, ry, rw, rh);
+      ctx.clip();
+      ctx.font = fontSize + 'px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#e6edf3';
+
+      var lines = [];
+
+      if (z.label === 'Logo') {
+        // Logo zone: show icon placeholder
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = z.color;
+        ctx.font = Math.min(fontSize + 2, Math.floor(rh * 0.35)) + 'px sans-serif';
+        ctx.fillText('Logo', rx + rw / 2, ry + rh / 2);
+        ctx.restore();
+        return;
+      }
+
+      if (z.label === 'Flight') {
+        // Mirror firmware renderFlightZone logic with sample data
+        var airline = 'United 1234';
+        var route = 'SFO>LAX';
+        var aircraft = 'B737';
+
+        if (linesAvail === 1) {
+          lines.push(truncPreview(route, maxCols));
+        } else if (linesAvail === 2) {
+          lines.push(truncPreview(airline, maxCols));
+          var detail = route + ' ' + aircraft;
+          lines.push(truncPreview(detail, maxCols));
+        } else {
+          lines.push(truncPreview(airline, maxCols));
+          lines.push(truncPreview(route, maxCols));
+          lines.push(truncPreview(aircraft, maxCols));
+        }
+      }
+
+      if (z.label === 'Telemetry') {
+        // Mirror firmware renderTelemetryZone logic with sample data
+        if (linesAvail >= 2) {
+          lines.push(truncPreview('28.3kft 450mph', maxCols));
+          lines.push(truncPreview('045d -12fps', maxCols));
+        } else {
+          lines.push(truncPreview('A28k S450 T045 V-12', maxCols));
+        }
+      }
+
+      // Draw lines vertically centered in zone (mirrors firmware centering)
+      var totalH = lines.length * lineH;
+      var startY = ry + (rh - totalH) / 2;
+      var padX = Math.round(2 * sx);
+      for (var i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], rx + padX, startY + i * lineH);
+      }
+
+      ctx.restore();
+    });
+
+    // Matrix outline
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, 0, drawWidth, drawHeight);
+
+    // Draw zone divider drag handles
+    var logoX = Math.round(layout.logoZone.w * sx);
+    var splitYPos = Math.round(layout.flightZone.h * sy);
+
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#fff';
+    ctx.globalAlpha = 0.4;
+    ctx.lineWidth = 2;
+
+    // Logo divider (vertical) — in mode 1, only extends to splitY
+    var logoVEnd = (layout.zoneLayout === 1) ? splitYPos : drawHeight;
+    ctx.beginPath();
+    ctx.moveTo(logoX, 0);
+    ctx.lineTo(logoX, logoVEnd);
+    ctx.stroke();
+
+    // Split divider (horizontal) — in mode 1, spans full width
+    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
+    ctx.beginPath();
+    ctx.moveTo(splitXStart, splitYPos);
+    ctx.lineTo(drawWidth, splitYPos);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.7;
+
+    // Grab handles
+    var ghw = 4, ghh = 16;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(logoX - ghw / 2, logoVEnd / 2 - ghh / 2, ghw, ghh);
+    var infoMidX = (layout.zoneLayout === 1) ? drawWidth / 2 : logoX + (drawWidth - logoX) / 2;
+    ctx.fillRect(infoMidX - ghh / 2, splitYPos - ghw / 2, ghh, ghw);
+
+    ctx.restore();
+  }
+
+  function updatePreviewFromInputs() {
+    var dims = parseHardwareDimensionsFromInputs();
+    var layout;
+    if (!dims) {
+      layout = { valid: false };
+    } else {
+      layout = computeLayout(dims.tilesX, dims.tilesY, dims.tilePixels, customLogoPct, customSplitPct, zoneLayout);
+      layout.zoneLayout = zoneLayout;
+      layout.hardware = {
+        tilesX: dims.tilesX,
+        tilesY: dims.tilesY,
+        tilePixels: dims.tilePixels
+      };
+    }
+    renderLayoutCanvas(layout);
+    renderWiringCanvas();
+  }
+
+  function onHardwareInput() {
+    if (!suppressHardwareInputHandler) {
+      hardwareInputDirty = true;
+      markSectionDirty('hardware');
+    }
+    updateHwResolution();
+    updatePreviewFromInputs();
+  }
+
+  dTilesX.addEventListener('input', onHardwareInput);
+  dTilesY.addEventListener('input', onHardwareInput);
+  dTilePixels.addEventListener('input', onHardwareInput);
+  window.addEventListener('resize', function() {
+    if (previewLastLayout) {
+      renderLayoutCanvas(previewLastLayout);
+    }
+    renderWiringCanvas();
+  });
+
+  // --- Zone drag interaction on layout preview canvas ---
+  var zoneDragTarget = null; // 'logo' or 'split'
+
+  function canvasPos(e) {
+    var rect = layoutCanvas.getBoundingClientRect();
+    var cx = e.touches ? e.touches[0].clientX : e.clientX;
+    var cy = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: cx - rect.left, y: cy - rect.top };
+  }
+
+  function hitTestDivider(pos) {
+    if (!previewLastLayout || !previewLastLayout.valid) return null;
+    var layout = previewLastLayout;
+    var sx = layoutCanvas.width / layout.matrixWidth;
+    var sy = layoutCanvas.height / layout.matrixHeight;
+    var threshold = 10;
+
+    var logoX = layout.logoZone.w * sx;
+    var logoVEnd = (layout.zoneLayout === 1) ? (layout.flightZone.h * sy) : (layoutCanvas.height);
+    if (Math.abs(pos.x - logoX) < threshold && pos.y <= logoVEnd + threshold) return 'logo';
+
+    var splitY = layout.flightZone.h * sy;
+    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
+    if (pos.x >= splitXStart - threshold && Math.abs(pos.y - splitY) < threshold) return 'split';
+
+    return null;
+  }
+
+  function onZoneDragStart(e) {
+    var pos = canvasPos(e);
+    var target = hitTestDivider(pos);
+    if (!target) return;
+    e.preventDefault();
+    zoneDragTarget = target;
+  }
+
+  function onZoneDragMove(e) {
+    if (!zoneDragTarget) {
+      // Update cursor on hover
+      if (layoutCanvas && previewLastLayout && previewLastLayout.valid) {
+        var hoverPos = e.touches ? null : canvasPos(e);
+        if (hoverPos) {
+          var hover = hitTestDivider(hoverPos);
+          layoutCanvas.style.cursor = hover ? (hover === 'logo' ? 'col-resize' : 'row-resize') : '';
+        }
+      }
+      return;
+    }
+    e.preventDefault();
+
+    var pos = canvasPos(e);
+    var layout = previewLastLayout;
+    if (!layout || !layout.valid) return;
+    var sx = layoutCanvas.width / layout.matrixWidth;
+    var sy = layoutCanvas.height / layout.matrixHeight;
+
+    if (zoneDragTarget === 'logo') {
+      var newLogoW = Math.round(pos.x / sx);
+      newLogoW = Math.max(Math.round(layout.matrixWidth * 0.05), Math.min(Math.round(layout.matrixWidth * 0.95), newLogoW));
+      customLogoPct = Math.round(newLogoW / layout.matrixWidth * 100);
+    } else {
+      var newSplitY = Math.round(pos.y / sy);
+      newSplitY = Math.max(Math.round(layout.matrixHeight * 0.1), Math.min(Math.round(layout.matrixHeight * 0.9), newSplitY));
+      customSplitPct = Math.round(newSplitY / layout.matrixHeight * 100);
+    }
+
+    updatePreviewFromInputs();
+  }
+
+  function onZoneDragEnd() {
+    if (zoneDragTarget) {
+      zoneDragTarget = null;
+      markSectionDirty('hardware');
+    }
+  }
+
+  layoutCanvas.addEventListener('mousedown', onZoneDragStart);
+  layoutCanvas.addEventListener('touchstart', onZoneDragStart, { passive: false });
+  document.addEventListener('mousemove', onZoneDragMove);
+  document.addEventListener('touchmove', onZoneDragMove, { passive: false });
+  document.addEventListener('mouseup', onZoneDragEnd);
+  document.addEventListener('touchend', onZoneDragEnd);
+
+  // --- Hardware: mark dirty on change ---
+  function onHardwareDirty() { markSectionDirty('hardware'); }
+  dDisplayPin.addEventListener('input', onHardwareDirty);
+  dOriginCorner.addEventListener('input', onHardwareDirty);
+  dScanDir.addEventListener('input', onHardwareDirty);
+  dZigzag.addEventListener('input', onHardwareDirty);
+
+  // --- Layout mode selector ---
+  if (dZoneLayout) {
+    dZoneLayout.addEventListener('change', function() {
+      zoneLayout = parseInt(dZoneLayout.value, 10) || 0;
+      markSectionDirty('hardware');
+      updatePreviewFromInputs();
+    });
+  }
+
+  // --- WiFi Scan (Task 3 — optional SSID picker) ---
+  var scanTimer = null;
+  var scanStartTime = 0;
+  var SCAN_TIMEOUT_MS = 5000;
+  var SCAN_POLL_MS = 800;
+
+  function escHtml(s) {
+    var el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  function rssiLabel(rssi) {
+    if (rssi >= -50) return 'Excellent';
+    if (rssi >= -60) return 'Good';
+    if (rssi >= -70) return 'Fair';
+    return 'Weak';
+  }
+
+  function startWifiScan() {
+    clearTimeout(scanTimer);
+    dBtnScan.disabled = true;
+    dBtnScan.textContent = 'Scanning...';
+    dScanResults.style.display = 'none';
+    dScanResults.innerHTML = '';
+    scanStartTime = Date.now();
+    pollWifiScan();
+  }
+
+  function pollWifiScan() {
+    FW.get('/api/wifi/scan').then(function(res) {
+      var d = res.body;
+      if (d.ok && !d.scanning && d.data && d.data.length > 0) {
+        showWifiResults(d.data);
+        return;
+      }
+      if (d.ok && !d.scanning) {
+        finishScan('No networks found');
+        return;
+      }
+      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
+        finishScan('Scan timed out');
+        return;
+      }
+      scanTimer = setTimeout(pollWifiScan, SCAN_POLL_MS);
+    }).catch(function() {
+      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
+        finishScan('Scan failed');
+        return;
+      }
+      scanTimer = setTimeout(pollWifiScan, SCAN_POLL_MS);
+    });
+  }
+
+  function showWifiResults(networks) {
+    clearTimeout(scanTimer);
+    dBtnScan.disabled = false;
+    dBtnScan.textContent = 'Scan for networks';
+    dScanResults.style.display = '';
+    dScanResults.innerHTML = '';
+
+    var seen = {};
+    networks.forEach(function(n) {
+      if (!n.ssid) return;
+      if (!seen[n.ssid] || n.rssi > seen[n.ssid].rssi) {
+        seen[n.ssid] = n;
+      }
+    });
+    var unique = Object.keys(seen).map(function(k) { return seen[k]; });
+    unique.sort(function(a, b) { return b.rssi - a.rssi; });
+
+    unique.forEach(function(n) {
+      var row = document.createElement('div');
+      row.className = 'scan-row';
+      row.innerHTML = '<span class="ssid">' + escHtml(n.ssid) + '</span><span class="rssi">' + rssiLabel(n.rssi) + '</span>';
+      row.addEventListener('click', function() {
+        dWifiSsid.value = n.ssid;
+        dScanResults.style.display = 'none';
+        markSectionDirty('network');
+      });
+      dScanResults.appendChild(row);
+    });
+  }
+
+  function finishScan(msg) {
+    clearTimeout(scanTimer);
+    dBtnScan.disabled = false;
+    dBtnScan.textContent = 'Scan for networks';
+    if (msg) FW.showToast(msg, 'warning');
+  }
+
+  dBtnScan.addEventListener('click', startWifiScan);
+
+  // --- System: Factory Reset ---
+  var btnReset = document.getElementById('btn-reset');
+  var btnResetConfirm = document.getElementById('btn-reset-confirm');
+  var btnResetCancel = document.getElementById('btn-reset-cancel');
+  var resetDefault = document.getElementById('reset-default');
+  var resetConfirm = document.getElementById('reset-confirm');
+
+  btnReset.addEventListener('click', function() {
+    resetDefault.style.display = 'none';
+    resetConfirm.style.display = '';
+  });
+
+  btnResetCancel.addEventListener('click', function() {
+    resetConfirm.style.display = 'none';
+    resetDefault.style.display = '';
+  });
+
+  btnResetConfirm.addEventListener('click', function() {
+    btnResetConfirm.disabled = true;
+    btnResetCancel.disabled = true;
+    btnResetConfirm.textContent = 'Resetting...';
+
+    FW.post('/api/reset', {}).then(function(res) {
+      if (res.body.ok) {
+        FW.showToast('Factory reset complete. Rebooting...', 'warning');
+        btnResetConfirm.textContent = 'Rebooting...';
+      } else {
+        throw new Error(res.body.error || 'Reset failed');
+      }
+    }).catch(function(err) {
+      if (err && err.name === 'TypeError') {
+        // Connection loss after reset is expected
+        FW.showToast('Device is restarting...', 'warning');
+        btnResetConfirm.textContent = 'Rebooting...';
+        return;
+      }
+      FW.showToast(err && err.message ? err.message : 'Reset failed', 'error');
+      btnResetConfirm.disabled = false;
+      btnResetCancel.disabled = false;
+      btnResetConfirm.textContent = 'Confirm';
+    });
+  });
+
+  // --- Location card ---
+  var locationToggle = document.querySelector('.location-toggle');
+  var locationBody = document.getElementById('location-body');
+  var locationMap = document.getElementById('location-map');
+  var mapLoading = document.getElementById('map-loading');
+  var locationFallback = document.getElementById('location-fallback');
+  var locationHelper = document.getElementById('location-helper');
+  var dCenterLat = document.getElementById('d-center-lat');
+  var dCenterLon = document.getElementById('d-center-lon');
+  var dRadiusKm = document.getElementById('d-radius-km');
+
+  var leafletLoaded = false;
+  var leafletLoadAttempted = false;
+  var mapInstance = null;
+  var mapMarker = null;
+  var mapCircle = null;
+  var mapTileLayer = null;
+  var mapRadiusHandle = null;
+  var mapLoadTimeout = null;
+  var mapFailureHandled = false;
+  var mapTileLoadSucceeded = false;
+  var mapTileErrorCount = 0;
+  var lastValidLocation = null;
+  var LOCATION_INITIAL_ZOOM = 10;
+  var LOCATION_TILE_ERROR_THRESHOLD = 2;
+  var locationDebounce = null;
+
+  function isLocationCardOpen() {
+    return locationBody.style.display !== 'none';
+  }
+
+  function showLocationLoading(message) {
+    mapLoading.textContent = message || 'Loading map...';
+    mapLoading.style.display = '';
+  }
+
+  function hideLocationLoading() {
+    mapLoading.style.display = 'none';
+  }
+
+  function cloneLocationValues(values) {
+    return {
+      center_lat: values.center_lat,
+      center_lon: values.center_lon,
+      radius_km: values.radius_km
+    };
+  }
+
+  function formatCoordinate(value) {
+    return Number(value).toFixed(6);
+  }
+
+  function formatRadius(value) {
+    return (Math.round(Number(value) * 100) / 100).toString();
+  }
+
+  function normalizeLocationValues(values) {
+    if (!values) return null;
+    var lat = Number(values.center_lat);
+    var lon = Number(values.center_lon);
+    var radius = Number(values.radius_km);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(radius)) return null;
+    return {
+      center_lat: clampLat(lat),
+      center_lon: clampLon(lon),
+      radius_km: clampRadius(radius)
+    };
+  }
+
+  function readLocationValuesFromFields() {
+    return normalizeLocationValues({
+      center_lat: dCenterLat.value,
+      center_lon: dCenterLon.value,
+      radius_km: dRadiusKm.value
+    });
+  }
+
+  function writeLocationFields(values) {
+    dCenterLat.value = formatCoordinate(values.center_lat);
+    dCenterLon.value = formatCoordinate(values.center_lon);
+    dRadiusKm.value = formatRadius(values.radius_km);
+  }
+
+  function rememberValidLocation(values) {
+    if (!values) return;
+    lastValidLocation = cloneLocationValues(values);
+  }
+
+  function getRadiusHandleLatLng(centerLatLng, radiusMeters) {
+    var bounds = L.circle(centerLatLng, { radius: radiusMeters }).getBounds();
+    return L.latLng(centerLatLng.lat, bounds.getEast());
+  }
+
+  function updateMapFromValues(values, options) {
+    if (!mapInstance || !mapMarker || !mapCircle) return;
+    options = options || {};
+
+    var latlng = L.latLng(values.center_lat, values.center_lon);
+    var radiusMeters = values.radius_km * 1000;
+
+    mapMarker.setLatLng(latlng);
+    mapCircle.setLatLng(latlng);
+    mapCircle.setRadius(radiusMeters);
+
+    if (mapRadiusHandle) {
+      mapRadiusHandle.setLatLng(getRadiusHandleLatLng(latlng, radiusMeters));
+    }
+
+    if (options.fit) {
+      try { mapInstance.fitBounds(mapCircle.getBounds().pad(0.1)); } catch (e) { /* ignore */ }
+    } else if (options.pan) {
+      mapInstance.panTo(latlng);
+    }
+  }
+
+  function restoreLastValidLocation() {
+    if (!lastValidLocation) return false;
+    writeLocationFields(lastValidLocation);
+    updateMapFromValues(lastValidLocation, { fit: false, pan: false });
+    return true;
+  }
+
+  function syncLocationFieldsFromMap(centerLatLng, radiusKm) {
+    var values = normalizeLocationValues({
+      center_lat: centerLatLng.lat,
+      center_lon: centerLatLng.lng,
+      radius_km: radiusKm
+    });
+    if (!values) return null;
+    writeLocationFields(values);
+    rememberValidLocation(values);
+    return values;
+  }
+
+  function persistLocation(values) {
+    var nextValues = normalizeLocationValues(values || readLocationValuesFromFields());
+    if (!nextValues) {
+      if (restoreLastValidLocation()) {
+        FW.showToast('Enter valid latitude, longitude, and radius values', 'error');
+      } else {
+        FW.showToast('Location settings are not ready yet', 'error');
+      }
+      return;
+    }
+
+    rememberValidLocation(nextValues);
+
+    FW.post('/api/settings', nextValues).then(function(res) {
+      if (res.body.ok) {
+        FW.showToast('Location updated', 'success');
+      } else {
+        FW.showToast(res.body.error || 'Save failed', 'error');
+      }
+    }).catch(function() {
+      FW.showToast('Network error', 'error');
+    });
+  }
+
+  function queueLocationPersist(values) {
+    clearTimeout(locationDebounce);
+    locationDebounce = setTimeout(function() {
+      persistLocation(values);
+    }, DEBOUNCE_MS);
+  }
+
+  function destroyLocationMap() {
+    if (mapInstance) {
+      mapInstance.remove();
+    }
+    mapInstance = null;
+    mapMarker = null;
+    mapCircle = null;
+    mapTileLayer = null;
+    mapRadiusHandle = null;
+  }
+
+  function onLeafletFail(helperText) {
+    if (mapFailureHandled) return;
+    mapFailureHandled = true;
+    clearTimeout(mapLoadTimeout);
+    destroyLocationMap();
+    hideLocationLoading();
+    locationMap.style.display = 'none';
+    locationHelper.textContent = helperText || 'Map unavailable. Enter coordinates manually.';
+    FW.showToast('Map could not be loaded', 'warning');
+  }
+
+  function maybeInitLocationMap() {
+    if (!leafletLoaded || mapFailureHandled || mapInstance || !isLocationCardOpen()) return;
+
+    if (!lastValidLocation) {
+      settingsPromise.then(function() {
+        if (!lastValidLocation) {
+          onLeafletFail('Map unavailable until location settings load. Enter coordinates manually.');
+          return;
+        }
+        maybeInitLocationMap();
+      });
+      return;
+    }
+
+    initMap(lastValidLocation);
+  }
+
+  function toggleLocationCard() {
+    var shouldOpen = !isLocationCardOpen();
+
+    if (shouldOpen && isCalibrationOpen()) {
+      setCalibrationOpen(false);
+    }
+
+    locationBody.style.display = shouldOpen ? '' : 'none';
+    locationToggle.classList.toggle('open', shouldOpen);
+
+    if (!shouldOpen) return;
+
+    if (mapInstance) {
+      setTimeout(function() {
+        if (!mapInstance || !isLocationCardOpen()) return;
+        mapInstance.invalidateSize();
+        if (lastValidLocation) {
+          updateMapFromValues(lastValidLocation, { fit: true, pan: false });
+        }
+      }, 200);
+      return;
+    }
+
+    if (!leafletLoadAttempted) {
+      leafletLoadAttempted = true;
+      loadLeaflet();
+      return;
+    }
+
+    maybeInitLocationMap();
+  }
+
+  locationToggle.addEventListener('click', toggleLocationCard);
+
+  function loadLeaflet() {
+    if (leafletLoaded) {
+      maybeInitLocationMap();
+      return;
+    }
+
+    mapFailureHandled = false;
+    mapTileLoadSucceeded = false;
+    mapTileErrorCount = 0;
+    showLocationLoading('Loading map...');
+    locationMap.style.display = 'none';
+
+    var link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+
+    var script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+
+    mapLoadTimeout = setTimeout(function() {
+      onLeafletFail('Map timed out. Enter coordinates manually.');
+    }, 10000);
+
+    script.onload = function() {
+      clearTimeout(mapLoadTimeout);
+      if (mapFailureHandled) return;
+      leafletLoaded = true;
+      maybeInitLocationMap();
+    };
+
+    script.onerror = function() {
+      clearTimeout(mapLoadTimeout);
+      onLeafletFail('Map assets could not be loaded. Enter coordinates manually.');
+    };
+
+    link.onerror = function() {
+      clearTimeout(mapLoadTimeout);
+      onLeafletFail('Map assets could not be loaded. Enter coordinates manually.');
+    };
+
+    document.head.appendChild(link);
+    document.head.appendChild(script);
+  }
+
+  function clampLat(v) { return Math.max(-90, Math.min(90, v)); }
+  function clampLon(v) { return Math.max(-180, Math.min(180, v)); }
+  function clampRadius(v) { return Math.max(0.1, Math.min(500, v)); }
+
+  function initMap(initialValues) {
+    var values = normalizeLocationValues(initialValues);
+    if (!values) {
+      onLeafletFail('Map unavailable until location settings load. Enter coordinates manually.');
+      return;
+    }
+
+    locationMap.style.display = '';
+    showLocationLoading('Loading map...');
+    mapTileLoadSucceeded = false;
+    mapTileErrorCount = 0;
+
+    var lat = values.center_lat;
+    var lon = values.center_lon;
+    var radiusM = values.radius_km * 1000;
+
+    mapInstance = L.map(locationMap, { zoomControl: true }).setView([lat, lon], LOCATION_INITIAL_ZOOM);
+
+    mapTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap'
+    });
+
+    mapTileLayer.on('tileload', function() {
+      mapTileLoadSucceeded = true;
+      hideLocationLoading();
+    });
+    mapTileLayer.on('load', function() {
+      mapTileLoadSucceeded = true;
+      hideLocationLoading();
+    });
+    mapTileLayer.on('tileerror', function() {
+      if (mapFailureHandled || mapTileLoadSucceeded) return;
+      mapTileErrorCount += 1;
+      if (mapTileErrorCount >= LOCATION_TILE_ERROR_THRESHOLD) {
+        onLeafletFail('Map tiles could not be loaded. Enter coordinates manually.');
+      }
+    });
+    mapTileLayer.addTo(mapInstance);
+
+    mapMarker = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(mapInstance);
+    mapCircle = L.circle([lat, lon], { radius: radiusM, color: '#58a6ff', fillOpacity: 0.15 }).addTo(mapInstance);
+    mapRadiusHandle = L.marker(getRadiusHandleLatLng(L.latLng(lat, lon), radiusM), {
+      draggable: true,
+      autoPan: true,
+      icon: L.divIcon({
+        className: 'location-radius-handle',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      })
+    }).addTo(mapInstance);
+
+    mapMarker.on('drag', function() {
+      var pos = mapMarker.getLatLng();
+      mapCircle.setLatLng(pos);
+      var dragValues = syncLocationFieldsFromMap(pos, mapCircle.getRadius() / 1000);
+      if (dragValues && mapRadiusHandle) {
+        mapRadiusHandle.setLatLng(getRadiusHandleLatLng(pos, dragValues.radius_km * 1000));
+      }
+    });
+    mapMarker.on('dragend', function() {
+      var pos = mapMarker.getLatLng();
+      var dragValues = syncLocationFieldsFromMap(pos, mapCircle.getRadius() / 1000);
+      if (!dragValues) return;
+      updateMapFromValues(dragValues, { fit: false, pan: false });
+      persistLocation(dragValues);
+    });
+
+    mapRadiusHandle.on('drag', function() {
+      var center = mapMarker.getLatLng();
+      var radiusKm = clampRadius(center.distanceTo(mapRadiusHandle.getLatLng()) / 1000);
+      mapCircle.setRadius(radiusKm * 1000);
+      syncLocationFieldsFromMap(center, radiusKm);
+    });
+    mapRadiusHandle.on('dragend', function() {
+      var center = mapMarker.getLatLng();
+      var radiusKm = clampRadius(center.distanceTo(mapRadiusHandle.getLatLng()) / 1000);
+      var radiusValues = syncLocationFieldsFromMap(center, radiusKm);
+      if (!radiusValues) return;
+      updateMapFromValues(radiusValues, { fit: false, pan: false });
+      persistLocation(radiusValues);
+    });
+
+    rememberValidLocation(values);
+    updateMapFromValues(values, { fit: true, pan: false });
+    setTimeout(function() {
+      if (!mapInstance || !isLocationCardOpen()) return;
+      mapInstance.invalidateSize();
+      updateMapFromValues(values, { fit: true, pan: false });
+    }, 200);
+  }
+
+  function handleLocationFieldChange() {
+    var values = readLocationValuesFromFields();
+    if (!values) {
+      if (restoreLastValidLocation()) {
+        FW.showToast('Enter valid latitude, longitude, and radius values', 'error');
+      } else {
+        FW.showToast('Location settings are not ready yet', 'error');
+      }
+      return;
+    }
+
+    writeLocationFields(values);
+    rememberValidLocation(values);
+    updateMapFromValues(values, { fit: false, pan: true });
+    queueLocationPersist(values);
+
+    if (!mapInstance && leafletLoaded && !mapFailureHandled && isLocationCardOpen()) {
+      maybeInitLocationMap();
+    }
+  }
+
+  dCenterLat.addEventListener('change', handleLocationFieldChange);
+  dCenterLon.addEventListener('change', handleLocationFieldChange);
+  dRadiusKm.addEventListener('change', handleLocationFieldChange);
+
+  // --- Calibration card (Story 4.2) ---
+  var calToggle = document.querySelector('.calibration-toggle');
+  var calBody = document.getElementById('calibration-body');
+  var calOrigin = document.getElementById('cal-origin-corner');
+  var calScanDir = document.getElementById('cal-scan-dir');
+  var calZigzag = document.getElementById('cal-zigzag');
+  var calCanvas = document.getElementById('cal-preview-canvas');
+  var calPreviewContainer = document.getElementById('cal-preview-container');
+  var wiringCanvas = document.getElementById('wiring-preview');
+  var wiringLegend = document.getElementById('wiring-legend');
+  var calibrationActive = false;
+  var positioningActive = false;
+  var calPattern = 0; // 0=scan order, 1=panel position
+  var calPatternToggle = document.getElementById('cal-pattern-toggle');
+  var calDebounce = null;
+  var CAL_DEBOUNCE_MS = 50;
+
+  function isCalibrationOpen() {
+    return calBody.style.display !== 'none';
+  }
+
+  function readCalibrationValues() {
+    return {
+      origin_corner: parseInt(calOrigin.value, 10),
+      scan_dir: parseInt(calScanDir.value, 10),
+      zigzag: parseInt(calZigzag.value, 10)
+    };
+  }
+
+  function syncCalibrationFromSettings() {
+    calOrigin.value = dOriginCorner.value || '0';
+    calScanDir.value = dScanDir.value || '0';
+    calZigzag.value = dZigzag.value || '0';
+  }
+
+  function renderCalibrationCanvas() {
+    if (!calCanvas || !calCanvas.getContext || !calPreviewContainer) return;
+    var ctx = calCanvas.getContext('2d');
+    var dims = parseHardwareDimensionsFromInputs();
+
+    if (!dims || dims.matrixWidth <= 0 || dims.matrixHeight <= 0) {
+      calCanvas.width = 0;
+      calCanvas.height = 0;
+      calPreviewContainer.style.display = 'none';
+      return;
+    }
+
+    calPreviewContainer.style.display = '';
+
+    var mw = dims.matrixWidth;
+    var mh = dims.matrixHeight;
+    var originCorner = parseInt(calOrigin.value, 10) || 0;
+    var scanDir = parseInt(calScanDir.value, 10) || 0;
+    var zigzag = parseInt(calZigzag.value, 10) || 0;
+
+    var containerWidth = calPreviewContainer.clientWidth || 300;
+    var aspect = mw / mh;
+    var drawWidth = Math.min(containerWidth, 480);
+    var drawHeight = Math.round(drawWidth / aspect);
+
+    calCanvas.width = drawWidth;
+    calCanvas.height = drawHeight;
+
+    var sx = drawWidth / mw;
+    var sy = drawHeight / mh;
+
+    // Background
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, drawWidth, drawHeight);
+
+    // Tile grid
+    var tp = dims.tilePixels;
+    var tileStepX = tp * sx;
+    var tileStepY = tp * sy;
+    if (tileStepX >= 2 && tileStepY >= 2) {
+      ctx.strokeStyle = '#21262d';
+      ctx.lineWidth = 1;
+      for (var gx = tileStepX; gx < drawWidth; gx += tileStepX) {
+        var x = Math.round(gx) + 0.5;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, drawHeight); ctx.stroke();
+      }
+      for (var gy = tileStepY; gy < drawHeight; gy += tileStepY) {
+        var y = Math.round(gy) + 0.5;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(drawWidth, y); ctx.stroke();
+      }
+    }
+
+    // Position pattern mode: colored tiles with numbers
+    if (calPattern === 1) {
+      var tilesX = dims.tilesX;
+      var tilesY = dims.tilesY;
+      var totalTiles = tilesX * tilesY;
+      for (var tRow = 0; tRow < tilesY; tRow++) {
+        for (var tCol = 0; tCol < tilesX; tCol++) {
+          var tIdx = tRow * tilesX + tCol;
+          var tileHue = tIdx / totalTiles;
+
+          // Dim fill
+          var dimR = Math.round(40 * Math.max(0, Math.cos(tileHue * Math.PI * 2)));
+          var dimG = Math.round(40 * Math.max(0, Math.cos((tileHue - 0.333) * Math.PI * 2)));
+          var dimB = Math.round(40 * Math.max(0, Math.cos((tileHue - 0.667) * Math.PI * 2)));
+          // Bright border
+          var brtR = Math.round(200 * Math.max(0, Math.cos(tileHue * Math.PI * 2)));
+          var brtG = Math.round(200 * Math.max(0, Math.cos((tileHue - 0.333) * Math.PI * 2)));
+          var brtB = Math.round(200 * Math.max(0, Math.cos((tileHue - 0.667) * Math.PI * 2)));
+
+          var tpx = tCol * tp * sx;
+          var tpy = tRow * tp * sy;
+          var tw = tp * sx;
+          var th = tp * sy;
+
+          // Dim fill
+          ctx.fillStyle = 'rgb(' + (dimR + 20) + ',' + (dimG + 20) + ',' + (dimB + 20) + ')';
+          ctx.fillRect(tpx, tpy, tw, th);
+
+          // Bright border
+          ctx.strokeStyle = 'rgb(' + (brtR + 55) + ',' + (brtG + 55) + ',' + (brtB + 55) + ')';
+          ctx.lineWidth = Math.max(1, Math.round(sx));
+          ctx.strokeRect(tpx + 0.5, tpy + 0.5, tw - 1, th - 1);
+
+          // Red corner marker
+          var mSize = Math.max(3, Math.round(Math.min(tw, th) * 0.15));
+          ctx.fillStyle = '#f00';
+          ctx.fillRect(tpx, tpy, mSize, mSize);
+
+          // Tile number centered
+          var fontSize = Math.max(10, Math.round(Math.min(tw, th) * 0.35));
+          ctx.font = 'bold ' + fontSize + 'px sans-serif';
+          ctx.fillStyle = '#fff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(tIdx), tpx + tw / 2, tpy + th / 2);
+        }
+      }
+
+      // Matrix outline
+      ctx.strokeStyle = '#30363d';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, drawWidth, drawHeight);
+      return;
+    }
+
+    // Draw calibration test pattern: numbered pixel traversal showing scan order
+    // Simulate the NeoMatrix pixel mapping based on origin_corner, scan_dir, zigzag
+    var totalPixels = mw * mh;
+    var tilesX = dims.tilesX;
+    var tilesY = dims.tilesY;
+
+    // Build pixel order map to visualize scan direction
+    // For each logical pixel index (0..N-1), compute the (px, py) position
+    // This simulates how NeoMatrix maps pixel indices to XY coordinates
+    var pixelCount = Math.min(totalPixels, 4096); // Cap for performance
+    var stepSize = totalPixels > 4096 ? Math.ceil(totalPixels / 4096) : 1;
+    var positions = [];
+
+    for (var py = 0; py < mh; py++) {
+      for (var px = 0; px < mw; px++) {
+        // Determine tile and pixel within tile
+        var tileCol = Math.floor(px / tp);
+        var tileRow = Math.floor(py / tp);
+        var localX = px % tp;
+        var localY = py % tp;
+
+        // Apply origin corner transform
+        var effTileCol = tileCol;
+        var effTileRow = tileRow;
+        var effLocalX = localX;
+        var effLocalY = localY;
+
+        // Origin corner: 0=TL, 1=TR, 2=BL, 3=BR
+        if (originCorner === 1 || originCorner === 3) {
+          effTileCol = tilesX - 1 - tileCol;
+          effLocalX = tp - 1 - localX;
+        }
+        if (originCorner === 2 || originCorner === 3) {
+          effTileRow = tilesY - 1 - tileRow;
+          effLocalY = tp - 1 - localY;
+        }
+
+        // Scan direction: 0=rows, 1=columns
+        var tileIndex, localIndex;
+        if (scanDir === 0) {
+          // Row-major tile order
+          if (zigzag && (effTileRow % 2 === 1)) {
+            effTileCol = tilesX - 1 - effTileCol;
+          }
+          tileIndex = effTileRow * tilesX + effTileCol;
+          // Local pixel within tile: row-major
+          if (zigzag && (effLocalY % 2 === 1)) {
+            effLocalX = tp - 1 - effLocalX;
+          }
+          localIndex = effLocalY * tp + effLocalX;
+        } else {
+          // Column-major tile order
+          if (zigzag && (effTileCol % 2 === 1)) {
+            effTileRow = tilesY - 1 - effTileRow;
+          }
+          tileIndex = effTileCol * tilesY + effTileRow;
+          // Local pixel within tile: column-major
+          if (zigzag && (effLocalX % 2 === 1)) {
+            effLocalY = tp - 1 - effLocalY;
+          }
+          localIndex = effLocalX * tp + effLocalY;
+        }
+
+        var pixelIndex = tileIndex * (tp * tp) + localIndex;
+        positions.push({ px: px, py: py, idx: pixelIndex });
+      }
+    }
+
+    // Draw pixels colored by their index in the scan order (gradient red -> blue)
+    for (var i = 0; i < positions.length; i++) {
+      var p = positions[i];
+      var t = totalPixels > 1 ? p.idx / (totalPixels - 1) : 0;
+      t = Math.max(0, Math.min(1, t));
+      // Red (start) -> Blue (end) gradient
+      var r = Math.round(248 * (1 - t));
+      var g = Math.round(81 * (1 - t) + 166 * t);
+      var b = Math.round(73 * (1 - t) + 255 * t);
+      ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      var rx = Math.round(p.px * sx);
+      var ry = Math.round(p.py * sy);
+      var rw = Math.max(1, Math.round(sx));
+      var rh = Math.max(1, Math.round(sy));
+      ctx.fillRect(rx, ry, rw, rh);
+    }
+
+    // Draw pixel 0 marker (start) and last pixel marker
+    if (positions.length > 0) {
+      // Find pixel 0 position
+      var startPixel = null;
+      var endPixel = null;
+      for (var j = 0; j < positions.length; j++) {
+        if (positions[j].idx === 0) startPixel = positions[j];
+        if (positions[j].idx === totalPixels - 1) endPixel = positions[j];
+      }
+
+      if (startPixel) {
+        var markerSize = Math.max(4, Math.round(Math.min(sx, sy) * 2));
+        ctx.fillStyle = '#f85149';
+        ctx.fillRect(
+          Math.round(startPixel.px * sx) - 1,
+          Math.round(startPixel.py * sy) - 1,
+          markerSize, markerSize
+        );
+        ctx.fillStyle = '#fff';
+        ctx.font = Math.max(8, Math.round(Math.min(sx, sy) * 3)) + 'px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('0', Math.round(startPixel.px * sx) + markerSize + 2, Math.round(startPixel.py * sy));
+      }
+    }
+
+    // Matrix outline
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, 0, drawWidth, drawHeight);
+  }
+
+  function startCalibrationMode() {
+    if (calibrationActive) return;
+    calibrationActive = true;
+    FW.post('/api/calibration/start', {}).then(function(res) {
+      if (!res.body.ok) {
+        FW.showToast(res.body.error || 'Calibration start failed', 'error');
+        calibrationActive = false;
+      }
+    }).catch(function() {
+      FW.showToast('Network error starting calibration', 'error');
+      calibrationActive = false;
+    });
+  }
+
+  function stopCalibrationMode() {
+    if (!calibrationActive) return;
+    calibrationActive = false;
+    FW.post('/api/calibration/stop', {}).catch(function() {});
+  }
+
+  function startPositioningMode() {
+    if (positioningActive) return;
+    positioningActive = true;
+    FW.post('/api/positioning/start', {}).then(function(res) {
+      if (!res.body.ok) {
+        FW.showToast(res.body.error || 'Positioning start failed', 'error');
+        positioningActive = false;
+      }
+    }).catch(function() {
+      FW.showToast('Network error starting positioning', 'error');
+      positioningActive = false;
+    });
+  }
+
+  function stopPositioningMode() {
+    if (!positioningActive) return;
+    positioningActive = false;
+    FW.post('/api/positioning/stop', {}).catch(function() {});
+  }
+
+  function activatePattern() {
+    if (calPattern === 1) {
+      stopCalibrationMode();
+      startPositioningMode();
+    } else {
+      stopPositioningMode();
+      startCalibrationMode();
+    }
+  }
+
+  function stopAllTestPatterns() {
+    stopCalibrationMode();
+    stopPositioningMode();
+  }
+
+  function setCalibrationOpen(shouldOpen) {
+    calBody.style.display = shouldOpen ? '' : 'none';
+    calToggle.classList.toggle('open', shouldOpen);
+
+    if (shouldOpen) {
+      syncCalibrationFromSettings();
+      renderCalibrationCanvas();
+      activatePattern();
+    } else {
+      stopAllTestPatterns();
+    }
+  }
+
+  // --- Wiring diagram canvas ---
+  function renderWiringCanvas() {
+    if (!wiringCanvas || !wiringCanvas.getContext || !previewContainer) return;
+    var ctx = wiringCanvas.getContext('2d');
+    var dims = parseHardwareDimensionsFromInputs();
+
+    if (!dims || dims.tilesX <= 0 || dims.tilesY <= 0) {
+      wiringCanvas.width = 0;
+      wiringCanvas.height = 0;
+      wiringCanvas.style.display = 'none';
+      if (wiringLegend) wiringLegend.style.display = 'none';
+      return;
+    }
+
+    wiringCanvas.style.display = '';
+    if (wiringLegend) wiringLegend.style.display = '';
+
+    var tilesX = dims.tilesX;
+    var tilesY = dims.tilesY;
+    var originCorner = parseInt(calOrigin.value, 10) || 0;
+    var scanDir = parseInt(calScanDir.value, 10) || 0;
+    var zigzag = parseInt(calZigzag.value, 10) || 0;
+
+    var containerWidth = previewContainer.clientWidth || 300;
+    var aspect = tilesX / tilesY;
+    var drawWidth = Math.min(containerWidth, 480);
+    var drawHeight = Math.round(drawWidth / aspect);
+    if (drawHeight < 60) drawHeight = 60;
+
+    wiringCanvas.width = drawWidth;
+    wiringCanvas.height = drawHeight;
+
+    var cellW = drawWidth / tilesX;
+    var cellH = drawHeight / tilesY;
+
+    // Background
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, drawWidth, drawHeight);
+
+    // Tile grid lines
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 1;
+    for (var gx = 0; gx <= tilesX; gx++) {
+      var x = Math.round(gx * cellW) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, drawHeight); ctx.stroke();
+    }
+    for (var gy = 0; gy <= tilesY; gy++) {
+      var y = Math.round(gy * cellH) + 0.5;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(drawWidth, y); ctx.stroke();
+    }
+
+    // Build tile traversal order (same algorithm as calibration but at tile level)
+    var tilePositions = [];
+    for (var tRow = 0; tRow < tilesY; tRow++) {
+      for (var tCol = 0; tCol < tilesX; tCol++) {
+        var effCol = tCol;
+        var effRow = tRow;
+
+        // Origin corner transform
+        if (originCorner === 1 || originCorner === 3) {
+          effCol = tilesX - 1 - tCol;
+        }
+        if (originCorner === 2 || originCorner === 3) {
+          effRow = tilesY - 1 - tRow;
+        }
+
+        // Scan direction + zigzag
+        var tileIndex;
+        if (scanDir === 0) {
+          // Row-major
+          if (zigzag && (effRow % 2 === 1)) {
+            effCol = tilesX - 1 - effCol;
+          }
+          tileIndex = effRow * tilesX + effCol;
+        } else {
+          // Column-major
+          if (zigzag && (effCol % 2 === 1)) {
+            effRow = tilesY - 1 - effRow;
+          }
+          tileIndex = effCol * tilesY + effRow;
+        }
+
+        tilePositions.push({
+          col: tCol, row: tRow,
+          cx: (tCol + 0.5) * cellW,
+          cy: (tRow + 0.5) * cellH,
+          idx: tileIndex
+        });
+      }
+    }
+
+    // Sort by tile index to get wiring order
+    tilePositions.sort(function(a, b) { return a.idx - b.idx; });
+
+    // Draw cable path (thick blue polyline)
+    if (tilePositions.length > 1) {
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tilePositions[0].cx, tilePositions[0].cy);
+      for (var i = 1; i < tilePositions.length; i++) {
+        ctx.lineTo(tilePositions[i].cx, tilePositions[i].cy);
+      }
+      ctx.stroke();
+
+      // Draw arrowheads along path at each segment midpoint
+      ctx.fillStyle = '#58a6ff';
+      for (var j = 0; j < tilePositions.length - 1; j++) {
+        var ax = tilePositions[j].cx;
+        var ay = tilePositions[j].cy;
+        var bx = tilePositions[j + 1].cx;
+        var by = tilePositions[j + 1].cy;
+        var mx = (ax + bx) / 2;
+        var my = (ay + by) / 2;
+        var angle = Math.atan2(by - ay, bx - ax);
+        var arrowSize = Math.min(cellW, cellH) * 0.18;
+        if (arrowSize < 4) arrowSize = 4;
+        ctx.save();
+        ctx.translate(mx, my);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(arrowSize, 0);
+        ctx.lineTo(-arrowSize * 0.6, -arrowSize * 0.6);
+        ctx.lineTo(-arrowSize * 0.6, arrowSize * 0.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Draw tile index numbers
+    var fontSize = Math.max(10, Math.min(cellW, cellH) * 0.35);
+    ctx.font = 'bold ' + Math.round(fontSize) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e6edf3';
+    for (var k = 0; k < tilePositions.length; k++) {
+      var tp = tilePositions[k];
+      ctx.fillText(String(tp.idx), tp.cx, tp.cy);
+    }
+
+    // Green marker at tile 0 (data input)
+    if (tilePositions.length > 0) {
+      var t0 = tilePositions[0];
+      var markerR = Math.max(5, Math.min(cellW, cellH) * 0.15);
+      ctx.beginPath();
+      ctx.arc(t0.cx, t0.cy - cellH * 0.35, markerR, 0, Math.PI * 2);
+      ctx.fillStyle = '#3fb950';
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold ' + Math.round(markerR * 1.1) + 'px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('IN', t0.cx, t0.cy - cellH * 0.35);
+    }
+
+    // Matrix outline
+    ctx.strokeStyle = '#58a6ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, drawWidth - 2, drawHeight - 2);
+  }
+
+  function onCalibrationChange() {
+    var values = readCalibrationValues();
+
+    // Sync back to hardware fields so Apply picks them up
+    dOriginCorner.value = values.origin_corner;
+    dScanDir.value = values.scan_dir;
+    dZigzag.value = values.zigzag;
+
+    // Instant canvas update
+    renderCalibrationCanvas();
+    renderWiringCanvas();
+
+    // Debounced server POST (persists + updates LED test pattern)
+    clearTimeout(calDebounce);
+    calDebounce = setTimeout(function() {
+      FW.post('/api/settings', {
+        origin_corner: values.origin_corner,
+        scan_dir: values.scan_dir,
+        zigzag: values.zigzag
+      }).then(function(res) {
+        if (!res.body.ok) {
+          FW.showToast(res.body.error || 'Save failed', 'error');
+        } else if (res.body.reboot_required) {
+          FW.showToast('Calibration saved. Reboot required to apply live mapping.', 'warning');
+        } else {
+          FW.showToast('Calibration updated', 'success');
+        }
+      }).catch(function() {
+        FW.showToast('Network error', 'error');
+      });
+    }, CAL_DEBOUNCE_MS);
+  }
+
+  calOrigin.addEventListener('change', onCalibrationChange);
+  calScanDir.addEventListener('change', onCalibrationChange);
+  calZigzag.addEventListener('change', onCalibrationChange);
+
+  function toggleCalibrationCard() {
+    var shouldOpen = !isCalibrationOpen();
+    setCalibrationOpen(shouldOpen);
+  }
+
+  calToggle.addEventListener('click', toggleCalibrationCard);
+
+  // Pattern toggle buttons
+  if (calPatternToggle) {
+    var patternBtns = calPatternToggle.querySelectorAll('.cal-pattern-btn');
+    for (var pi = 0; pi < patternBtns.length; pi++) {
+      patternBtns[pi].addEventListener('click', function() {
+        calPattern = parseInt(this.getAttribute('data-pattern'), 10) || 0;
+        var all = calPatternToggle.querySelectorAll('.cal-pattern-btn');
+        for (var j = 0; j < all.length; j++) all[j].classList.remove('active');
+        this.classList.add('active');
+        renderCalibrationCanvas();
+        activatePattern();
+      });
+    }
+  }
+
+  // Stop all test patterns on page unload
+  window.addEventListener('beforeunload', function() {
+    try {
+      if (calibrationActive) {
+        var xhr1 = new XMLHttpRequest();
+        xhr1.open('POST', '/api/calibration/stop', false);
+        xhr1.setRequestHeader('Content-Type', 'application/json');
+        xhr1.send('{}');
+      }
+      if (positioningActive) {
+        var xhr2 = new XMLHttpRequest();
+        xhr2.open('POST', '/api/positioning/stop', false);
+        xhr2.setRequestHeader('Content-Type', 'application/json');
+        xhr2.send('{}');
+      }
+    } catch (e) { /* best effort */ }
+  });
+
+  // Resize handler for calibration canvas
+  window.addEventListener('resize', function() {
+    if (isCalibrationOpen()) {
+      renderCalibrationCanvas();
+    }
+  });
+
+  // --- Logo upload (Story 4.3) ---
+  var logoUploadZone = document.getElementById('logo-upload-zone');
+  var logoFileInput = document.getElementById('logo-file-input');
+  var logoFileList = document.getElementById('logo-file-list');
+  var btnUploadLogos = document.getElementById('btn-upload-logos');
+  var LOGO_PREVIEW_SIZE = 128;
+  var logoPendingFiles = []; // { file, valid, error, previewDataUrl, row }
+
+  function resetLogoUploadState() {
+    logoPendingFiles = [];
+    logoFileList.innerHTML = '';
+    btnUploadLogos.style.display = 'none';
+  }
+
+  // Drag and drop
+  logoUploadZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    logoUploadZone.classList.add('drag-over');
+  });
+  logoUploadZone.addEventListener('dragleave', function() {
+    logoUploadZone.classList.remove('drag-over');
+  });
+  logoUploadZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    logoUploadZone.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files) {
+      processLogoFiles(e.dataTransfer.files);
+    }
+  });
+
+  // File picker
+  logoFileInput.addEventListener('change', function() {
+    if (logoFileInput.files && logoFileInput.files.length) {
+      processLogoFiles(logoFileInput.files);
+    }
+    logoFileInput.value = '';
+  });
+
+  function processLogoFiles(fileList) {
+    resetLogoUploadState();
+    var files = Array.prototype.slice.call(fileList);
+
+    files.forEach(function(file) {
+      var entry = { file: file, valid: false, error: '', previewDataUrl: null, row: null };
+
+      // Validate extension
+      if (!file.name.toLowerCase().endsWith('.bin')) {
+        entry.error = file.name + ' - invalid format or size (.bin only)';
+        logoPendingFiles.push(entry);
+        renderLogoRow(entry);
+        return;
+      }
+
+      // Validate size
+      if (file.size !== 2048) {
+        entry.error = file.name + ' - invalid format or size (' + file.size + ' bytes, expected 2048)';
+        logoPendingFiles.push(entry);
+        renderLogoRow(entry);
+        return;
+      }
+
+      // Valid — decode RGB565 for preview
+      entry.valid = true;
+      logoPendingFiles.push(entry);
+      renderLogoRow(entry);
+      decodeRgb565Preview(entry);
+    });
+
+    updateUploadButton();
+  }
+
+  function decodeRgb565Preview(entry) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      if (reader.result.byteLength !== 2048) {
+        entry.valid = false;
+        entry.error = 'Decode error: unexpected pixel count';
+        updateRowState(entry);
+        updateUploadButton();
+        return;
+      }
+
+      // Decode RGB565 (big-endian) -> RGBA for canvas
+      var view = new DataView(reader.result);
+      var canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      var ctx = canvas.getContext('2d');
+      var imgData = ctx.createImageData(32, 32);
+      var pixels = imgData.data;
+
+      for (var i = 0; i < 1024; i++) {
+        var px = view.getUint16(i * 2, false); // big-endian
+        var r5 = (px >> 11) & 0x1F;
+        var g6 = (px >> 5) & 0x3F;
+        var b5 = px & 0x1F;
+        pixels[i * 4]     = (r5 << 3) | (r5 >> 2);
+        pixels[i * 4 + 1] = (g6 << 2) | (g6 >> 4);
+        pixels[i * 4 + 2] = (b5 << 3) | (b5 >> 2);
+        pixels[i * 4 + 3] = 255;
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+
+      // Render scaled preview into the row's canvas
+      if (entry.row) {
+        var previewCanvas = entry.row.querySelector('.logo-file-preview');
+        if (previewCanvas && previewCanvas.getContext) {
+          var pctx = previewCanvas.getContext('2d');
+          previewCanvas.width = LOGO_PREVIEW_SIZE;
+          previewCanvas.height = LOGO_PREVIEW_SIZE;
+          pctx.imageSmoothingEnabled = false;
+          pctx.drawImage(canvas, 0, 0, LOGO_PREVIEW_SIZE, LOGO_PREVIEW_SIZE);
+        }
+      }
+    };
+    reader.onerror = function() {
+      entry.valid = false;
+      entry.error = 'File read error';
+      updateRowState(entry);
+      updateUploadButton();
+    };
+    reader.readAsArrayBuffer(entry.file);
+  }
+
+  function renderLogoRow(entry) {
+    var row = document.createElement('div');
+    row.className = 'logo-file-row' + (entry.valid ? '' : ' file-error');
+
+    var preview = document.createElement('canvas');
+    preview.className = 'logo-file-preview';
+    preview.width = LOGO_PREVIEW_SIZE;
+    preview.height = LOGO_PREVIEW_SIZE;
+
+    var info = document.createElement('div');
+    info.className = 'logo-file-info';
+    var nameEl = document.createElement('span');
+    nameEl.className = 'logo-file-name';
+    nameEl.textContent = entry.file.name;
+    var statusEl = document.createElement('span');
+    statusEl.className = 'logo-file-status' + (entry.error ? ' status-error' : '');
+    statusEl.textContent = entry.error || (entry.valid ? 'Ready' : '');
+    info.appendChild(nameEl);
+    info.appendChild(statusEl);
+
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'logo-file-remove';
+    removeBtn.textContent = '\u00D7';
+    removeBtn.setAttribute('aria-label', 'Remove');
+    removeBtn.addEventListener('click', function() {
+      var idx = logoPendingFiles.indexOf(entry);
+      if (idx >= 0) logoPendingFiles.splice(idx, 1);
+      row.parentNode.removeChild(row);
+      updateUploadButton();
+    });
+
+    row.appendChild(preview);
+    row.appendChild(info);
+    row.appendChild(removeBtn);
+
+    entry.row = row;
+    logoFileList.appendChild(row);
+  }
+
+  function updateRowState(entry) {
+    if (!entry.row) return;
+    entry.row.className = 'logo-file-row' + (entry.valid ? '' : ' file-error');
+    var statusEl = entry.row.querySelector('.logo-file-status');
+    if (statusEl) {
+      statusEl.className = 'logo-file-status' + (entry.error ? ' status-error' : '');
+      statusEl.textContent = entry.error || (entry.valid ? 'Ready' : '');
+    }
+  }
+
+  function updateUploadButton() {
+    var hasValid = logoPendingFiles.some(function(e) { return e.valid; });
+    btnUploadLogos.style.display = hasValid ? '' : 'none';
+  }
+
+  // Upload queue: POST one file at a time to /api/logos
+  btnUploadLogos.addEventListener('click', function() {
+    var validFiles = logoPendingFiles.filter(function(e) { return e.valid; });
+    if (validFiles.length === 0) return;
+
+    btnUploadLogos.disabled = true;
+    btnUploadLogos.textContent = 'Uploading...';
+
+    var successes = 0;
+    var failures = 0;
+    var idx = 0;
+    var failureMessages = [];
+
+    function uploadNext() {
+      if (idx >= validFiles.length) {
+        // All done
+        btnUploadLogos.disabled = false;
+        btnUploadLogos.textContent = 'Upload';
+
+        if (successes > 0 && failures === 0) {
+          FW.showToast(successes + ' logo' + (successes > 1 ? 's' : '') + ' uploaded', 'success');
+        } else if (successes > 0 && failures > 0) {
+          FW.showToast(successes + ' uploaded, ' + failures + ' failed: ' + failureMessages.join('; '), 'error');
+        } else {
+          FW.showToast(failureMessages.join('; ') || 'All uploads failed', 'error');
+        }
+
+        // Remove successfully uploaded entries
+        logoPendingFiles = logoPendingFiles.filter(function(e) {
+          if (e._uploaded) {
+            if (e.row && e.row.parentNode) e.row.parentNode.removeChild(e.row);
+            return false;
+          }
+          return true;
+        });
+        updateUploadButton();
+        // Refresh logo list after upload completes
+        if (successes > 0) loadLogoList();
+        return;
+      }
+
+      var entry = validFiles[idx];
+      idx++;
+
+      var statusEl = entry.row ? entry.row.querySelector('.logo-file-status') : null;
+      if (statusEl) {
+        statusEl.className = 'logo-file-status';
+        statusEl.textContent = 'Uploading...';
+      }
+
+      var formData = new FormData();
+      formData.append('file', entry.file, entry.file.name);
+
+      fetch('/api/logos', {
+        method: 'POST',
+        body: formData
+      }).then(function(res) {
+        return res.json().then(function(body) {
+          return { status: res.status, body: body };
+        });
+      }).then(function(res) {
+        if (res.body.ok) {
+          successes++;
+          entry._uploaded = true;
+          if (entry.row) {
+            entry.row.className = 'logo-file-row file-ok';
+          }
+          if (statusEl) {
+            statusEl.className = 'logo-file-status status-ok';
+            statusEl.textContent = 'Uploaded';
+          }
+        } else {
+          failures++;
+          entry.valid = false;
+          entry.error = res.body.error || 'Upload failed';
+          failureMessages.push(entry.file.name + ' - ' + entry.error);
+          if (entry.row) {
+            entry.row.className = 'logo-file-row file-error';
+          }
+          if (statusEl) {
+            statusEl.className = 'logo-file-status status-error';
+            statusEl.textContent = entry.error;
+          }
+        }
+        uploadNext();
+      }).catch(function() {
+        failures++;
+        entry.valid = false;
+        entry.error = 'Network error';
+        failureMessages.push(entry.file.name + ' - Network error');
+        if (entry.row) {
+          entry.row.className = 'logo-file-row file-error';
+        }
+        if (statusEl) {
+          statusEl.className = 'logo-file-status status-error';
+          statusEl.textContent = 'Network error';
+        }
+        uploadNext();
+      });
+    }
+
+    uploadNext();
+  });
+
+  // --- Logo list management (Story 4.4) ---
+  var logoListEl = document.getElementById('logo-list');
+  var logoEmptyState = document.getElementById('logo-empty-state');
+  var logoStorageSummary = document.getElementById('logo-storage-summary');
+  var logoListConfirmingRow = null; // only one row in confirm state at a time
+  var logoDeleteInFlight = false;
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    var kb = bytes / 1024;
+    if (kb < 1024) return Math.round(kb) + ' KB';
+    var mb = kb / 1024;
+    return (Math.round(mb * 10) / 10) + ' MB';
+  }
+
+  function loadLogoList() {
+    FW.get('/api/logos').then(function(res) {
+      if (!res.body.ok) {
+        FW.showToast(res.body.error || 'Could not load logos. Check the device and try again.', 'error');
+        return;
+      }
+
+      var logos = res.body.data || [];
+      var storage = res.body.storage || {};
+
+      // Sort deterministically by name for stable order
+      logos.sort(function(a, b) {
+        return a.name.localeCompare(b.name);
+      });
+
+      // Storage summary
+      if (storage.used !== undefined && storage.total !== undefined) {
+        logoStorageSummary.textContent = 'Storage: ' + formatBytes(storage.used) + ' / ' + formatBytes(storage.total) + ' used (' + (storage.logo_count || 0) + ' logos)';
+        logoStorageSummary.style.display = '';
+      } else {
+        logoStorageSummary.style.display = 'none';
+      }
+
+      // Empty state vs list
+      logoListEl.innerHTML = '';
+      logoListConfirmingRow = null;
+      if (logos.length === 0) {
+        logoEmptyState.style.display = '';
+        return;
+      }
+      logoEmptyState.style.display = 'none';
+
+      logos.forEach(function(logo) {
+        renderLogoListRow(logo);
+      });
+    }).catch(function() {
+      FW.showToast('Cannot reach the device to load logos. Check connection and try again.', 'error');
+    });
+  }
+
+  function renderLogoListRow(logo) {
+    var row = document.createElement('div');
+    row.className = 'logo-list-row';
+    row.setAttribute('data-filename', logo.name);
+
+    // Thumbnail canvas — load binary from device and decode RGB565
+    var thumb = document.createElement('canvas');
+    thumb.className = 'logo-list-thumb';
+    thumb.width = 48;
+    thumb.height = 48;
+
+    var info = document.createElement('div');
+    info.className = 'logo-list-info';
+    var nameEl = document.createElement('span');
+    nameEl.className = 'logo-list-name';
+    nameEl.textContent = logo.name;
+    var sizeEl = document.createElement('span');
+    sizeEl.className = 'logo-list-size';
+    sizeEl.textContent = formatBytes(logo.size);
+    info.appendChild(nameEl);
+    info.appendChild(sizeEl);
+
+    var actions = document.createElement('div');
+    actions.className = 'logo-list-actions';
+
+    var deleteBtn = document.createElement('button');
+    deleteBtn.className = 'logo-list-delete';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.type = 'button';
+    deleteBtn.addEventListener('click', function() {
+      showInlineConfirm(row, logo.name, actions);
+    });
+    actions.appendChild(deleteBtn);
+
+    row.appendChild(thumb);
+    row.appendChild(info);
+    row.appendChild(actions);
+    logoListEl.appendChild(row);
+
+    // Load thumbnail preview from device
+    loadLogoThumbnail(thumb, logo.name);
+  }
+
+  function loadLogoThumbnail(canvas, filename) {
+    fetch('/logos/' + encodeURIComponent(filename))
+      .then(function(res) {
+        if (!res.ok) return null;
+        return res.arrayBuffer();
+      })
+      .then(function(buf) {
+        if (!buf || buf.byteLength !== 2048) return;
+        var view = new DataView(buf);
+        var ctx = canvas.getContext('2d');
+        var imgData = ctx.createImageData(32, 32);
+        var d = imgData.data;
+        for (var i = 0; i < 1024; i++) {
+          var px = view.getUint16(i * 2, false); // big-endian
+          var r5 = (px >> 11) & 0x1F;
+          var g6 = (px >> 5) & 0x3F;
+          var b5 = px & 0x1F;
+          d[i * 4]     = (r5 << 3) | (r5 >> 2);
+          d[i * 4 + 1] = (g6 << 2) | (g6 >> 4);
+          d[i * 4 + 2] = (b5 << 3) | (b5 >> 2);
+          d[i * 4 + 3] = 255;
+        }
+        // Draw 32x32 to offscreen then scale to canvas
+        var offscreen = document.createElement('canvas');
+        offscreen.width = 32;
+        offscreen.height = 32;
+        offscreen.getContext('2d').putImageData(imgData, 0, 0);
+        canvas.width = 48;
+        canvas.height = 48;
+        ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(offscreen, 0, 0, 48, 48);
+      })
+      .catch(function() { /* thumbnail load failed — leave blank */ });
+  }
+
+  function showInlineConfirm(row, filename, actionsEl) {
+    // Dismiss any other confirming row first
+    if (logoListConfirmingRow && logoListConfirmingRow !== row) {
+      resetRowActions(logoListConfirmingRow);
+    }
+    logoListConfirmingRow = row;
+
+    actionsEl.innerHTML = '';
+
+    var text = document.createElement('span');
+    text.className = 'logo-list-confirm-text';
+    text.textContent = 'Delete ' + filename + '?';
+
+    var confirmBtn = document.createElement('button');
+    confirmBtn.className = 'logo-list-confirm-btn';
+    confirmBtn.textContent = 'Confirm';
+    confirmBtn.type = 'button';
+    confirmBtn.addEventListener('click', function() {
+      executeDelete(row, filename, actionsEl, confirmBtn);
+    });
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'logo-list-cancel-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', function() {
+      resetRowActions(row);
+      logoListConfirmingRow = null;
+    });
+
+    actionsEl.appendChild(text);
+    actionsEl.appendChild(confirmBtn);
+    actionsEl.appendChild(cancelBtn);
+  }
+
+  function resetRowActions(row) {
+    var actionsEl = row.querySelector('.logo-list-actions');
+    if (!actionsEl) return;
+    var filename = row.getAttribute('data-filename');
+    actionsEl.innerHTML = '';
+    var deleteBtn = document.createElement('button');
+    deleteBtn.className = 'logo-list-delete';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.type = 'button';
+    deleteBtn.addEventListener('click', function() {
+      showInlineConfirm(row, filename, actionsEl);
+    });
+    actionsEl.appendChild(deleteBtn);
+  }
+
+  function executeDelete(row, filename, actionsEl, confirmBtn) {
+    if (logoDeleteInFlight) return;
+    logoDeleteInFlight = true;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Deleting...';
+
+    FW.del('/api/logos/' + encodeURIComponent(filename))
+      .then(function(res) {
+        logoDeleteInFlight = false;
+        logoListConfirmingRow = null;
+        if (res.body.ok) {
+          FW.showToast('Logo deleted', 'success');
+          loadLogoList();
+        } else {
+          var errMsg = res.body.error || 'Delete failed';
+          if (res.body.code === 'NOT_FOUND') errMsg = filename + ' not found';
+          FW.showToast(errMsg, 'error');
+          resetRowActions(row);
+        }
+      })
+      .catch(function() {
+        logoDeleteInFlight = false;
+        logoListConfirmingRow = null;
+        FW.showToast('Cannot reach the device to delete ' + filename + '. Check connection and try again.', 'error');
+        resetRowActions(row);
+      });
+  }
+
+  // --- Unified Apply ---
+  btnApplyAll.addEventListener('click', function() {
+    var payload = collectPayload();
+    if (payload === null) return; // validation failed
+
+    if (Object.keys(payload).length === 0) {
+      clearDirtyState();
+      return;
+    }
+
+    applyWithReboot(payload, btnApplyAll, 'Apply Changes');
+
+    // Clear dirty state after successful send (applyWithReboot handles UI)
+    // We clear immediately since applyWithReboot manages the button state
+    clearDirtyState();
+  });
+
+  // --- Mode Picker (Story dl-1.5) ---
+  var modeStatusName = document.getElementById('modeStatusName');
+  var modeStatusReason = document.getElementById('modeStatusReason');
+  var modeCardsList = document.getElementById('modeCardsList');
+  var modeSwitchInFlight = false;
+
+  function updateModeStatus(data) {
+    var activeMode = null;
+    if (data.modes && data.active) {
+      for (var i = 0; i < data.modes.length; i++) {
+        if (data.modes[i].id === data.active) {
+          activeMode = data.modes[i];
+          break;
+        }
+      }
+    }
+    // Batch DOM update — status line + card subtitles in one operation
+    if (modeStatusName && activeMode) {
+      modeStatusName.textContent = activeMode.name;
+    }
+    if (modeStatusReason) {
+      modeStatusReason.textContent = data.state_reason || 'unknown';
+    }
+    // Update mode cards (active state + subtitle)
+    if (modeCardsList) {
+      var cards = modeCardsList.querySelectorAll('.mode-card');
+      for (var j = 0; j < cards.length; j++) {
+        var cardId = cards[j].getAttribute('data-mode-id');
+        var subtitle = cards[j].querySelector('.mode-card-subtitle');
+        if (cardId === data.active) {
+          cards[j].classList.add('active');
+          if (subtitle) subtitle.textContent = data.state_reason || '';
+        } else {
+          cards[j].classList.remove('active');
+          if (subtitle) subtitle.textContent = '';
+        }
+        cards[j].classList.remove('switching');
+      }
+    }
+  }
+
+  function renderModeCards(data) {
+    if (!modeCardsList || !data.modes) return;
+    modeCardsList.innerHTML = '';
+    for (var i = 0; i < data.modes.length; i++) {
+      var mode = data.modes[i];
+      var card = document.createElement('div');
+      card.className = 'mode-card' + (mode.id === data.active ? ' active' : '');
+      card.setAttribute('data-mode-id', mode.id);
+      var nameEl = document.createElement('div');
+      nameEl.className = 'mode-card-name';
+      nameEl.textContent = mode.name;
+      card.appendChild(nameEl);
+      var subtitleEl = document.createElement('div');
+      subtitleEl.className = 'mode-card-subtitle';
+      subtitleEl.textContent = (mode.id === data.active) ? (data.state_reason || '') : '';
+      card.appendChild(subtitleEl);
+      card.addEventListener('click', (function(modeId) {
+        return function() { switchMode(modeId); };
+      })(mode.id));
+      modeCardsList.appendChild(card);
+    }
+  }
+
+  function switchMode(modeId) {
+    if (modeSwitchInFlight) return;
+    modeSwitchInFlight = true;
+    // Set switching state on the target card
+    if (modeCardsList) {
+      var cards = modeCardsList.querySelectorAll('.mode-card');
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].getAttribute('data-mode-id') === modeId) {
+          cards[i].classList.add('switching');
+          var sub = cards[i].querySelector('.mode-card-subtitle');
+          if (sub) sub.textContent = 'Switching...';
+        }
+      }
+    }
+    FW.post('/api/display/mode', { mode_id: modeId }).then(function(res) {
+      modeSwitchInFlight = false;
+      if (!res.body || !res.body.ok) {
+        var errMsg = (res.body && res.body.error) ? res.body.error : 'Mode switch failed';
+        FW.showToast(errMsg, 'error');
+        loadDisplayModes(); // refresh to clear switching state
+        return;
+      }
+      // Re-fetch full mode state for consistent update (AC #4, #8)
+      loadDisplayModes();
+    }).catch(function() {
+      modeSwitchInFlight = false;
+      FW.showToast('Cannot reach device. Check connection.', 'error');
+      loadDisplayModes();
+    });
+  }
+
+  function loadDisplayModes() {
+    FW.get('/api/display/modes').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) {
+        FW.showToast('Failed to load display modes', 'error');
+        return;
+      }
+      var data = res.body.data;
+      renderModeCards(data);
+      updateModeStatus(data);
+    }).catch(function() {
+      FW.showToast('Cannot reach device to load display modes. Check connection.', 'error');
+    });
+  }
+
+  // --- Firmware card / OTA Upload (Story fn-1.6) ---
+  var otaUploadZone = document.getElementById('ota-upload-zone');
+  var otaFileInput = document.getElementById('ota-file-input');
+  var otaFileInfo = document.getElementById('ota-file-info');
+  var otaFileName = document.getElementById('ota-file-name');
+  var btnUploadFirmware = document.getElementById('btn-upload-firmware');
+  var otaProgress = document.getElementById('ota-progress');
+  var otaProgressBar = document.getElementById('ota-progress-bar');
+  var otaProgressText = document.getElementById('ota-progress-text');
+  var otaReboot = document.getElementById('ota-reboot');
+  var otaRebootText = document.getElementById('ota-reboot-text');
+  var fwVersion = document.getElementById('fw-version');
+  var rollbackBanner = document.getElementById('rollback-banner');
+  var btnDismissRollback = document.getElementById('btn-dismiss-rollback');
+  var otaPendingFile = null;
+  var OTA_MAX_SIZE = 1572864; // 1.5MB = 0x180000
+  var btnCancelOta = document.getElementById('btn-cancel-ota');
+
+  function resetOtaUploadState() {
+    otaPendingFile = null;
+    otaUploadZone.style.display = '';
+    otaFileInfo.style.display = 'none';
+    otaProgress.style.display = 'none';
+    otaReboot.style.display = 'none';
+    otaProgressBar.style.width = '0%';
+    otaProgress.setAttribute('aria-valuenow', '0');
+    otaProgressText.textContent = '0%';
+    // Reset reboot text and color so a subsequent upload starts clean
+    otaRebootText.textContent = '';
+    otaRebootText.style.color = '';
+  }
+
+  // Cancel file selection — return to upload zone
+  if (btnCancelOta) {
+    btnCancelOta.addEventListener('click', function() {
+      resetOtaUploadState();
+    });
+  }
+
+  function loadFirmwareStatus() {
+    FW.get('/api/status').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) return;
+      var d = res.body.data;
+      if (d.firmware_version) {
+        fwVersion.textContent = 'Version: v' + d.firmware_version;
+      }
+      if (d.rollback_detected && !d.rollback_acknowledged) {
+        rollbackBanner.style.display = '';
+      } else {
+        rollbackBanner.style.display = 'none';
+      }
+    }).catch(function() { /* best-effort */ });
+  }
+
+  // Rollback banner dismiss
+  if (btnDismissRollback) {
+    btnDismissRollback.addEventListener('click', function() {
+      FW.post('/api/ota/ack-rollback', {}).then(function(res) {
+        if (res.body.ok) {
+          rollbackBanner.style.display = 'none';
+        }
+      }).catch(function() {
+        FW.showToast('Could not dismiss rollback banner', 'error');
+      });
+    });
+  }
+
+  // Click/keyboard to open file picker
+  otaUploadZone.addEventListener('click', function() {
+    otaFileInput.click();
+  });
+  otaUploadZone.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      otaFileInput.click();
+    }
+  });
+
+  // Drag and drop
+  otaUploadZone.addEventListener('dragenter', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.add('drag-over');
+  });
+  otaUploadZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.add('drag-over');
+  });
+  otaUploadZone.addEventListener('dragleave', function(e) {
+    // Only remove drag-over when the cursor truly leaves the zone, not
+    // when it moves over a child element (which fires dragleave on parent).
+    if (!otaUploadZone.contains(e.relatedTarget)) {
+      otaUploadZone.classList.remove('drag-over');
+    }
+  });
+  otaUploadZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      validateAndSelectFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // File input change
+  otaFileInput.addEventListener('change', function() {
+    if (otaFileInput.files && otaFileInput.files.length > 0) {
+      validateAndSelectFile(otaFileInput.files[0]);
+    }
+    otaFileInput.value = '';
+  });
+
+  function validateAndSelectFile(file) {
+    // Size check — reject empty files and files exceeding the OTA partition limit
+    if (file.size === 0) {
+      FW.showToast('File is empty \u2014 select a valid firmware .bin file', 'error');
+      resetOtaUploadState();
+      return;
+    }
+    if (file.size > OTA_MAX_SIZE) {
+      FW.showToast('File too large \u2014 maximum 1.5MB for OTA partition', 'error');
+      resetOtaUploadState();
+      return;
+    }
+
+    // Magic byte check
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var bytes = new Uint8Array(e.target.result);
+      if (bytes[0] !== 0xE9) {
+        FW.showToast('Not a valid ESP32 firmware image', 'error');
+        resetOtaUploadState();
+        return;
+      }
+      // Valid — show file info
+      otaPendingFile = file;
+      otaUploadZone.style.display = 'none';
+      otaFileInfo.style.display = '';
+      otaFileName.textContent = file.name;
+    };
+    reader.onerror = function() {
+      FW.showToast('Could not read file', 'error');
+      resetOtaUploadState();
+    };
+    reader.readAsArrayBuffer(file.slice(0, 4));
+  }
+
+  // Upload firmware via XMLHttpRequest (not fetch — XHR required for upload progress events)
+  if (btnUploadFirmware) {
+    btnUploadFirmware.addEventListener('click', function() {
+      if (!otaPendingFile) return;
+      uploadFirmware(otaPendingFile);
+    });
+  }
+
+  function uploadFirmware(file) {
+    // Prevent double-submit (e.g. rapid double-tap on slow connections)
+    if (btnUploadFirmware) btnUploadFirmware.disabled = true;
+
+    var xhr = new XMLHttpRequest();
+    var formData = new FormData();
+    formData.append('firmware', file, file.name);
+
+    // Show progress bar
+    otaFileInfo.style.display = 'none';
+    otaProgress.style.display = '';
+
+    xhr.upload.onprogress = function(e) {
+      if (e.lengthComputable) {
+        var pct = Math.round((e.loaded / e.total) * 100);
+        updateOtaProgress(pct);
+      }
+    };
+
+    xhr.onload = function() {
+      if (btnUploadFirmware) btnUploadFirmware.disabled = false;
+      if (xhr.status === 200) {
+        try {
+          var resp = JSON.parse(xhr.responseText);
+          if (resp.ok) {
+            updateOtaProgress(100);
+            startRebootCountdown();
+          } else {
+            FW.showToast(resp.error || 'Upload failed', 'error');
+            resetOtaUploadState();
+          }
+        } catch (e) {
+          FW.showToast('Upload failed \u2014 invalid response', 'error');
+          resetOtaUploadState();
+        }
+      } else {
+        try {
+          var errResp = JSON.parse(xhr.responseText);
+          FW.showToast(errResp.error || 'Upload failed', 'error');
+        } catch (e) {
+          FW.showToast('Upload failed \u2014 status ' + xhr.status, 'error');
+        }
+        resetOtaUploadState();
+      }
+    };
+
+    xhr.onerror = function() {
+      if (btnUploadFirmware) btnUploadFirmware.disabled = false;
+      FW.showToast('Connection lost during upload', 'error');
+      resetOtaUploadState();
+    };
+
+    xhr.open('POST', '/api/ota/upload');
+    xhr.send(formData);
+  }
+
+  function updateOtaProgress(pct) {
+    otaProgressBar.style.width = pct + '%';
+    otaProgress.setAttribute('aria-valuenow', String(pct));
+    otaProgressText.textContent = pct + '%';
+  }
+
+  function startRebootCountdown() {
+    otaProgress.style.display = 'none';
+    otaReboot.style.display = '';
+    var count = 3;
+    otaRebootText.textContent = 'Rebooting in ' + count + '...';
+    var countdownInterval = setInterval(function() {
+      count--;
+      if (count > 0) {
+        otaRebootText.textContent = 'Rebooting in ' + count + '...';
+      } else {
+        clearInterval(countdownInterval);
+        otaRebootText.textContent = 'Waiting for device...';
+        startRebootPolling();
+      }
+    }, 1000);
+  }
+
+  function startRebootPolling() {
+    var attempts = 0;
+    var maxAttempts = 20;
+    var done = false;  // prevents double-finish if timeout fires while a request is in-flight
+    var pollInterval = setInterval(function() {
+      if (done) return;
+      // Check timeout BEFORE issuing the next request so a slow final request
+      // cannot trigger both the success toast and the timeout message.
+      if (attempts >= maxAttempts) {
+        clearInterval(pollInterval);
+        done = true;
+        otaRebootText.textContent = 'Device unreachable \u2014 try refreshing. The device may have changed IP address after reboot.';
+        otaRebootText.style.color = getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#d29922';
+        return;
+      }
+      attempts++;
+      FW.get('/api/status?_=' + Date.now()).then(function(res) {
+        if (done) return;  // timeout already fired; discard late response
+        if (res.body && res.body.ok && res.body.data) {
+          clearInterval(pollInterval);
+          done = true;
+          var newVersion = res.body.data.firmware_version || '';
+          FW.showToast('Updated to v' + newVersion, 'success');
+          fwVersion.textContent = 'Version: v' + newVersion;
+          resetOtaUploadState();
+          // Check rollback state after update
+          if (res.body.data.rollback_detected && !res.body.data.rollback_acknowledged) {
+            rollbackBanner.style.display = '';
+          } else {
+            rollbackBanner.style.display = 'none';
+          }
+        }
+      }).catch(function() {
+        // Device not yet reachable — keep polling
+      });
+    }, 3000);
+  }
+
+  // --- Settings Export (Story fn-1.6) ---
+  var btnExportSettings = document.getElementById('btn-export-settings');
+  if (btnExportSettings) {
+    btnExportSettings.addEventListener('click', function() {
+      // Direct navigation triggers browser download via Content-Disposition header
+      window.location.href = '/api/settings/export';
+    });
+  }
+
+  // --- Init ---
+  var settingsPromise = loadSettings();
+
+  // Load firmware status (version, rollback) on page load (Story fn-1.6)
+  loadFirmwareStatus();
+
+  // Load display modes on page load (Story dl-1.5)
+  loadDisplayModes();
+
+  // Load the logo list on page load
+  loadLogoList();
+
+  // Fetch /api/layout for initial canvas (best-effort)
+  FW.get('/api/layout').then(function(res) {
+    if (!res.body || !res.body.ok || !res.body.data || hardwareInputDirty) return;
+    var layout = normalizeLayoutFromApi(res.body.data);
+    if (!layout) return;
+
+    suppressHardwareInputHandler = true;
+    dTilesX.value = layout.hardware.tilesX;
+    dTilesY.value = layout.hardware.tilesY;
+    dTilePixels.value = layout.hardware.tilePixels;
+    suppressHardwareInputHandler = false;
+    setResolutionText({
+      matrixWidth: layout.matrixWidth,
+      matrixHeight: layout.matrixHeight
+    });
+    renderLayoutCanvas(layout);
+    renderWiringCanvas();
+  }).catch(function() {
+    // Fallback: render from settings-loaded form values.
+    settingsPromise.then(function() {
+      if (!hardwareInputDirty) {
+        updateHwResolution();
+        updatePreviewFromInputs();
+      }
+    });
+  });
+})();
+
+
+]]></file>
+<file id="6a793299" path="firmware/data-src/style.css" label="STYLESHEET"><![CDATA[
+
+/* FlightWall shared design tokens and layout */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--text-muted:#8b949e;
+  --primary:#58a6ff;--primary-hover:#79c0ff;
+  --error:#f85149;--success:#3fb950;--warning:#d29922;
+  --radius:8px;--gap:16px;
+}
+html{font-size:16px}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;justify-content:center;
+  padding:0;margin:0;
+  -webkit-text-size-adjust:100%;
+}
+
+/* Wizard layout */
+.wizard{
+  width:100%;max-width:480px;min-height:100vh;
+  display:flex;flex-direction:column;
+  padding:var(--gap);
+}
+.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
+.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
+.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
+
+.step{display:none}
+.step.active{display:block}
+.step h2{font-size:1.125rem;margin-bottom:8px}
+.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
+.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
+
+/* Form fields */
+.form-fields{display:flex;flex-direction:column;gap:8px}
+.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
+.form-fields input[type="text"],
+.form-fields input[type="password"]{
+  width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+}
+.form-fields input:focus{border-color:var(--primary)}
+.form-fields input.input-error{border-color:var(--error)}
+.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
+
+/* Scan states */
+.scan-status{text-align:center;padding:var(--gap) 0}
+.scan-msg{color:var(--text-muted);margin-bottom:8px}
+.spinner{
+  width:24px;height:24px;margin:0 auto;
+  border:3px solid var(--border);border-top-color:var(--primary);
+  border-radius:50%;animation:spin 0.8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Scan results */
+.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
+.scan-row{
+  padding:12px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
+  transition:border-color 0.15s;
+}
+.scan-row:hover,.scan-row:active{border-color:var(--primary)}
+.scan-row .ssid{font-size:0.9375rem}
+.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
+
+/* Link button */
+.link-btn{
+  background:none;border:none;color:var(--primary);
+  font-size:0.875rem;cursor:pointer;padding:8px 0;
+  text-decoration:underline;
+}
+.link-btn:hover{color:var(--primary-hover)}
+
+/* Wizard navigation */
+.wizard-nav{
+  display:flex;justify-content:space-between;
+  padding:var(--gap) 0;flex-shrink:0;
+  border-top:1px solid var(--border);
+}
+.nav-btn{
+  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--surface);
+  color:var(--text);cursor:pointer;min-width:110px;
+  transition:background 0.15s,border-color 0.15s;
+}
+.nav-btn:hover{border-color:var(--text-muted)}
+.nav-btn-primary{
+  background:var(--primary);color:#0d1117;border-color:var(--primary);
+  font-weight:600;
+}
+.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.nav-btn-save{
+  background:var(--success);color:#0d1117;border-color:var(--success);
+  font-weight:600;
+}
+.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
+.nav-btn:disabled{opacity:0.5;cursor:default}
+
+/* Geolocation button (Step 3) */
+.geo-btn{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--primary);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;margin-bottom:8px;
+  transition:background 0.15s,color 0.15s;
+}
+.geo-btn:hover{background:var(--primary);color:#0d1117}
+.geo-btn:disabled{opacity:0.5;cursor:default}
+.geo-status{font-size:0.8125rem;margin-bottom:8px}
+.geo-ok{color:var(--success)}
+.geo-error{color:var(--text-muted)}
+.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
+
+/* Resolution text (Step 4) */
+.resolution-text{
+  color:var(--primary);font-size:0.9375rem;
+  font-weight:500;margin-top:var(--gap);text-align:center;
+}
+
+/* Review cards (Step 5) */
+.review-sections{display:flex;flex-direction:column;gap:8px}
+.review-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px;cursor:pointer;
+  transition:border-color 0.15s;
+}
+.review-card:hover,.review-card:active{border-color:var(--primary)}
+.review-card-header{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:8px;
+}
+.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
+.review-edit{color:var(--primary);font-size:0.8125rem}
+.review-item{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:2px 0;font-size:0.875rem;
+}
+.review-label{color:var(--text-muted)}
+.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
+
+/* Dashboard layout */
+.dashboard{
+  width:100%;max-width:480px;
+  display:flex;flex-direction:column;
+  padding:var(--gap);
+}
+.dash-header{text-align:center;padding:var(--gap) 0}
+.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
+.dash-header nav{margin-top:8px}
+.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
+.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
+.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
+
+/* Cards */
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:var(--gap);
+}
+.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
+.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
+.card label:first-of-type{margin-top:0}
+.card input[type="range"]{width:100%;accent-color:var(--primary)}
+.card .range-row{display:flex;align-items:center;gap:8px}
+.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
+.card .rgb-row{display:flex;gap:8px}
+.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
+.card .rgb-row input[type="number"]{
+  width:100%;padding:8px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;text-align:center;
+  -moz-appearance:textfield;
+}
+.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
+.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.card .rgb-row input:focus{border-color:var(--primary)}
+.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
+.color-preview{
+  height:24px;border-radius:4px;margin-top:8px;
+  border:1px solid var(--border);
+}
+
+/* Apply button (dashboard cards) */
+.apply-btn{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  margin-top:var(--gap);
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+}
+.apply-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.apply-btn:disabled{opacity:0.5;cursor:default}
+
+/* Unified apply bar */
+.apply-bar{
+  position:sticky;bottom:0;z-index:100;
+  background:var(--surface);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  padding:12px var(--gap);margin-top:var(--gap);
+  display:flex;justify-content:space-between;align-items:center;
+  box-shadow:0 -4px 12px rgba(0,0,0,0.4);
+}
+.apply-bar-text{font-size:0.875rem;color:var(--primary);font-weight:500}
+.apply-bar-btn{
+  padding:10px 24px;font-size:1rem;
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+  white-space:nowrap;
+}
+.apply-bar-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.apply-bar-btn:disabled{opacity:0.5;cursor:default}
+
+/* Card form fields (dashboard) */
+.card .form-fields{display:flex;flex-direction:column;gap:4px}
+.card .form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
+.card .form-fields label:first-child{margin-top:0}
+.card .form-fields input[type="text"],
+.card .form-fields input[type="password"]{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+}
+.card .form-fields input:focus{border-color:var(--primary)}
+
+/* Scan inline (dashboard WiFi) */
+.scan-row-inline{margin-bottom:4px}
+
+/* Estimate line */
+.estimate-line{font-size:0.875rem;color:var(--text-muted);margin-top:4px}
+.estimate-warning{color:#d29922;font-weight:600}
+.estimate-note{font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px}
+
+/* Toast system */
+#toast-container{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);
+  z-index:9999;display:flex;flex-direction:column;gap:8px;
+  width:calc(100% - 32px);max-width:400px;pointer-events:none;
+}
+.toast{
+  padding:12px 16px;border-radius:var(--radius);
+  font-size:0.875rem;font-weight:500;
+  transform:translateY(-20px);opacity:0;
+  transition:transform 0.25s ease,opacity 0.25s ease;
+  pointer-events:auto;
+}
+.toast-visible{transform:translateY(0);opacity:1}
+.toast-exit{transform:translateY(-20px);opacity:0}
+.toast-success{background:var(--success);color:#0d1117}
+.toast-warning{background:#d29922;color:#0d1117}
+.toast-error{background:var(--error);color:#fff}
+
+@media (prefers-reduced-motion:reduce){
+  .toast{transition:none;transform:none}
+  .toast-visible{opacity:1}
+  .toast-exit{opacity:0;transition:opacity 0.15s ease}
+}
+
+/* Handoff screen */
+.handoff{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
+}
+.handoff h1{font-size:1.5rem;color:var(--success)}
+.handoff p{font-size:1rem;color:var(--text);max-width:320px}
+.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+
+/* Health page (Story 2.4) */
+.health-loading{color:var(--text-muted);font-size:0.875rem}
+.status-row{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:6px 0;border-bottom:1px solid var(--border);
+}
+.status-row:last-child{border-bottom:none}
+.status-label{font-size:0.875rem;color:var(--text-muted)}
+.status-value{font-size:0.875rem;color:var(--text);text-align:right}
+.status-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:6px;vertical-align:middle;
+}
+.card.over-pace{border-color:#d29922}
+.card.over-pace h2{color:#d29922}
+
+/* Layout preview (Story 3.4) */
+.preview-container{margin-top:var(--gap)}
+.preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+.preview-legend{
+  display:flex;align-items:center;gap:12px;
+  margin-top:8px;font-size:0.75rem;color:var(--text-muted);flex-wrap:wrap;
+}
+.legend-chip{
+  display:inline-block;width:12px;height:12px;border-radius:2px;
+  margin-right:4px;vertical-align:middle;
+}
+
+.wiring-label{
+  font-size:0.8125rem;font-weight:600;color:var(--text-muted);
+  margin:var(--gap) 0 6px;
+}
+
+/* Location card (Story 4.1) */
+.location-toggle{cursor:pointer;user-select:none}
+.location-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#location-card .location-toggle.open::after{
+  transform:rotate(90deg);
+}
+#location-map{
+  height:260px;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--bg);
+}
+.location-radius-handle{
+  width:16px;height:16px;border-radius:50%;
+  background:var(--primary);border:2px solid #fff;
+  box-shadow:0 0 0 2px rgba(13,17,23,0.85);
+}
+.map-loading{
+  color:var(--text-muted);font-size:0.875rem;
+  text-align:center;padding:var(--gap) 0;
+}
+#location-fallback input[type="number"]{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -moz-appearance:textfield;
+}
+#location-fallback input[type="number"]::-webkit-inner-spin-button,
+#location-fallback input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+#location-fallback input:focus{border-color:var(--primary)}
+
+/* Leaflet dark-theme overrides */
+.leaflet-container{background:var(--bg)!important}
+.leaflet-control-zoom a{
+  background:var(--surface)!important;color:var(--text)!important;
+  border-color:var(--border)!important;
+}
+.leaflet-control-attribution{
+  background:rgba(22,27,34,0.8)!important;color:var(--text-muted)!important;
+  font-size:0.625rem!important;
+}
+.leaflet-control-attribution a{color:var(--primary)!important}
+
+/* Calibration card (Story 4.2) */
+.calibration-toggle{cursor:pointer;user-select:none}
+.calibration-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#calibration-card .calibration-toggle.open::after{
+  transform:rotate(90deg);
+}
+.cal-select{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b949e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;
+  padding-right:30px;
+}
+.cal-select:focus{border-color:var(--primary)}
+.cal-preview-container{margin-top:var(--gap)}
+.cal-preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+
+/* Calibration pattern toggle */
+.cal-pattern-toggle{display:flex;gap:0;margin-bottom:var(--gap)}
+.cal-pattern-btn{
+  flex:1;padding:6px 0;border:1px solid var(--border);
+  background:var(--bg);color:var(--text-muted);cursor:pointer;
+  font-size:0.8125rem;
+}
+.cal-pattern-btn:first-child{border-radius:var(--radius) 0 0 var(--radius)}
+.cal-pattern-btn:last-child{border-radius:0 var(--radius) var(--radius) 0}
+.cal-pattern-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* Logo upload (Story 4.3) */
+.logo-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);text-align:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.logo-upload-zone.drag-over{
+  border-color:var(--primary);background:rgba(88,166,255,0.08);
+}
+.upload-prompt{font-size:0.875rem;color:var(--text-muted);margin-bottom:8px}
+.upload-prompt code{color:var(--primary);font-size:0.8125rem}
+.upload-label{
+  display:inline-block;padding:8px 16px;font-size:0.875rem;
+  background:var(--surface);color:var(--primary);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s;
+}
+.upload-label:hover{background:var(--primary);color:#0d1117}
+.upload-hint{font-size:0.75rem;color:var(--text-muted);margin-top:8px}
+.logo-file-list{display:flex;flex-direction:column;gap:6px;margin-top:var(--gap)}
+.logo-file-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-file-row.file-error{border-color:var(--error)}
+.logo-file-row.file-ok{border-color:var(--success)}
+.logo-file-preview{
+  width:128px;height:128px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-file-info{flex:1;min-width:0}
+.logo-file-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-file-status{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-file-status.status-error{color:var(--error)}
+.logo-file-status.status-ok{color:var(--success)}
+.logo-file-remove{
+  background:none;border:none;color:var(--text-muted);
+  font-size:1.125rem;cursor:pointer;padding:4px;line-height:1;
+}
+.logo-file-remove:hover{color:var(--error)}
+
+/* Logo list management (Story 4.4) */
+.logo-storage-summary{
+  font-size:0.8125rem;color:var(--text-muted);margin-top:var(--gap);
+  text-align:center;
+}
+.logo-list-container{margin-top:var(--gap)}
+.logo-empty-state{
+  font-size:0.875rem;color:var(--text-muted);font-style:italic;
+  text-align:center;padding:var(--gap) 0;
+}
+.logo-list{display:flex;flex-direction:column;gap:6px}
+.logo-list-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-list-thumb{
+  width:48px;height:48px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-list-info{flex:1;min-width:0}
+.logo-list-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-list-size{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-list-actions{flex-shrink:0;display:flex;align-items:center;gap:6px}
+.logo-list-delete{
+  background:none;border:1px solid var(--error);color:var(--error);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s,color 0.15s;
+  white-space:nowrap;
+}
+.logo-list-delete:hover{background:var(--error);color:#fff}
+.logo-list-delete:disabled{opacity:0.5;cursor:default}
+.logo-list-confirm-text{
+  font-size:0.75rem;color:var(--error);white-space:nowrap;
+}
+.logo-list-confirm-btn{
+  background:var(--error);border:1px solid var(--error);color:#fff;
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;font-weight:600;white-space:nowrap;
+}
+.logo-list-confirm-btn:disabled{opacity:0.5;cursor:default}
+.logo-list-cancel-btn{
+  background:none;border:1px solid var(--border);color:var(--text);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;white-space:nowrap;
+}
+.logo-list-cancel-btn:hover{border-color:var(--text-muted)}
+
+/* Mode Picker (Story dl-1.5) */
+.mode-status-line{
+  font-size:0.9rem;padding:8px 0;margin-bottom:12px;
+  border-bottom:1px solid var(--border);
+  color:var(--text-muted);
+}
+.mode-status-name{font-weight:600;color:var(--text)}
+.mode-status-reason{font-weight:400}
+.mode-cards-list{display:flex;flex-direction:column;gap:8px}
+.mode-card{
+  padding:12px;background:var(--bg);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;transition:border-color 0.15s;
+}
+.mode-card:hover{border-color:var(--primary)}
+.mode-card.active{border-color:var(--primary);background:rgba(88,166,255,0.08)}
+.mode-card-name{font-size:0.9375rem;font-weight:500}
+.mode-card-subtitle{font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.mode-card.switching{opacity:0.6;pointer-events:none}
+
+/* Danger zone / System card (Story 2.5) */
+.card-danger{border-color:var(--error)}
+.card-danger h2{color:var(--error)}
+.btn-danger{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--error);color:#fff;
+  border:1px solid var(--error);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+}
+.btn-danger:hover{background:#e5443c;border-color:#e5443c}
+.btn-danger:disabled{opacity:0.5;cursor:default}
+.btn-cancel{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;font-weight:500;
+  transition:border-color 0.15s;
+}
+.btn-cancel:hover{border-color:var(--text-muted)}
+.btn-cancel:disabled{opacity:0.5;cursor:default}
+.reset-row{margin-top:4px}
+.reset-warning{
+  font-size:0.875rem;color:var(--error);margin-bottom:12px;
+}
+.reset-actions{display:flex;gap:8px}
+.reset-actions .btn-danger,.reset-actions .btn-cancel{flex:1}
+
+/* Firmware card / OTA Upload (Story fn-1.6) */
+.fw-version-text{font-size:0.9375rem;color:var(--text);margin-bottom:12px}
+.ota-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);min-height:80px;cursor:pointer;
+  text-align:center;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.ota-upload-zone.drag-over{border-color:var(--primary);background:rgba(88,166,255,0.08)}
+.ota-file-info{display:flex;align-items:center;gap:8px;margin-top:var(--gap);flex-wrap:wrap}
+.ota-file-info span{font-size:0.875rem;word-break:break-all}
+.ota-progress{
+  position:relative;height:28px;border-radius:var(--radius);
+  background:var(--border);margin-top:var(--gap);overflow:hidden;
+}
+.ota-progress-bar{height:100%;background:var(--primary);transition:width 0.3s;border-radius:var(--radius)}
+.ota-progress-text{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.875rem;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.65),0 -1px 2px rgba(0,0,0,0.65),1px 0 2px rgba(0,0,0,0.65),-1px 0 2px rgba(0,0,0,0.65)}
+.ota-reboot{text-align:center;padding:var(--gap);font-size:1.125rem;color:var(--primary)}
+.banner-warning{
+  background:#2d2738;border-left:4px solid #d29922;
+  padding:12px 16px;border-radius:var(--radius);
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:12px;font-size:0.875rem;
+}
+.banner-warning .dismiss-btn{
+  background:none;border:none;color:var(--text);cursor:pointer;
+  font-size:1.25rem;min-width:44px;min-height:44px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius);
+}
+.banner-warning .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.btn-ota-cancel{width:auto;padding:10px 16px;margin-top:0}
+.btn-secondary{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;font-weight:500;
+  transition:border-color 0.15s,background 0.15s;
+}
+.btn-secondary:hover{border-color:var(--text-muted);background:rgba(255,255,255,0.03)}
+
+
+]]></file>
+<file id="90dfc412" path="[ANTIPATTERNS - DO NOT REPEAT]" label="VIRTUAL CONTENT"><![CDATA[
+
+# Epic fn-1 - Code Antipatterns
+
+> **WARNING: ANTI-PATTERNS**
+> The issues below were MISTAKES found during code review of previous stories.
+> DO NOT repeat these patterns. Learn from them and avoid similar errors.
+> These represent implementation mistakes (race conditions, missing tests, weak assertions, etc.)
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | AC #1 Automation Missing**: Binary size logging was manual, not automated in build process | Created `check_size.py` PlatformIO pre-action script that runs on every build, logs binary size, warns at 1.3MB threshold, fails at 1.5MB limit. Added `extra_scripts = pre:check_size.py` to platformio.ini. |
+| critical | Silent Data Loss Risk**: LittleFS.begin(true) auto-formats on mount failure without notification | Changed to `LittleFS.begin(false)` with explicit error logging and user-visible instructions to reflash filesystem. Device continues boot but warns user of unavailable web assets/logos. |
+| high | Missing Partition Runtime Validation**: No verification that running firmware matches expected partition layout | Added `validatePartitionLayout()` function that checks running app partition size (0x180000) and LittleFS partition size (0xF0000) against expectations. Logs warnings if mismatches detected. Called during setup before LittleFS mount. |
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | Silent Exit in check_size.py if Binary Missing | Added explicit error logging when binary is missing |
+| low | Magic Numbers for Timing/Thresholds | Named constants already exist for some values (AUTHENTICATING_DISPLAY_MS, BUTTON_DEBOUNCE_MS). Additional refactoring would require broader changes. |
+| low | Interface Segregation - WiFiManager Callback | Changed to C++ comment syntax to clarify intent |
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Silent Exit in check_size.py When Binary Missing | Added explicit error logging and `env.Exit(1)` when binary is missing |
+| high | Magic Numbers for Partition Sizes - No Cross-Reference | Added cross-reference comments in all 3 files to alert developers when updating partition sizes |
+| medium | Partition Table Gap Not Documented | Added comment documenting reserved gap |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Missing `getSchedule()` implementation | Added `ConfigManager::getSchedule()` method at line 536 following existing getter pattern with ConfigLockGuard for thread safety. Method returns copy of `_schedule` struct. |
+| critical | Schedule keys missing from `dumpSettingsJson()` API | Added `snapshot.schedule = _schedule` to snapshot capture at line 469 and added all 5 schedule keys to JSON output at lines 507-511. GET /api/settings now returns 27 total keys (22 existing + 5 new). |
+| critical | OTA and NTP subsystems not added to SystemStatus | Added `OTA` and `NTP` to Subsystem enum, updated `SUBSYSTEM_COUNT` from 6 to 8, and added "ota" and "ntp" cases to `subsystemName()` switch. Also fixed stale comment "existing six" → "subsystems". |
+| high | Required unit tests missing from test suite | Added 5 new test functions: `test_defaults_schedule()`, `test_nvs_write_read_roundtrip_schedule()`, `test_apply_json_schedule_hot_reload()`, `test_apply_json_schedule_validation()`, and `test_system_status_ota_ntp()`. All tests integrated into `setup()` test runner. |
+| low | Stale comment in SystemStatus.cpp | Updated comment from "existing six" to "subsystems" to reflect new count of 8. |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Integer Overflow in `sched_enabled` Validation | Changed from `value.as<uint8_t>()` (wraps 256→0) to validating as `unsigned int` before cast. Now properly rejects values >1. Added type check `value.is<unsigned int>()`. |
+| critical | Missing Validation for `sched_dim_brt` | Added bounds checking (0-255) and type validation. Previously accepted any value without validation, violating story requirements. |
+| critical | Test Suite Contradicts Implementation | Renamed `test_apply_json_ignores_unknown_keys` → `test_apply_json_rejects_unknown_keys` and corrected assertions. applyJson uses all-or-nothing validation, not partial success. |
+| high | Missing Test Coverage for AC #4 | Added `test_dump_settings_json_includes_schedule()` — verifies all 5 schedule keys present in JSON and total key count = 27. |
+| high | Validation Test Coverage Gaps | Extended `test_apply_json_schedule_validation()` with 2 additional test cases: `sched_dim_brt > 255` rejection and `sched_enabled = 256` overflow rejection. |
+| dismissed | `/api/settings` exposes secrets (wifi_password, API keys) in plaintext | FALSE POSITIVE: Pre-existing design, not introduced by this story. Requires separate security story to implement credential masking. Story scope was schedule keys + SystemStatus subsystems only. |
+| dismissed | ConfigSnapshot heap allocation overhead in applyJson | FALSE POSITIVE: Necessary for atomic semantics — applyJson must validate all keys before committing any changes. Snapshot pattern is intentional design. |
+| dismissed | SystemStatus mutex timeout fallback is unsafe | FALSE POSITIVE: Pre-existing pattern across SystemStatus implementation (lines 35-44, 53-58, 65-73). Requires broader refactor outside story scope. This story only added OTA/NTP subsystems. |
+| dismissed | SystemStatus tight coupling to WiFi, LittleFS, ConfigManager | FALSE POSITIVE: Pre-existing architecture in `toExtendedJson()` method. Not introduced by this story — story only added 2 subsystems to existing enum. |
+| dismissed | Hardcoded NVS namespace string | FALSE POSITIVE: Pre-existing pattern, not story scope. NVS namespace was defined before this story. |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Test baseline claims 27 keys but implementation has 29 | Updated test assertion from 27 to 29 to match actual implementation |
+| critical | Missing negative number validation for schedule time fields | Added type validation with `value.is<int>()` and signed bounds checking before unsigned cast |
+| critical | Missing type validation for timezone string | Added `value.is<const char*>()` type check before string conversion |
+| high | Missing test coverage for AC #4 - JSON dump includes all schedule keys | Corrected key count assertion from 27 to 29 |
+| high | Validation test coverage gaps | Already present in current code (lines 373-382) - FALSE POSITIVE on reviewer's part, but validation logic in implementation was incomplete (see fixes #6, #7) |
+| high | Integer overflow in sched_enabled validation | Already has type check `value.is<unsigned int>()` - validation is correct. Reviewing again...actually the test exists to verify 256 is rejected (line 380). This is working correctly. |
+| high | Missing validation for sched_dim_brt | Code already has type check and >255 rejection (lines 163-167) after Round 2 fixes. Verified correct. |
+| medium | Test suite contradicts implementation (unknown key handling) | Test already renamed to `test_apply_json_rejects_unknown_keys` with correct assertions after Round 2 fixes |
+
+## Story fn-1-3 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | `clearOTAUpload()` unconditionally calls `Update.abort()` when `started == true`, including the success path where `clearOTAUpload()` is called immediately after `Update.end(true)` — aborting the just-written firmware | Set `state->started = false` after successful `Update.end(true)` so the completed-update flag is cleared before cleanup runs |
+| high | No concurrent upload guard; a second client can call `Update.begin()` while an upload is in-flight, sharing the non-reentrant `Update` singleton and risking flash corruption | Added `g_otaInProgress` static bool; second upload receives `OTA_BUSY` / 409 Conflict immediately |
+| medium | `SystemStatus::set()` is called on `WRITE_FAILED`/`VERIFY_FAILED` but silently omitted from `INVALID_FIRMWARE`, `NO_OTA_PARTITION`, and `BEGIN_FAILED` — OTA subsystem status does not reflect these failures | Added `SystemStatus::set(ERROR)` to all three missing error paths |
+| low | Task 3 claimed partition info logging was complete, but code only emitted `LOG_I("OTA", "Update started")` with no label/size | Added `Serial.printf("[OTA] Writing to %s, size 0x%x\n", partition->label, partition->size);` |
+| low | `NO_OTA_PARTITION`, `BEGIN_FAILED`, `WRITE_FAILED`, `VERIFY_FAILED` (server-side failures) return HTTP 400 (client error); `OTA_BUSY` conflicts returned as 400 | Error-code-to-HTTP mapping: `INVALID_FIRMWARE` → 400, `OTA_BUSY` → 409, server failures → 500 |
+| dismissed | `POST /api/ota/upload` is unauthenticated / CSRF-vulnerable | FALSE POSITIVE: No endpoint in this device has authentication — `/api/reboot`, `/api/reset`, `/api/settings` are all unauthenticated. This is a pre-existing architectural design gap (LAN-only device), not introduced by this story. Requires a dedicated security story. |
+| dismissed | Missing `return` statements after `NO_OTA_PARTITION` and `BEGIN_FAILED` — code falls through to write path | FALSE POSITIVE: FALSE POSITIVE. The actual code at lines 480 and 490 contains explicit `return;` statements. Validator C misread a code snippet. |
+| dismissed | Task 8 (header declaration) incomplete — `_handleOTAUpload()` not in `WebPortal.h` | FALSE POSITIVE: FALSE POSITIVE. The task itself states "or keep inline like logo upload" as an explicit alternative. The inline lambda approach is the correct pattern and matches the logo upload implementation. |
+| dismissed | `std::vector<OTAUploadState>` introduces heap churn on hot async path | FALSE POSITIVE: This is the established project pattern — `g_logoUploads` uses the same `std::vector` approach. OTA is single-flight (now enforced), so the vector holds at most one entry. Not worth a divergent pattern. |
+| dismissed | Oversized binary not rejected before flash writes begin | FALSE POSITIVE: `Update.begin(partition->size)` tells the library the maximum expected size. `Update.write()` will fail and return fewer-than-requested bytes when the partition is full, which the existing write-failure path handles. `Update.end(true)` accepts partial writes correctly. The library itself is the bounds guard. --- |
+
+## Story fn-1-4 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | `g_otaSelfCheckDone = true` placed outside the `err == ESP_OK` block — self-check silently completes even when `esp_ota_mark_app_valid_cancel_rollback()` fails, leaving firmware in unvalidated state with no retry | Moved `g_otaSelfCheckDone = true` inside the success branch. On failure, function exits without setting the flag so the next loop iteration retries. |
+| high | AC #2 requires "a WARNING log message" for the timeout path, but `LOG_I` was used — wrong log level AND there was no `LOG_W` macro in the project | Added `LOG_W` macro to `Log.h` at level `>= 1` (same severity tier as errors). Changed `LOG_I` → `LOG_W` on the timeout path. |
+| medium | `isPendingVerify` OTA state computed via two IDF flash-read calls (`esp_ota_get_running_partition()` + `esp_ota_get_state_partition()`) on every `loop()` iteration for up to 60 seconds — state cannot change during this window | Introduced `static int8_t s_isPendingVerify = -1` cached on first call; subsequent iterations skip the IDF calls entirely. |
+| medium | `("Firmware verified — WiFi connected in " + String(elapsedSec) + "s").c_str()` passes a pointer to a temporary `String`'s internal buffer to `SystemStatus::set(const String&)` — technically safe but fragile code smell | Extracted to named `String okMsg` variable before the call. Same pattern applied in the error path. |
+| low | `OTA_SELF_CHECK_TIMEOUT_MS = 60000` had no inline comment explaining the rationale for the 60s value | Added 3-line comment citing Architecture Decision F3, typical WiFi connect time, and no-WiFi fallback scenario. |
+| dismissed | AC #6 violated — rollback WARNING emitted on normal boots after a prior rollback | FALSE POSITIVE: Story Gotcha #2 explicitly states: *"g_rollbackDetected will be true on every subsequent boot until a new successful OTA… This means /api/status will return rollback_detected: true on every boot until that happens — this is correct and intentional API behavior."* The deferred `SystemStatus::set(WARNING)` is the mechanism that surfaces the persisted rollback state through the health API. Suppressing it would hide a real device condition. |
+| dismissed | `g_bootStartMs` uninitialized read risk — if called before `setup()`, `millis() - 0` returns a large value triggering immediate timeout | FALSE POSITIVE: In Arduino on ESP32, `setup()` is guaranteed to execute before `loop()`. `g_bootStartMs` is set at the top of `setup()`. There is no code path where `performOtaSelfCheck()` can run before `setup()`. |
+| dismissed | `SystemStatus::set()` best-effort mutex fallback is unsafe | FALSE POSITIVE: Pre-existing pattern across the entire `SystemStatus` implementation (lines 41–50, 59–64, 71–79). Not introduced by this story. Requires broader architectural refactor outside story scope. |
+| dismissed | Magic numbers 2000/4000 in `tickStartupProgress()` | FALSE POSITIVE: Pre-existing code in `tickStartupProgress()` from a prior story. Not introduced by fn-1.4. Out of scope for this synthesis. |
+| dismissed | LOG macros used inconsistently with `Serial.printf` — project logging pattern violated | FALSE POSITIVE: `Log.h` macros (`LOG_E`, `LOG_I`, `LOG_V`) only accept **fixed string literals** — they have no format-string support. `Serial.printf` is the only viable option when embedding runtime values (partition labels, elapsed time, error codes). The mixed usage is correct project practice, not an inconsistency. The sole actionable logging issue was the `LOG_I` vs `LOG_W` severity mismatch (fixed above). |
+| dismissed | `FW_VERSION` format not validated at runtime | FALSE POSITIVE: `FW_VERSION` is a compile-time build flag enforced by the build system and team convention. Runtime validation of a compile-time constant is over-engineering and has no failure mode that warrants it. |
+| dismissed | `FlightStatsSnapshot` location not explicit in story docs | FALSE POSITIVE: Documentation gap only, not a code defect. The struct is defined in `main.cpp` as confirmed by reading the source. No code fix needed. |
+
+## Story fn-1-4 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| medium | `s_isPendingVerify` error caching — `s_isPendingVerify = 0` was set unconditionally before the conditional, so if `esp_ota_get_running_partition()` returned NULL or `esp_ota_get_state_partition()` returned non-`ESP_OK`, the pending-verify state was permanently cached as 0 (normal boot). A transient IDF probe error on the first loop iteration would suppress AC #1/#2 status and timing logs on a real post-OTA boot for the entire 60s window. | Removed `s_isPendingVerify = 0` pre-assignment; now only set on successful probe. State probe retries on next loop iteration if running partition is NULL or probe fails. |
+| low | Rollback WARNING blocked by `err == ESP_OK` check — the `SystemStatus::set(WARNING, "Firmware rolled back...")` call was inside the `if (err == ESP_OK)` block, meaning if `esp_ota_mark_app_valid_cancel_rollback()` persistently failed, AC #4's required WARNING status was never emitted. | Moved rollback `SystemStatus::set()` before the mark_valid call, inside the WiFi/timeout condition but outside the success guard. Added `static bool s_rollbackStatusSet` to prevent repeated calls on retry iterations. |
+| low | Boot timing starts 200ms late — `g_bootStartMs = millis()` was assigned after `Serial.begin(115200)` and `delay(200)`, understating the reported "WiFi connected in Xms" timing by 200ms. Story task requirement explicitly states capture before delays. | Moved `g_bootStartMs = millis()` to be the very first statement in `setup()`, before `Serial.begin()` and `delay(200)`. |
+| low | Log spam on mark_valid failure — when `esp_ota_mark_app_valid_cancel_rollback()` failed, `Serial.printf()` and `SystemStatus::set(ERROR)` were called on every loop iteration (potentially 20/sec) since neither `g_otaSelfCheckDone` is set (correctly) nor the error path had a throttle. | Added `static bool s_markValidErrorLogged = false` guard so the error is logged and status set only on the first failure; subsequent retries are silent. |
+
+## Story fn-1-6 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | No cancel/re-select path once a valid file is chosen | Added `<button id="btn-cancel-ota">Cancel</button>` to `.ota-file-info`, wired to `resetOtaUploadState()` in JS. |
+| critical | Polling race condition — timeout check fires immediately after async `FW.get()` starts, allowing both "Device unreachable" message AND success toast to show simultaneously on the final attempt | Restructured `startRebootPolling()` to check `attempts >= maxAttempts` **before** issuing the request; added `done` boolean guard so late-arriving responses are discarded after timeout. |
+| high | `resetOtaUploadState()` does not reset `otaRebootText.style.color` or `otaRebootText.textContent` — amber timeout color and stale text persist into subsequent upload attempts | Added `otaRebootText.textContent = ''` and `otaRebootText.style.color = ''` to `resetOtaUploadState()`. |
+| high | `.banner-warning .dismiss-btn` has no `:focus` style — WCAG 2.1 AA violation (visible focus indicator required) | Added `.banner-warning .dismiss-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px }` rule. |
+| high | `prefs.putUChar("ota_rb_ack", 1)` return value ignored in ack-rollback handler — silent failure if NVS write fails | Added `prefs.begin()` return check and `written == 0` check; return 500 error responses with inline JSON (not `_sendJsonError` — lambda is `[]`, no `this` capture). |
+| medium | `dragleave` removes `.drag-over` class when cursor moves over child elements — causes visual flicker mid-drag | Added `e.relatedTarget` guard: `if (!otaUploadZone.contains(e.relatedTarget))`. |
+| low | Zero-byte file produces misleading error "Not a valid ESP32 firmware image" instead of "File is empty" | Added explicit `file.size === 0` check with message "File is empty — select a valid firmware .bin file" before the magic byte check. |
+
+## Story fn-1-6 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | WCAG AA contrast failure — white text (#fff) over `--primary` (#58a6ff) on `.ota-progress-text` yields 2.40:1 contrast ratio, below the 4.5:1 AA minimum. Text overlays both filled (#58a6ff) and unfilled (#30363d) progress bar regions, creating variable backgrounds | Added four-direction `text-shadow: rgba(0,0,0,0.65)` to create a dark halo that ensures readability on both light-blue and dark-grey backgrounds |
+| medium | `btnUploadFirmware` not disabled at start of `uploadFirmware()` — rapid double-tap could enqueue two concurrent uploads before the `otaFileInfo` section is hidden. Server guards with `g_otaInProgress` (returning 409), but the second request still generates an error toast, confusing UX | `btnUploadFirmware.disabled = true` at function entry, re-enabled in both `xhr.onload` and `xhr.onerror` |
+| low | Polling `FW.get('/api/status')` lacks cache-busting — browsers with aggressive cache policies could serve a stale 200 from the pre-reboot device, falsely triggering "Updated to v..." before the new firmware is running | Changed to `FW.get('/api/status?_=' + Date.now())` to guarantee a fresh request |
+| low | `#d29922` amber color hardcoded in JS for the "Device unreachable" timeout message, bypassing the design system. `--warning` CSS variable was also absent, making `var(--warning)` fallback impossible | Added `--warning: #d29922` to `:root` CSS variables; updated JS to `getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() \|\| '#d29922'` |
+| dismissed | Server-side OTA file size check missing (DoS vulnerability) | FALSE POSITIVE: Explicitly dismissed as FALSE POSITIVE in fn-1.3 antipatterns: "Update.begin(partition->size) tells the library the maximum expected size. Update.write() will fail when the partition is full." Client-side 1.5MB check provides UX feedback; server-side is handled by the Update library. |
+| dismissed | `_sendJsonError` should replace inline JSON in ack-rollback handler | FALSE POSITIVE: `_sendJsonError` is a `WebPortal` class member function. The `/api/ota/ack-rollback` handler is a `[]` lambda (no `this` capture) — calling `_sendJsonError` is syntactically impossible without restructuring the handler. Inline JSON strings are the correct pattern for captureless lambdas. |
+| dismissed | `OTA_MAX_SIZE` should be driven by API (`/api/status.ota_max_size`) | FALSE POSITIVE: Over-engineering. The 1.5MB partition size is a compile-time constant (custom_partitions.csv) that cannot change at runtime. Adding an API field and HTTP round-trip for this is disproportionate; the constant is clearly documented with its hex value. |
+| dismissed | Drag-over border uses `--primary` instead of `--accent` (AC #3) | FALSE POSITIVE: `--accent` does not exist in the project's CSS design system (`:root` defines `--primary`, `--primary-hover`, `--error`, `--success`, `--warning` — no `--accent`). The Dev Notes explicitly lists `--primary` as the correct token for "drag-over border." The AC spec contains a stale/incorrect variable name. |
+| dismissed | Race condition in `startRebootPolling` — timeout and success could fire simultaneously | FALSE POSITIVE: Already fixed in Pass 1 synthesis. Lines 2818-2831 show: `done` flag prevents double-finish; `attempts >= maxAttempts` check fires BEFORE the next request is issued; `if (done) return` discards late-arriving responses. |
+| dismissed | `FileReader.readAsArrayBuffer(file.slice(0, 4))` reads 4 bytes but only `bytes[0]` is used | FALSE POSITIVE: Negligible inefficiency. Reading 4 bytes on a modern browser is identical cost to reading 1 byte (minimum slice size). Functionally correct; no impact on correctness or performance. |
+| dismissed | `FW.get()` reboot polling is "falsely optimistic" — could return cached pre-reboot 200 | FALSE POSITIVE: The server calls `request->send(200, ...)` before scheduling the 500ms reboot timer (WebPortal.cpp:494). The full 50-byte JSON response will be in the TCP send buffer before the timer fires. `xhr.onerror` cannot fire on a response that was successfully sent and received. Only genuine network failures during upload reach `onerror`. |
+| dismissed | Story file omits WebPortal.h and main.cpp from modified file list | FALSE POSITIVE: Documentation concern, not a code defect. The synthesis mission is to verify and fix SOURCE CODE — story record auditing is out of scope. No code correction needed. |
+| dismissed | Settings export silently backs up stale persisted config when form has unsaved edits | FALSE POSITIVE: AC #10 specifies "triggers `GET /api/settings/export`" — exporting persisted server config is the intended behavior. The helper text instructs users to download settings as a backup "before migration or reflash" — not mid-edit. A warning when `applyBar` is visible would be a UX enhancement, not a bug fix. Out of scope. |
+| dismissed | No automated test coverage for new OTA/export endpoints | FALSE POSITIVE: Valid concern but outside synthesis scope. ESP32 integration tests require hardware-in-the-loop or mock server infrastructure not present in this repo. Would need a dedicated testing story. |
+| dismissed | CSRF protection missing on POST /api/ota/upload | FALSE POSITIVE: Explicitly dismissed as FALSE POSITIVE in fn-1.3 antipatterns: "No endpoint in this device has authentication — `/api/reboot`, `/api/reset`, `/api/settings` are all unauthenticated. This is a pre-existing architectural design gap (LAN-only device), not introduced by this story." |
+| dismissed | No upload cancellation mechanism | FALSE POSITIVE: ALREADY IMPLEMENTED in Pass 1 synthesis. `btn-cancel-ota` exists in dashboard.html:248 and is wired to `resetOtaUploadState()` in dashboard.js:2620-2623. |
+| dismissed | Unthrottled XHR progress events violate AC #6 ("every 2 seconds") | FALSE POSITIVE: Misread. AC #6 states "updates at least every 2 seconds" — this is a MINIMUM frequency requirement. The XHR progress handler fires MORE frequently (on each browser progress event), which satisfies "at least every 2s." Throttling to 500ms would still satisfy the AC. Throttling to 2s would be the minimum required and is not needed since XHR events are already frequent enough. |
+| dismissed | XHR object not explicitly nulled after upload — memory leak | FALSE POSITIVE: JavaScript GC handles local variable cleanup. On an embedded single-page dashboard with one upload per session, a 1-2KB XHR object is negligible. Not a real leak; the object is properly scoped. |
+| dismissed | CSS line count is 41 lines, not "~35 lines" as claimed in AC #11 | FALSE POSITIVE: AC #11 says "approximately 35 lines" — 41 lines is within reasonable approximation range and has no functional impact. --- |
+
+
+]]></file>
+</context>
+<variables>
+<var name="architecture_file" file_id="893ad01d" description="System architecture for review context" load_strategy="EMBEDDED" token_approx="59787">embedded in prompt, file id: 893ad01d</var>
+<var name="author">BMad</var>
+<var name="communication_language">English</var>
+<var name="date">2026-04-12</var>
+<var name="description">Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.</var>
+<var name="document_output_language">English</var>
+<var name="document_project_file" description="Brownfield project documentation (optional)" load_strategy="INDEX_GUIDED">_bmad-output/planning-artifacts/index.md</var>
+<var name="epic_num">fn-1</var>
+<var name="epics_file" description="Epic containing story being reviewed" load_strategy="SELECTIVE_LOAD" token_approx="13622">_bmad-output/planning-artifacts/epics-delight.md</var>
+<var name="implementation_artifacts">_bmad-output/implementation-artifacts</var>
+<var name="instructions">embedded context</var>
+<var name="name">code-review</var>
+<var name="output_folder">_bmad-output/implementation-artifacts</var>
+<var name="planning_artifacts">_bmad-output/planning-artifacts</var>
+<var name="project_context">{project-root}/docs/project-context.md</var>
+<var name="project_knowledge">docs</var>
+<var name="project_name">TheFlightWall_OSS-main</var>
+<var name="sprint_status">_bmad-output/implementation-artifacts/sprint-status.yaml</var>
+<var name="story_dir">_bmad-output/implementation-artifacts/stories</var>
+<var name="story_file" file_id="60733e24">embedded in prompt, file id: 60733e24</var>
+<var name="story_id">fn-1.6</var>
+<var name="story_key">fn-1-6-dashboard-firmware-card-and-ota-upload-ui</var>
+<var name="story_num">6</var>
+<var name="story_title">dashboard-firmware-card-and-ota-upload-ui</var>
+<var name="template">False</var>
+<var name="timestamp">20260412_2054</var>
+<var name="user_name">Christian</var>
+<var name="user_skill_level">expert</var>
+<var name="ux_design_file" description="UX design specification (if UI review)" load_strategy="FULL_LOAD" token_approx="30146">_bmad-output/planning-artifacts/ux-design-specification-delight.md</var>
+<var name="validation">embedded context</var>
+</variables>
+<instructions><workflow>
+  <critical>SCOPE LIMITATION: You are a READ-ONLY VALIDATOR. Output your code review report to stdout ONLY. Do NOT create files, do NOT modify files, do NOT use Write/Edit/Bash tools. Your stdout output will be captured and saved by the orchestration system.</critical>
+  <critical>All configuration and context is available in the VARIABLES section below. Use these resolved values directly.</critical>
+  <critical>Communicate all responses in English and language MUST be tailored to expert</critical>
+  <critical>Generate all documents in English</critical>
+
+  <critical>🔥 YOU ARE AN ADVERSARIAL CODE REVIEWER - Find what's wrong or missing! 🔥</critical>
+  <critical>Your purpose: Validate story file claims against actual implementation</critical>
+  <critical>Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.</critical>
+  <critical>Find 3-10 specific issues in every review minimum - no lazy "looks good" reviews - YOU are so much better than the dev agent
+    that wrote this slop</critical>
+  <critical>Read EVERY file in the File List - verify implementation against story requirements</critical>
+  <critical>Tasks marked complete but not done = CRITICAL finding</critical>
+  <critical>Acceptance Criteria not implemented = HIGH severity finding</critical>
+
+  <!-- Step 1 removed: file discovery handled by compiler -->
+
+  <step n="1" goal="Execute adversarial review">
+    <critical>VALIDATE EVERY CLAIM - Check git reality vs story claims</critical>
+
+    <!-- Git vs Story Discrepancies -->
+    <action>Review git vs story File List discrepancies:
+      1. **Files changed but not in story File List** → MEDIUM finding (incomplete documentation)
+      2. **Story lists files but no git changes** → HIGH finding (false claims)
+      3. **Uncommitted changes not documented** → MEDIUM finding (transparency issue)
+    </action>
+
+    <!-- Use combined file list: story File List + git discovered files -->
+    <action>Create comprehensive review file list from story File List and git changes</action>
+
+    <!-- AC Validation -->
+    <action>For EACH Acceptance Criterion:
+      1. Read the AC requirement
+      2. Search implementation files for evidence
+      3. Determine: IMPLEMENTED, PARTIAL, or MISSING
+      4. If MISSING/PARTIAL → HIGH SEVERITY finding
+    </action>
+
+    <!-- Task Completion Audit -->
+    <action>For EACH task marked [x]:
+      1. Read the task description
+      2. Search files for evidence it was actually done
+      3. **CRITICAL**: If marked [x] but NOT DONE → CRITICAL finding
+      4. Record specific proof (file:line)
+    </action>
+
+    <!-- Code Quality Deep Dive -->
+    <action>For EACH file in comprehensive review list:
+      1. **Security**: Look for injection risks, missing validation, auth issues
+      2. **Performance**: N+1 queries, inefficient loops, missing caching
+      3. **Error Handling**: Missing try/catch, poor error messages
+      4. **Code Quality**: Complex functions, magic numbers, poor naming
+      5. **Test Quality**: Are tests real assertions or placeholders?
+    </action>
+
+    <check if="total_issues_found lt 3">
+      <critical>NOT LOOKING HARD ENOUGH - Find more problems!</critical>
+      <action>Re-examine code for:
+        - Edge cases and null handling
+        - Architecture violations
+        - Documentation gaps
+        - Integration issues
+        - Dependency problems
+        - Git commit message quality (if applicable)
+      </action>
+      <action>Find at least 3 more specific, actionable issues</action>
+    </check>
+  </step>
+
+  <step n="2" goal="Systematic Code Quality Assessment">
+    <critical>🎯 RUTHLESS CODE QUALITY GATE: Systematic review against senior developer standards!</critical>
+
+    <substep n="3a" title="SOLID Principles Violations">
+      <action>Hunt for SOLID violations with surgical precision:
+        - **S - Single Responsibility**: Classes/functions doing too much
+        - **O - Open/Closed**: Code requiring modification for extension
+        - **L - Liskov Substitution**: Subclasses breaking parent contracts
+        - **I - Interface Segregation**: Fat interfaces forcing unused dependencies
+        - **D - Dependency Inversion**: High-level modules depending on low-level details
+      </action>
+      <action>Document each violation with file:line and severity (1-10)</action>
+      <action>Store as {{solid_violations}}</action>
+    </substep>
+
+    <substep n="3b" title="Hidden Bugs Detection">
+      <action>Hunt for hidden bugs and time bombs:
+        - Resource leaks: unclosed files, connections, handles
+        - Race conditions: shared state without synchronization
+        - Edge cases: null/empty/boundary conditions not handled
+        - Off-by-one errors: loop bounds, array indices
+        - Exception swallowing: catch blocks that hide errors
+        - State corruption: mutable shared state
+      </action>
+      <action>Document each bug with reproduction scenario</action>
+      <action>Store as {{hidden_bugs}}</action>
+    </substep>
+
+    <substep n="3c" title="Abstraction Level Analysis">
+      <action>Analyze abstraction appropriateness:
+        - **Over-engineering**: Unnecessary patterns, premature abstraction
+        - **Under-engineering**: Missing abstractions, code duplication
+        - **Wrong patterns**: Pattern misuse, cargo cult programming
+        - **Boundary breaches**: Layer violations, leaky abstractions
+      </action>
+      <action>Document each issue with reasoning</action>
+      <action>Store as {{abstraction_issues}}</action>
+    </substep>
+
+    <substep n="3d" title="Lying Tests Detection">
+      <action>Expose tests that lie about correctness:
+        - Tests that always pass regardless of implementation
+        - Missing assertions or weak assertions
+        - Tests that don't test the actual behavior
+        - Mocked everything - testing mocks not code
+        - Happy path only - no error/edge case coverage
+        - Tautological tests - testing what you just set up
+      </action>
+      <action>Document each lying test with explanation</action>
+      <action>Store as {{lying_tests}}</action>
+    </substep>
+
+    <substep n="3e" title="Performance Footguns">
+      <action>Identify performance anti-patterns:
+        - N+1 queries: database calls in loops
+        - Unnecessary allocations: creating objects in hot paths
+        - Missing caching: repeated expensive computations
+        - Blocking operations: sync I/O in async contexts
+        - Memory leaks: growing collections, circular references
+        - Inefficient algorithms: O(n²) when O(n) possible
+      </action>
+      <action>Document each footgun with impact assessment</action>
+      <action>Store as {{performance_footguns}}</action>
+    </substep>
+
+    <substep n="3f" title="Tech Debt Bombs">
+      <action>Find future maintenance nightmares:
+        - Hard-coded values: magic numbers, embedded strings
+        - Magic strings: undocumented string literals
+        - Copy-paste code: duplicated logic
+        - Missing TODOs: incomplete implementations
+        - Deprecated usage: using obsolete APIs
+        - Tight coupling: changes ripple across codebase
+      </action>
+      <action>Document each debt bomb with explosion radius</action>
+      <action>Store as {{tech_debt_bombs}}</action>
+    </substep>
+
+    <substep n="3g" title="PEP 8 and Pythonic Compliance">
+      <action>Check Python-specific quality (if Python code):
+        - Naming conventions: snake_case, PascalCase appropriately
+        - Import organization: stdlib, third-party, local separation
+        - Line length and formatting
+        - Docstrings: missing or inadequate documentation
+        - Pythonic idioms: using Python features correctly
+        - Type hints: missing, incorrect, or incomplete
+      </action>
+      <action>For non-Python: apply language-appropriate style standards</action>
+      <action>Document each violation</action>
+      <action>Store as {{style_violations}}</action>
+    </substep>
+
+    <substep n="3h" title="Type Safety Analysis">
+      <action>Analyze type safety issues:
+        - Missing type hints on public interfaces
+        - Incorrect type annotations
+        - Any/Unknown overuse
+        - Type narrowing issues
+        - Generic type misuse
+        - Runtime type errors waiting to happen
+      </action>
+      <action>Document each type safety issue</action>
+      <action>Store as {{type_safety_issues}}</action>
+    </substep>
+
+    <substep n="3i" title="Security Vulnerability Scan">
+      <action>Deep security review:
+        - Credential exposure: hardcoded secrets, logged credentials
+        - Injection vectors: SQL, command, template injection
+        - Authentication issues: weak validation, session problems
+        - Authorization gaps: missing permission checks
+        - Data exposure: sensitive data in logs, responses
+        - Dependency vulnerabilities: known CVEs
+      </action>
+      <action>Document each vulnerability with CVSS-like severity</action>
+      <action>Store as {{security_vulnerabilities}}</action>
+    </substep>
+
+    <substep n="3j" title="Calculate Evidence Score">
+      <critical>🔥 CRITICAL: You MUST calculate and output the Evidence Score for synthesis!</critical>
+
+      <action>Map each finding to Evidence Score severity:
+        - **🔴 CRITICAL** (+3 points): Security vulnerabilities, data corruption, blocking bugs, task completion lies
+        - **🟠 IMPORTANT** (+1 point): SOLID violations, performance issues, missing tests, AC gaps
+        - **🟡 MINOR** (+0.3 points): Style violations, documentation issues, minor refactoring
+      </action>
+
+      <action>Count CLEAN PASS categories - areas with NO issues found:
+        - Each clean category: -0.5 points
+        - Categories: SOLID, Hidden Bugs, Abstraction, Lying Tests, Performance, Tech Debt, Style, Type Safety, Security
+      </action>
+
+      <action>Calculate Evidence Score:
+        {{evidence_score}} = SUM(finding_scores) + (clean_pass_count × -0.5)
+
+        Example: 2 CRITICAL (+6) + 3 IMPORTANT (+3) + 4 CLEAN PASSES (-2) = 7.0
+      </action>
+
+      <action>Determine Evidence Verdict:
+        - **EXEMPLARY** (score ≤ -3): Many clean passes, minimal issues
+        - **APPROVED** (score &lt; 3): Acceptable quality, minor issues only
+        - **MAJOR REWORK** (3 ≤ score &lt; 7): Significant issues require attention
+        - **REJECT** (score ≥ 7): Critical problems, needs complete rewrite
+      </action>
+
+      <action>Store for output:
+        - {{evidence_findings}}: List of findings with severity_icon, severity, description, source, score
+        - {{clean_pass_count}}: Number of clean categories
+        - {{evidence_score}}: Calculated total score
+        - {{evidence_verdict}}: EXEMPLARY/APPROVED/MAJOR REWORK/REJECT
+      </action>
+    </substep>
+  </step>
+
+  <step n="3" goal="Present findings">
+    <critical>OUTPUT MARKERS REQUIRED: Your code review report MUST start with the marker &lt;!-- CODE_REVIEW_REPORT_START --&gt; on its own line BEFORE the report content, and MUST end with the marker &lt;!-- CODE_REVIEW_REPORT_END --&gt; on its own line AFTER the final line. The orchestrator extracts ONLY content between these markers. Any text outside the markers (thinking, commentary) will be discarded.</critical>
+
+    <action>Generate the code review report using the template below as FORMAT GUIDE</action>
+    <action>Replace all {{placeholders}} with actual values from your analysis</action>
+    <action>Output the complete report to stdout</action>
+
+    <o>
+<!-- CODE_REVIEW_REPORT_START -->**🔥 ADVERSARIAL CODE REVIEW COMPLETE, Christian!**
+
+**Story:** /Users/christianlee/App-Development/TheFlightWall_OSS-main/_bmad-output/implementation-artifacts/stories/fn-1-6-dashboard-firmware-card-and-ota-upload-ui.md
+
+---
+
+## 📊 Review Summary
+
+| Category | Issues Found |
+|----------|--------------|
+| Git vs Story Discrepancies | {{git_discrepancy_count}} |
+| AC Implementation Gaps | {{ac_gaps_count}} |
+| Task Completion Lies | {{task_lies_count}} |
+| SOLID Violations | {{solid_count}} |
+| Hidden Bugs | {{bugs_count}} |
+| Performance Footguns | {{perf_count}} |
+| Security Vulnerabilities | {{security_count}} |
+| **Total Issues** | **{{total_issues}}** |
+
+---
+
+## Evidence Score Summary
+
+| Severity | Description | Source | Score |
+|----------|-------------|--------|-------|
+{{#each evidence_findings}}
+| {{severity_icon}} {{severity}} | Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval. | {{source}} | +{{score}} |
+{{/each}}
+{{#if clean_pass_count}}
+| 🟢 CLEAN PASS | {{clean_pass_count}} |
+{{/if}}
+
+### Evidence Score: {{evidence_score}}
+
+| Score | Verdict |
+|-------|---------|
+| **{{evidence_score}}** | **{{evidence_verdict}}** |
+
+---
+
+## 🏛️ Architectural Sins
+
+{{#each solid_violations}}
+- **[{{severity}}/10] {{principle}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💡 Fix: {{suggestion}}
+{{/each}}
+
+{{#each abstraction_issues}}
+- **{{issue_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#if no_architectural_sins}}
+✅ No significant architectural violations detected.
+{{/if}}
+
+---
+
+## 🐍 Pythonic Crimes &amp; Readability
+
+{{#each style_violations}}
+- **{{violation_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#each type_safety_issues}}
+- **Type Safety:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#if no_style_issues}}
+✅ Code follows style guidelines and is readable.
+{{/if}}
+
+---
+
+## ⚡ Performance &amp; Scalability
+
+{{#each performance_footguns}}
+- **[{{impact}}] {{issue_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💡 Fix: {{suggestion}}
+{{/each}}
+
+{{#if no_performance_issues}}
+✅ No significant performance issues detected.
+{{/if}}
+
+---
+
+## 🐛 Correctness &amp; Safety
+
+{{#each hidden_bugs}}
+- **🐛 Bug:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 🔄 Reproduction: {{reproduction}}
+{{/each}}
+
+{{#each security_vulnerabilities}}
+- **🔒 [{{severity}}] Security:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - ⚠️ Impact: {{impact}}
+{{/each}}
+
+{{#each lying_tests}}
+- **🎭 Lying Test:** {{test_name}}
+  - 📍 `{{file}}:{{line}}`
+  - 🤥 Why it lies: {{explanation}}
+{{/each}}
+
+{{#if no_correctness_issues}}
+✅ Code appears correct and secure.
+{{/if}}
+
+---
+
+## 🔧 Maintainability Issues
+
+{{#each tech_debt_bombs}}
+- **💣 Tech Debt:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💥 Explosion radius: {{impact}}
+{{/each}}
+
+{{#if no_maintainability_issues}}
+✅ Code is maintainable and well-documented.
+{{/if}}
+
+---
+
+## 🛠️ Suggested Fixes
+
+{{#each suggested_fixes}}
+### {{number}}. {{title}}
+
+**File:** `{{file}}`
+**Issue:** {{issue_summary}}
+
+{{#if file_under_250_lines}}
+**Corrected code:**
+```{{language}}
+{{corrected_code}}
+```
+{{else}}
+**Diff:**
+```diff
+{{diff}}
+```
+{{/if}}
+
+{{/each}}
+
+---
+
+**Review Actions:**
+- Issues Found: {{total_issues}}
+- Issues Fixed: 0
+- Action Items Created: 0
+
+{{#if evidence_verdict == "EXEMPLARY"}}
+🎉 Exemplary code quality!
+{{/if}}
+{{#if evidence_verdict == "APPROVED"}}
+✅ Code is approved and ready for deployment!
+{{/if}}
+{{#if evidence_verdict == "MAJOR REWORK"}}
+⚠️ Address the identified issues before proceeding.
+{{/if}}
+{{#if evidence_verdict == "REJECT"}}
+🚫 Code requires significant rework. Review action items carefully.
+{{/if}}
+    
+<!-- CODE_REVIEW_REPORT_END -->
+</o>
+  </step>
+
+</workflow></instructions>
+<output-template></output-template>
+</compiled-workflow>

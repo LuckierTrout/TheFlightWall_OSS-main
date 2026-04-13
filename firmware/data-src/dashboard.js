@@ -1,6 +1,108 @@
 /* FlightWall Dashboard — Display, Timing, Network/API, and Hardware settings */
 
 /**
+ * IANA-to-POSIX timezone mapping (Story fn-2.1).
+ * Browser auto-detects IANA via Intl API; ESP32 needs POSIX string for configTzTime().
+ * POSIX sign convention is inverted from UTC offset (west=positive, east=negative).
+ */
+var TZ_MAP = {
+  // North America
+  "America/New_York":       "EST5EDT,M3.2.0,M11.1.0",
+  "America/Chicago":        "CST6CDT,M3.2.0,M11.1.0",
+  "America/Denver":         "MST7MDT,M3.2.0,M11.1.0",
+  "America/Los_Angeles":    "PST8PDT,M3.2.0,M11.1.0",
+  "America/Phoenix":        "MST7",
+  "America/Anchorage":      "AKST9AKDT,M3.2.0,M11.1.0",
+  "Pacific/Honolulu":       "HST10",
+  "America/Toronto":        "EST5EDT,M3.2.0,M11.1.0",
+  "America/Vancouver":      "PST8PDT,M3.2.0,M11.1.0",
+  "America/Edmonton":       "MST7MDT,M3.2.0,M11.1.0",
+  "America/Winnipeg":       "CST6CDT,M3.2.0,M11.1.0",
+  "America/Halifax":        "AST4ADT,M3.2.0,M11.1.0",
+  "America/St_Johns":       "NST3:30NDT,M3.2.0,M11.1.0",
+  "America/Mexico_City":    "CST6",
+  "America/Tijuana":        "PST8PDT,M3.2.0,M11.1.0",
+  // Europe
+  "Europe/London":          "GMT0BST,M3.5.0/1,M10.5.0",
+  "Europe/Paris":           "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Berlin":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Madrid":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Rome":            "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Amsterdam":       "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Brussels":        "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Zurich":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Vienna":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Warsaw":          "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Stockholm":       "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Oslo":            "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Copenhagen":      "CET-1CEST,M3.5.0/2,M10.5.0/3",
+  "Europe/Helsinki":        "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Athens":          "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Bucharest":       "EET-2EEST,M3.5.0/3,M10.5.0/4",
+  "Europe/Istanbul":        "TRT-3",
+  "Europe/Moscow":          "MSK-3",
+  "Europe/Lisbon":          "WET0WEST,M3.5.0/1,M10.5.0",
+  "Europe/Dublin":          "IST-1GMT0,M10.5.0,M3.5.0/1",
+  // Asia
+  "Asia/Tokyo":             "JST-9",
+  "Asia/Shanghai":          "CST-8",
+  "Asia/Hong_Kong":         "HKT-8",
+  "Asia/Singapore":         "SGT-8",
+  "Asia/Kolkata":           "IST-5:30",
+  "Asia/Dubai":             "GST-4",
+  "Asia/Seoul":             "KST-9",
+  "Asia/Bangkok":           "ICT-7",
+  "Asia/Jakarta":           "WIB-7",
+  "Asia/Taipei":            "CST-8",
+  "Asia/Karachi":           "PKT-5",
+  "Asia/Dhaka":             "BST-6",
+  "Asia/Riyadh":            "AST-3",
+  "Asia/Tehran":            "IRST-3:30",
+  // Oceania
+  "Australia/Sydney":       "AEST-10AEDT,M10.1.0,M4.1.0/3",
+  "Australia/Melbourne":    "AEST-10AEDT,M10.1.0,M4.1.0/3",
+  "Australia/Perth":        "AWST-8",
+  "Australia/Brisbane":     "AEST-10",
+  "Australia/Adelaide":     "ACST-9:30ACDT,M10.1.0,M4.1.0/3",
+  "Pacific/Auckland":       "NZST-12NZDT,M9.5.0,M4.1.0/3",
+  "Pacific/Fiji":           "FJT-12",
+  // South America
+  "America/Sao_Paulo":      "BRT3",
+  "America/Argentina/Buenos_Aires": "ART3",
+  "America/Santiago":       "CLT4CLST,M9.1.6/24,M4.1.6/24",
+  "America/Bogota":         "COT5",
+  "America/Lima":           "PET5",
+  "America/Caracas":        "VET4",
+  // Africa / Middle East
+  "Africa/Cairo":           "EET-2EEST,M4.5.5/0,M10.5.4/24",
+  "Africa/Johannesburg":    "SAST-2",
+  "Africa/Lagos":           "WAT-1",
+  "Africa/Nairobi":         "EAT-3",
+  "Africa/Casablanca":      "WET0WEST,M3.5.0/2,M10.5.0/3",
+  "Asia/Jerusalem":         "IST-2IDT,M3.4.4/26,M10.5.0",
+  // UTC
+  "UTC":                    "UTC0",
+  "Etc/UTC":                "UTC0",
+  "Etc/GMT":                "GMT0"
+};
+
+/**
+ * Detect browser timezone and return IANA + POSIX pair.
+ * Falls back to UTC if browser timezone is not in TZ_MAP.
+ * @returns {{ iana: string, posix: string }}
+ */
+function getTimezoneConfig() {
+  var iana = "UTC";
+  try {
+    iana = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (e) {
+    // Intl API not available — fall back to UTC
+  }
+  var posix = TZ_MAP[iana] || "UTC0";
+  return { iana: iana, posix: posix };
+}
+
+/**
  * Shared zone calculation algorithm (must match C++ LayoutEngine::compute exactly).
  * @param {number} tilesX - Number of horizontal tiles
  * @param {number} tilesY - Number of vertical tiles
@@ -2475,8 +2577,420 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     clearDirtyState();
   });
 
+  // --- Mode Picker (Story dl-1.5) ---
+  var modeStatusName = document.getElementById('modeStatusName');
+  var modeStatusReason = document.getElementById('modeStatusReason');
+  var modeCardsList = document.getElementById('modeCardsList');
+  var modeSwitchInFlight = false;
+
+  function updateModeStatus(data) {
+    var activeMode = null;
+    if (data.modes && data.active) {
+      for (var i = 0; i < data.modes.length; i++) {
+        if (data.modes[i].id === data.active) {
+          activeMode = data.modes[i];
+          break;
+        }
+      }
+    }
+    // Batch DOM update — status line + card subtitles in one operation
+    if (modeStatusName && activeMode) {
+      modeStatusName.textContent = activeMode.name;
+    }
+    if (modeStatusReason) {
+      modeStatusReason.textContent = data.state_reason || 'unknown';
+    }
+    // Update mode cards (active state + subtitle)
+    if (modeCardsList) {
+      var cards = modeCardsList.querySelectorAll('.mode-card');
+      for (var j = 0; j < cards.length; j++) {
+        var cardId = cards[j].getAttribute('data-mode-id');
+        var subtitle = cards[j].querySelector('.mode-card-subtitle');
+        if (cardId === data.active) {
+          cards[j].classList.add('active');
+          if (subtitle) subtitle.textContent = data.state_reason || '';
+        } else {
+          cards[j].classList.remove('active');
+          if (subtitle) subtitle.textContent = '';
+        }
+        cards[j].classList.remove('switching');
+      }
+    }
+  }
+
+  function renderModeCards(data) {
+    if (!modeCardsList || !data.modes) return;
+    modeCardsList.innerHTML = '';
+    for (var i = 0; i < data.modes.length; i++) {
+      var mode = data.modes[i];
+      var card = document.createElement('div');
+      card.className = 'mode-card' + (mode.id === data.active ? ' active' : '');
+      card.setAttribute('data-mode-id', mode.id);
+      var nameEl = document.createElement('div');
+      nameEl.className = 'mode-card-name';
+      nameEl.textContent = mode.name;
+      card.appendChild(nameEl);
+      var subtitleEl = document.createElement('div');
+      subtitleEl.className = 'mode-card-subtitle';
+      subtitleEl.textContent = (mode.id === data.active) ? (data.state_reason || '') : '';
+      card.appendChild(subtitleEl);
+      card.addEventListener('click', (function(modeId) {
+        return function() { switchMode(modeId); };
+      })(mode.id));
+      modeCardsList.appendChild(card);
+    }
+  }
+
+  function switchMode(modeId) {
+    if (modeSwitchInFlight) return;
+    modeSwitchInFlight = true;
+    // Set switching state on the target card
+    if (modeCardsList) {
+      var cards = modeCardsList.querySelectorAll('.mode-card');
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].getAttribute('data-mode-id') === modeId) {
+          cards[i].classList.add('switching');
+          var sub = cards[i].querySelector('.mode-card-subtitle');
+          if (sub) sub.textContent = 'Switching...';
+        }
+      }
+    }
+    FW.post('/api/display/mode', { mode_id: modeId }).then(function(res) {
+      modeSwitchInFlight = false;
+      if (!res.body || !res.body.ok) {
+        var errMsg = (res.body && res.body.error) ? res.body.error : 'Mode switch failed';
+        FW.showToast(errMsg, 'error');
+        loadDisplayModes(); // refresh to clear switching state
+        return;
+      }
+      // Re-fetch full mode state for consistent update (AC #4, #8)
+      loadDisplayModes();
+    }).catch(function() {
+      modeSwitchInFlight = false;
+      FW.showToast('Cannot reach device. Check connection.', 'error');
+      loadDisplayModes();
+    });
+  }
+
+  function loadDisplayModes() {
+    FW.get('/api/display/modes').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) {
+        FW.showToast('Failed to load display modes', 'error');
+        return;
+      }
+      var data = res.body.data;
+      renderModeCards(data);
+      updateModeStatus(data);
+    }).catch(function() {
+      FW.showToast('Cannot reach device to load display modes. Check connection.', 'error');
+    });
+  }
+
+  // --- Firmware card / OTA Upload (Story fn-1.6) ---
+  var otaUploadZone = document.getElementById('ota-upload-zone');
+  var otaFileInput = document.getElementById('ota-file-input');
+  var otaFileInfo = document.getElementById('ota-file-info');
+  var otaFileName = document.getElementById('ota-file-name');
+  var btnUploadFirmware = document.getElementById('btn-upload-firmware');
+  var otaProgress = document.getElementById('ota-progress');
+  var otaProgressBar = document.getElementById('ota-progress-bar');
+  var otaProgressText = document.getElementById('ota-progress-text');
+  var otaReboot = document.getElementById('ota-reboot');
+  var otaRebootText = document.getElementById('ota-reboot-text');
+  var fwVersion = document.getElementById('fw-version');
+  var rollbackBanner = document.getElementById('rollback-banner');
+  var btnDismissRollback = document.getElementById('btn-dismiss-rollback');
+  var otaPendingFile = null;
+  var OTA_MAX_SIZE = 1572864; // 1.5MB = 0x180000
+  var btnCancelOta = document.getElementById('btn-cancel-ota');
+
+  function resetOtaUploadState() {
+    otaPendingFile = null;
+    otaUploadZone.style.display = '';
+    otaFileInfo.style.display = 'none';
+    otaProgress.style.display = 'none';
+    otaReboot.style.display = 'none';
+    otaProgressBar.style.width = '0%';
+    otaProgress.setAttribute('aria-valuenow', '0');
+    otaProgressText.textContent = '0%';
+    // Reset reboot text and color so a subsequent upload starts clean
+    otaRebootText.textContent = '';
+    otaRebootText.style.color = '';
+  }
+
+  // Cancel file selection — return to upload zone
+  if (btnCancelOta) {
+    btnCancelOta.addEventListener('click', function() {
+      resetOtaUploadState();
+    });
+  }
+
+  function loadFirmwareStatus() {
+    FW.get('/api/status').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) return;
+      var d = res.body.data;
+      if (d.firmware_version) {
+        fwVersion.textContent = 'Version: v' + d.firmware_version;
+      }
+      if (d.rollback_detected && !d.rollback_acknowledged) {
+        rollbackBanner.style.display = '';
+      } else {
+        rollbackBanner.style.display = 'none';
+      }
+    }).catch(function() {
+      FW.showToast('Could not load firmware status \u2014 check connection', 'error');
+    });
+  }
+
+  // Rollback banner dismiss
+  if (btnDismissRollback) {
+    btnDismissRollback.addEventListener('click', function() {
+      FW.post('/api/ota/ack-rollback', {}).then(function(res) {
+        if (res.body.ok) {
+          rollbackBanner.style.display = 'none';
+        }
+      }).catch(function() {
+        FW.showToast('Could not dismiss rollback banner', 'error');
+      });
+    });
+  }
+
+  // Click/keyboard to open file picker
+  otaUploadZone.addEventListener('click', function() {
+    otaFileInput.click();
+  });
+  otaUploadZone.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      otaFileInput.click();
+    }
+  });
+
+  // Drag and drop
+  otaUploadZone.addEventListener('dragenter', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.add('drag-over');
+  });
+  otaUploadZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.add('drag-over');
+  });
+  otaUploadZone.addEventListener('dragleave', function(e) {
+    // Only remove drag-over when the cursor truly leaves the zone, not
+    // when it moves over a child element (which fires dragleave on parent).
+    if (!otaUploadZone.contains(e.relatedTarget)) {
+      otaUploadZone.classList.remove('drag-over');
+    }
+  });
+  otaUploadZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    otaUploadZone.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      validateAndSelectFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // File input change
+  otaFileInput.addEventListener('change', function() {
+    if (otaFileInput.files && otaFileInput.files.length > 0) {
+      validateAndSelectFile(otaFileInput.files[0]);
+    }
+    otaFileInput.value = '';
+  });
+
+  function validateAndSelectFile(file) {
+    // Size check — reject empty files and files exceeding the OTA partition limit
+    if (file.size === 0) {
+      FW.showToast('File is empty \u2014 select a valid firmware .bin file', 'error');
+      resetOtaUploadState();
+      return;
+    }
+    if (file.size > OTA_MAX_SIZE) {
+      FW.showToast('File too large \u2014 maximum 1.5MB for OTA partition', 'error');
+      resetOtaUploadState();
+      return;
+    }
+
+    // Magic byte check
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var bytes = new Uint8Array(e.target.result);
+      if (bytes[0] !== 0xE9) {
+        FW.showToast('Not a valid ESP32 firmware image', 'error');
+        resetOtaUploadState();
+        return;
+      }
+      // Valid — show file info
+      otaPendingFile = file;
+      otaUploadZone.style.display = 'none';
+      otaFileInfo.style.display = '';
+      otaFileName.textContent = file.name;
+    };
+    reader.onerror = function() {
+      FW.showToast('Could not read file', 'error');
+      resetOtaUploadState();
+    };
+    reader.readAsArrayBuffer(file.slice(0, 4));
+  }
+
+  // Upload firmware via XMLHttpRequest (not fetch — XHR required for upload progress events)
+  if (btnUploadFirmware) {
+    btnUploadFirmware.addEventListener('click', function() {
+      if (!otaPendingFile) return;
+      uploadFirmware(otaPendingFile);
+    });
+  }
+
+  function uploadFirmware(file) {
+    // Prevent double-submit (e.g. rapid double-tap on slow connections)
+    if (btnUploadFirmware) btnUploadFirmware.disabled = true;
+
+    var xhr = new XMLHttpRequest();
+    var formData = new FormData();
+    formData.append('firmware', file, file.name);
+
+    // Show progress bar
+    otaFileInfo.style.display = 'none';
+    otaProgress.style.display = '';
+
+    xhr.upload.onprogress = function(e) {
+      if (e.lengthComputable) {
+        var pct = Math.round((e.loaded / e.total) * 100);
+        updateOtaProgress(pct);
+      }
+    };
+
+    xhr.onload = function() {
+      if (btnUploadFirmware) btnUploadFirmware.disabled = false;
+      if (xhr.status === 200) {
+        try {
+          var resp = JSON.parse(xhr.responseText);
+          if (resp.ok) {
+            updateOtaProgress(100);
+            startRebootCountdown();
+          } else {
+            FW.showToast(resp.error || 'Upload failed', 'error');
+            resetOtaUploadState();
+          }
+        } catch (e) {
+          FW.showToast('Upload failed \u2014 invalid response', 'error');
+          resetOtaUploadState();
+        }
+      } else {
+        try {
+          var errResp = JSON.parse(xhr.responseText);
+          FW.showToast(errResp.error || 'Upload failed', 'error');
+        } catch (e) {
+          FW.showToast('Upload failed \u2014 status ' + xhr.status, 'error');
+        }
+        resetOtaUploadState();
+      }
+    };
+
+    xhr.onerror = function() {
+      if (btnUploadFirmware) btnUploadFirmware.disabled = false;
+      FW.showToast('Connection lost during upload', 'error');
+      resetOtaUploadState();
+    };
+
+    // Timeout for stalled uploads (2 minutes)
+    xhr.timeout = 120000;
+    xhr.ontimeout = function() {
+      if (btnUploadFirmware) btnUploadFirmware.disabled = false;
+      FW.showToast('Upload timed out \u2014 try again', 'error');
+      resetOtaUploadState();
+    };
+
+    xhr.open('POST', '/api/ota/upload');
+    xhr.send(formData);
+  }
+
+  function updateOtaProgress(pct) {
+    otaProgressBar.style.width = pct + '%';
+    otaProgress.setAttribute('aria-valuenow', String(pct));
+    otaProgressText.textContent = pct + '%';
+  }
+
+  function startRebootCountdown() {
+    otaProgress.style.display = 'none';
+    otaReboot.style.display = '';
+    var count = 3;
+    otaRebootText.textContent = 'Rebooting in ' + count + '...';
+    var countdownInterval = setInterval(function() {
+      count--;
+      if (count > 0) {
+        otaRebootText.textContent = 'Rebooting in ' + count + '...';
+      } else {
+        clearInterval(countdownInterval);
+        otaRebootText.textContent = 'Waiting for device...';
+        startRebootPolling();
+      }
+    }, 1000);
+  }
+
+  function startRebootPolling() {
+    var attempts = 0;
+    var maxAttempts = 20;
+    var done = false;
+
+    function poll() {
+      if (done) return;
+      // Check timeout BEFORE issuing the next request so a slow final request
+      // cannot trigger both the success toast and the timeout message.
+      if (attempts >= maxAttempts) {
+        done = true;
+        otaRebootText.textContent = 'Device unreachable \u2014 try refreshing. The device may have changed IP address after reboot.';
+        otaRebootText.style.color = getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#d29922';
+        return;
+      }
+      attempts++;
+      // Use recursive setTimeout (not setInterval) so the next poll only fires
+      // AFTER the current request resolves — prevents concurrent in-flight
+      // requests piling up against the resource-constrained ESP32.
+      FW.get('/api/status?_=' + Date.now()).then(function(res) {
+        if (done) return;  // timeout already fired; discard late response
+        if (res.body && res.body.ok && res.body.data) {
+          done = true;
+          var newVersion = res.body.data.firmware_version || '';
+          FW.showToast('Updated to v' + newVersion, 'success');
+          fwVersion.textContent = 'Version: v' + newVersion;
+          resetOtaUploadState();
+          // Check rollback state after update
+          if (res.body.data.rollback_detected && !res.body.data.rollback_acknowledged) {
+            rollbackBanner.style.display = '';
+          } else {
+            rollbackBanner.style.display = 'none';
+          }
+        } else {
+          // Partial or not-yet-ready response — retry after delay
+          setTimeout(poll, 3000);
+        }
+      }).catch(function() {
+        // Device not yet reachable — retry after delay
+        if (!done) setTimeout(poll, 3000);
+      });
+    }
+
+    poll();
+  }
+
+  // --- Settings Export (Story fn-1.6) ---
+  var btnExportSettings = document.getElementById('btn-export-settings');
+  if (btnExportSettings) {
+    btnExportSettings.addEventListener('click', function() {
+      // Direct navigation triggers browser download via Content-Disposition header
+      window.location.href = '/api/settings/export';
+    });
+  }
+
   // --- Init ---
   var settingsPromise = loadSettings();
+
+  // Load firmware status (version, rollback) on page load (Story fn-1.6)
+  loadFirmwareStatus();
+
+  // Load display modes on page load (Story dl-1.5)
+  loadDisplayModes();
 
   // Load the logo list on page load
   loadLogoList();

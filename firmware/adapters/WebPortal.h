@@ -39,6 +39,8 @@ private:
     void _handleDeleteLogo(AsyncWebServerRequest* request);
     void _handleGetLogoFile(AsyncWebServerRequest* request);
 
+    void _handleGetDisplayModes(AsyncWebServerRequest* request);
+
     static void _serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType);
     void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);
 };

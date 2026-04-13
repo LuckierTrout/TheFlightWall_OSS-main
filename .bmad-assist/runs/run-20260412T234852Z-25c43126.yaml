@@ -1,0 +1,55 @@
+cli_args:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+cli_args_masked:
+- run
+- --project
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+current_phase: null
+ended_at: '2026-04-12T23:48:56.174979Z'
+epic: dl-1
+phase_events:
+- duration_ms: null
+  epic: dl-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: CODE_REVIEW_SYNTHESIS
+  provider: claude
+  status: null
+  story: dl-1.5
+  termination_metadata: null
+  timestamp: '2026-04-12T23:48:52.231694Z'
+- duration_ms: 3878
+  epic: dl-1
+  error_type: 'Synthesis failed: Unexpected SDK error: Command failed with exit code
+    1 (exit code: 1)
+
+    Error output:'
+  event_type: completed
+  model: opus
+  phase: CODE_REVIEW_SYNTHESIS
+  provider: claude
+  status: error
+  story: dl-1.5
+  termination_metadata: null
+  timestamp: '2026-04-12T23:48:56.110353Z'
+phases:
+- duration_ms: 3878
+  ended_at: '2026-04-12T23:48:56.110353Z'
+  error_type: 'Synthesis failed: Unexpected SDK error: Command failed with exit code
+    1 (exit code: 1)
+
+    Error output:'
+  model: opus
+  phase: CODE_REVIEW_SYNTHESIS
+  provider: claude
+  provider_count: 1
+  started_at: '2026-04-12T23:48:52.231694Z'
+  status: error
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 25c43126
+started_at: '2026-04-12T23:48:52.223785Z'
+status: completed
+story: dl-1.5

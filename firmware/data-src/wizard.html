@@ -17,6 +17,12 @@
     <!-- Step 1: WiFi -->
     <section id="step-1" class="step active">
       <h2>WiFi Network</h2>
+      <div class="settings-import-zone" id="settings-import-zone" role="button" tabindex="0" aria-label="Select settings backup file to import">
+        <span class="upload-prompt"><strong>Import settings</strong> from backup</span>
+        <span class="upload-hint">Select a flightwall-settings.json file</span>
+        <input type="file" id="import-file-input" accept=".json" hidden>
+      </div>
+      <p id="import-status" class="import-status" style="display:none"></p>
       <div id="scan-status" class="scan-status">
         <p class="scan-msg">Scanning for networks...</p>
         <div class="spinner"></div>

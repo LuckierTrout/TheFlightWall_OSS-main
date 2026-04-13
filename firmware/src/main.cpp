@@ -19,6 +19,7 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "esp_task_wdt.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
+#include "esp_sntp.h"
 #include "utils/Log.h"
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
@@ -30,6 +31,7 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "adapters/WebPortal.h"
 #include "core/LayoutEngine.h"
 #include "core/LogoManager.h"
+#include "core/ModeOrchestrator.h"
 
 // Firmware version defined in platformio.ini build_flags
 #ifndef FW_VERSION
@@ -59,6 +61,20 @@ static QueueHandle_t g_displayMessageQueue = nullptr;
 
 // Atomic flag for config change notification (Core 1 sets, Core 0 reads)
 static std::atomic<bool> g_configChanged(false);
+
+// NTP sync flag (Story fn-2.1) — set by SNTP callback on Core 1, read cross-core
+// Rule #30: cross-core atomics live in main.cpp only
+static std::atomic<bool> g_ntpSynced(false);
+
+// Public accessor for WebPortal and other modules (declared extern in consumers)
+bool isNtpSynced() { return g_ntpSynced.load(); }
+
+// SNTP sync notification callback — fires on LWIP task (Core 1) when time syncs
+static void onNtpSync(struct timeval* tv) {
+    g_ntpSynced.store(true);
+    SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Clock synced");
+    LOG_I("NTP", "Time synchronized");
+}
 
 // --- Startup progress coordinator (Story 1.8) ---
 // Owns the ordered LED status sequence during post-wizard startup.
@@ -124,6 +140,9 @@ static unsigned long g_bootStartMs = 0;
 // networks, while ensuring bootloader-triggered rollback if firmware crashes before this.
 // Typical WiFi connect: 5–15s. No-WiFi fallback: marks valid after 60s.
 static constexpr unsigned long OTA_SELF_CHECK_TIMEOUT_MS = 60000;
+// Transient esp_ota_get_state_partition failures on early loop iterations can skip AC #1/#2
+// messaging if WiFi is already up; retry a few times per visit before giving up for this call.
+static constexpr int OTA_PENDING_VERIFY_PROBE_ATTEMPTS = 5;
 
 // --- Flight stats snapshot for /api/status health page (Story 2.4) ---
 // Written from loop() on Core 1 after each fetch; read from HTTP handler on async TCP task.
@@ -430,26 +449,49 @@ static void detectRollback() {
 // Called from loop() until complete. Marks firmware valid via WiFi-OR-Timeout strategy.
 // Architecture Decision F3: WiFi connected OR 60s timeout — whichever comes first.
 
+static void tryResolveOtaPendingVerifyCache(int8_t& cache) {
+    if (cache != -1) return;
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    for (int attempt = 0; attempt < OTA_PENDING_VERIFY_PROBE_ATTEMPTS && cache == -1; ++attempt) {
+        if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
+            cache = (state == ESP_OTA_IMG_PENDING_VERIFY) ? 1 : 0;
+        }
+    }
+}
+
 static void performOtaSelfCheck() {
     if (g_otaSelfCheckDone) return;
 
-    // Cache pending-verify state once — OTA partition state cannot change while we're
+    // Cache pending-verify state once resolved — OTA partition state cannot change while we're
     // running, so avoid repeated IDF flash reads on every loop iteration.
     static int8_t s_isPendingVerify = -1;  // -1 = unchecked, 0 = already valid, 1 = pending
-    if (s_isPendingVerify == -1) {
-        const esp_partition_t* running = esp_ota_get_running_partition();
-        esp_ota_img_states_t state;
-        s_isPendingVerify = 0;
-        if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
-            s_isPendingVerify = (state == ESP_OTA_IMG_PENDING_VERIFY) ? 1 : 0;
-        }
-    }
-    bool isPendingVerify = (s_isPendingVerify == 1);
+    tryResolveOtaPendingVerifyCache(s_isPendingVerify);
+    // If running is NULL or state probe fails, s_isPendingVerify stays -1 and retries next call.
 
     unsigned long elapsed = millis() - g_bootStartMs;
     bool wifiConnected = (g_wifiManager.getState() == WiFiState::STA_CONNECTED);
 
     if (wifiConnected || elapsed >= OTA_SELF_CHECK_TIMEOUT_MS) {
+        // WiFi may already be up on the first completion visit; probe again so we do not
+        // treat a pending-verify boot as "normal" after a single transient read failure.
+        tryResolveOtaPendingVerifyCache(s_isPendingVerify);
+        const bool isPendingVerify = (s_isPendingVerify == 1);
+
+        // Deferred rollback status — report as soon as WiFi/timeout condition fires,
+        // independent of mark_valid result to satisfy AC #4 even if mark_valid fails.
+        // Static guard prevents repeated SystemStatus::set calls on retry iterations.
+        // Note: if mark_valid subsequently fails, its ERROR status will overwrite this WARNING
+        // in the OTA slot, but rollback_detected remains surfaced via FlightStatsSnapshot.
+        if (g_rollbackDetected) {
+            static bool s_rollbackStatusSet = false;
+            if (!s_rollbackStatusSet) {
+                SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
+                    "Firmware rolled back to previous version");
+                s_rollbackStatusSet = true;
+            }
+        }
+
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK) {
             if (isPendingVerify) {
@@ -465,14 +507,9 @@ static void performOtaSelfCheck() {
                 }
             } else {
                 LOG_V("OTA", "Self-check: already valid (normal boot)");
-                // AC #6: No SystemStatus::set call on normal boot
-            }
-
-            // Deferred rollback status (SystemStatus wasn't ready in setup())
-            // g_rollbackDetected persists until a new successful OTA — intentional per AC #4 / Gotcha #2
-            if (g_rollbackDetected) {
-                SystemStatus::set(Subsystem::OTA, StatusLevel::WARNING,
-                    "Firmware rolled back to previous version");
+                // AC #6: No SystemStatus::set call on normal boot.
+                // (Rollback WARNING above only fires when g_rollbackDetected is true — a distinct
+                // condition from a fresh normal boot with no rollback history.)
             }
 
             g_otaSelfCheckDone = true;
@@ -480,9 +517,14 @@ static void performOtaSelfCheck() {
             // mark_valid failed — log but do NOT set done flag; allow retry next loop iteration.
             // This call is idempotent and should always succeed on valid partitions; persistent
             // failure indicates a flash/NVS hardware problem requiring investigation.
-            String errMsg = "Failed to mark firmware valid: error " + String(err);
-            Serial.printf("[OTA] ERROR: esp_ota_mark_app_valid_cancel_rollback() failed: %d\n", err);
-            SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, errMsg);
+            // Static guard prevents log spam when condition fires on every loop during retry.
+            static bool s_markValidErrorLogged = false;
+            if (!s_markValidErrorLogged) {
+                String errMsg = "Failed to mark firmware valid: error " + String(err);
+                Serial.printf("[OTA] ERROR: esp_ota_mark_app_valid_cancel_rollback() failed: %d\n", err);
+                SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, errMsg);
+                s_markValidErrorLogged = true;
+            }
         }
     }
 }
@@ -531,11 +573,11 @@ void validatePartitionLayout() {
 
 void setup()
 {
+    // Record boot time BEFORE Serial/delay for accurate OTA self-check timing (Story fn-1.4).
+    // Story task requirement: capture millis() at top of setup(), before any delays.
+    g_bootStartMs = millis();
     Serial.begin(115200);
     delay(200);
-
-    // Record boot time for OTA self-check timing (Story fn-1.4)
-    g_bootStartMs = millis();
 
     // Log firmware version at boot (Story fn-1.1)
     Serial.println();
@@ -562,6 +604,13 @@ void setup()
 
     ConfigManager::init();
     SystemStatus::init();
+    ModeOrchestrator::init();
+
+    // NTP: register SNTP sync callback BEFORE WiFiManager starts (Story fn-2.1)
+    // Callback fires on LWIP task (Core 1) when NTP sync completes
+    sntp_set_time_sync_notification_cb(onNtpSync);
+    SystemStatus::set(Subsystem::NTP, StatusLevel::WARNING, "Clock not set");
+    LOG_I("Main", "SNTP callback registered, initial NTP status: WARNING");
 
     // Logo manager initialization (Story 3.2) — after LittleFS mount
     if (!LogoManager::init()) {
@@ -596,6 +645,15 @@ void setup()
     ConfigManager::onChange([]() {
         g_configChanged.store(true);
         g_layout = LayoutEngine::compute(ConfigManager::getHardware());
+
+        // Timezone hot-reload (Story fn-2.1): re-apply POSIX TZ on any config change.
+        // configTzTime() internally calls setenv("TZ",...) + tzset() + restarts SNTP.
+        // Does NOT reset g_ntpSynced — only the SNTP callback controls that flag.
+        ScheduleConfig sched = ConfigManager::getSchedule();
+        configTzTime(sched.timezone.c_str(), "pool.ntp.org", "time.nist.gov");
+#if LOG_LEVEL >= 2
+        Serial.println("[Main] Timezone hot-reloaded: " + sched.timezone);
+#endif
     });
     LOG_I("Main", "Config change callback registered");
 
@@ -875,6 +933,9 @@ void loop()
         g_statsStateVectors.store(static_cast<uint16_t>(states.size()));
         g_statsEnrichedFlights.store(static_cast<uint16_t>(enriched));
         // g_statsLogosMatched stays 0 until Epic 3
+
+        // Tick orchestrator for idle fallback logic (Story dl-1.5)
+        ModeOrchestrator::tick(static_cast<uint8_t>(flights.size() > 255 ? 255 : flights.size()));
 
 #if LOG_LEVEL >= 2
         Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");

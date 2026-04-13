@@ -483,6 +483,65 @@ void test_system_status_ota_ntp() {
     TEST_ASSERT_TRUE(obj["ntp"]["message"] == "Synced");
 }
 
+// --- NTP Story fn-2.1 Tests ---
+
+void test_ntp_status_transitions() {
+    // Verify NTP subsystem supports WARNING -> OK state transitions
+    SystemStatus::init();
+
+    // Initial state: WARNING (clock not set)
+    SystemStatus::set(Subsystem::NTP, StatusLevel::WARNING, "Clock not set");
+    SubsystemStatus s1 = SystemStatus::get(Subsystem::NTP);
+    TEST_ASSERT_EQUAL(StatusLevel::WARNING, s1.level);
+    TEST_ASSERT_TRUE(s1.message == "Clock not set");
+
+    // After sync: OK (clock synced)
+    SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Clock synced");
+    SubsystemStatus s2 = SystemStatus::get(Subsystem::NTP);
+    TEST_ASSERT_EQUAL(StatusLevel::OK, s2.level);
+    TEST_ASSERT_TRUE(s2.message == "Clock synced");
+}
+
+void test_schedule_timezone_default() {
+    // AC #1: getSchedule().timezone returns correct default "UTC0"
+    clearNvs();
+    ConfigManager::init();
+    ScheduleConfig s = ConfigManager::getSchedule();
+    TEST_ASSERT_TRUE(s.timezone == "UTC0");
+}
+
+void test_timezone_is_hot_reload_key() {
+    // AC #4: timezone change does NOT require reboot
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("timezone"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("sched_enabled"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("sched_dim_start"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("sched_dim_end"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("sched_dim_brt"));
+}
+
+void test_ntp_status_in_json_output() {
+    // AC #6: /api/status includes NTP subsystem in JSON
+    SystemStatus::init();
+    SystemStatus::set(Subsystem::NTP, StatusLevel::WARNING, "Clock not set");
+
+    JsonDocument doc;
+    JsonObject obj = doc.to<JsonObject>();
+    SystemStatus::toJson(obj);
+
+    TEST_ASSERT_TRUE(obj["ntp"].is<JsonObject>());
+    TEST_ASSERT_TRUE(obj["ntp"]["level"] == "warning");
+    TEST_ASSERT_TRUE(obj["ntp"]["message"] == "Clock not set");
+
+    // Transition to OK
+    SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Clock synced");
+    JsonDocument doc2;
+    JsonObject obj2 = doc2.to<JsonObject>();
+    SystemStatus::toJson(obj2);
+
+    TEST_ASSERT_TRUE(obj2["ntp"]["level"] == "ok");
+    TEST_ASSERT_TRUE(obj2["ntp"]["message"] == "Clock synced");
+}
+
 void setup() {
     delay(2000);
     UNITY_BEGIN();
@@ -529,6 +588,12 @@ void setup() {
     RUN_TEST(test_system_status_error);
     RUN_TEST(test_system_status_to_json);
     RUN_TEST(test_system_status_ota_ntp);
+
+    // NTP Story fn-2.1
+    RUN_TEST(test_ntp_status_transitions);
+    RUN_TEST(test_schedule_timezone_default);
+    RUN_TEST(test_timezone_is_hot_reload_key);
+    RUN_TEST(test_ntp_status_in_json_output);
 
     UNITY_END();
 }

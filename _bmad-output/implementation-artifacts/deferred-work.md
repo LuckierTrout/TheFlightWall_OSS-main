@@ -8,7 +8,13 @@
 
 - **Unsynchronized subsystem `String` access in `/api/status`** (`firmware/core/SystemStatus.cpp`): Added `SemaphoreHandle_t _mutex` to SystemStatus; `set()`, `get()`, and `toJson()` now take/give mutex. `toJson()` snapshots under lock, serializes outside. (Resolved 2026-04-03)
 
+## Deferred from: code review of fn-1-6-dashboard-firmware-card-and-ota-upload-ui.md (2026-04-13)
+
+- **Mixed-story diff surface** — `dashboard.html` / `dashboard.js` / `style.css` / `WebPortal.cpp` diffs bundle fn-1.6 with dl-1.5 (Display Mode) and other changes; prefer per-story commits or scoped diffs for reviewability.
+
 ## Open items
+
+- **OTA self-check Unity tests require hardware upload** (`firmware/test/test_ota_self_check/`): `pio test` on `esp32dev` defaults to build+upload; agents/CI without a connected board cannot execute the suite. Deferred from code review of `fn-1-4-ota-self-check-and-rollback-detection.md` (2026-04-12).
 
 - **Calibration mode uses `volatile bool` instead of `std::atomic<bool>`** (`firmware/adapters/NeoMatrixDisplay.h` `_calibrationMode`): Cross-core visibility not guaranteed on Xtensa dual-core ESP32. `volatile` prevents compiler optimization but does not issue memory barriers. Should use `std::atomic<bool>` for safe cross-core reads. (Surfaced by code review 2026-04-03, Story 4.2)
 

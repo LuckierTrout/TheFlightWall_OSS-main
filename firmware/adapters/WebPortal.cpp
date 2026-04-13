@@ -25,6 +25,7 @@ GET /api/status extended JSON (Story 2.4):
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Update.h>
+#include <Preferences.h>
 #include <esp_ota_ops.h>
 #include <vector>
 #include "core/ConfigManager.h"
@@ -35,7 +36,11 @@ GET /api/status extended JSON (Story 2.4):
 // Defined in main.cpp — provides thread-safe flight stats for the health page
 extern FlightStatsSnapshot getFlightStatsSnapshot();
 
+// Defined in main.cpp — NTP sync status accessor (Story fn-2.1)
+extern bool isNtpSynced();
+
 #include "core/LayoutEngine.h"
+#include "core/ModeOrchestrator.h"
 
 namespace {
 struct PendingRequestBody {
@@ -283,6 +288,62 @@ void WebPortal::_registerRoutes() {
     _server->on("/api/calibration/stop", HTTP_POST, [this](AsyncWebServerRequest* request) {
         _handlePostCalibrationStop(request);
     });
+
+    // GET /api/display/modes (Story dl-1.5) — mode list with orchestrator state
+    _server->on("/api/display/modes", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetDisplayModes(request);
+    });
+
+    // POST /api/display/mode (Story dl-1.5) — manual mode switch
+    _server->on("/api/display/mode", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (total == 0 || data == nullptr) {
+                _sendJsonError(request, 400, "Empty request body", "EMPTY_PAYLOAD");
+                return;
+            }
+            if (index + len == total) {
+                // Parse the mode_id from request body (use `len` not `total`: data points to the
+                // current chunk only; passing `total` would read past the buffer on multi-chunk bodies)
+                JsonDocument reqDoc;
+                DeserializationError err = deserializeJson(reqDoc, data, len);
+                if (err) {
+                    _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
+                    return;
+                }
+                const char* modeId = reqDoc["mode_id"] | (const char*)nullptr;
+                if (!modeId) {
+                    _sendJsonError(request, 400, "Missing mode_id field", "MISSING_FIELD");
+                    return;
+                }
+
+                // Resolve mode name from ID (simple lookup)
+                const char* modeName = nullptr;
+                if (strcmp(modeId, "classic_card") == 0) modeName = "Classic Card";
+                else if (strcmp(modeId, "live_flight") == 0) modeName = "Live Flight Card";
+                else if (strcmp(modeId, "clock") == 0) modeName = "Clock";
+                else {
+                    _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
+                    return;
+                }
+
+                // Switch via orchestrator (Rule 24: always go through orchestrator)
+                ModeOrchestrator::onManualSwitch(modeId, modeName);
+
+                JsonDocument doc;
+                JsonObject root = doc.to<JsonObject>();
+                root["ok"] = true;
+                JsonObject respData = root["data"].to<JsonObject>();
+                respData["switching_to"] = modeId;
+                respData["orchestrator_state"] = ModeOrchestrator::getStateString();
+                respData["state_reason"] = ModeOrchestrator::getStateReason();
+                String output;
+                serializeJson(doc, output);
+                request->send(200, "application/json", output);
+            }
+        }
+    );
 
     // GET /api/logos — list uploaded logos
     _server->on("/api/logos", HTTP_GET, [this](AsyncWebServerRequest* request) {
@@ -555,10 +616,71 @@ void WebPortal::_registerRoutes() {
                 }
                 // Clear started so clearOTAUpload does NOT call Update.abort() on a completed update
                 state->started = false;
+
+                // Reset rollback acknowledgment so a future rollback shows the banner again (Story fn-1.6)
+                Preferences otaPrefs;
+                if (otaPrefs.begin("flightwall", false)) {
+                    otaPrefs.putUChar("ota_rb_ack", 0);
+                    otaPrefs.end();
+                } else {
+                    LOG_E("OTA", "Failed to open NVS to clear rollback ack — banner may stay dismissed after rollback");
+                }
+
                 LOG_I("OTA", "Update finalized successfully");
             }
         }
     );
+
+    // POST /api/ota/ack-rollback — dismiss rollback banner (Story fn-1.6)
+    _server->on("/api/ota/ack-rollback", HTTP_POST, [](AsyncWebServerRequest* request) {
+        Preferences prefs;
+        if (!prefs.begin("flightwall", false)) {
+            request->send(500, "application/json", "{\"ok\":false,\"error\":\"NVS access failed\",\"code\":\"NVS_ERROR\"}");
+            return;
+        }
+        size_t written = prefs.putUChar("ota_rb_ack", 1);
+        prefs.end();
+        if (written == 0) {
+            request->send(500, "application/json", "{\"ok\":false,\"error\":\"Failed to save acknowledgment\",\"code\":\"NVS_WRITE_ERROR\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // GET /api/settings/export — download config as JSON file (Story fn-1.6)
+    _server->on("/api/settings/export", HTTP_GET, [](AsyncWebServerRequest* request) {
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["flightwall_settings_version"] = 1;
+
+        // Timestamp — use NTP time if available, else uptime
+        time_t now;
+        time(&now);
+        if (now > 1000000000) {  // NTP synced (past year 2001)
+            char buf[32];
+            struct tm timeinfo;
+            localtime_r(&now, &timeinfo);
+            strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+            root["exported_at"] = String(buf);
+        } else {
+            root["exported_at"] = String("uptime_ms_") + String(millis());
+        }
+
+        ConfigManager::dumpSettingsJson(root);
+
+        String output;
+        serializeJson(doc, output);
+
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", output);
+        response->addHeader("Content-Disposition", "attachment; filename=flightwall-settings.json");
+        request->send(response);
+    });
 
     // Shared static assets (gzipped on LittleFS)
     _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -659,6 +781,16 @@ void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
     JsonObject data = root["data"].to<JsonObject>();
     FlightStatsSnapshot stats = getFlightStatsSnapshot();
     SystemStatus::toExtendedJson(data, stats);
+
+    // NTP and schedule status (Story fn-2.1)
+    data["ntp_synced"] = isNtpSynced();
+    data["schedule_active"] = (ConfigManager::getSchedule().sched_enabled == 1) && isNtpSynced();
+
+    // Rollback acknowledgment state (Story fn-1.6) — NVS-backed, not via ConfigManager
+    Preferences prefs;
+    prefs.begin("flightwall", true);  // read-only
+    data["rollback_acknowledged"] = prefs.getUChar("ota_rb_ack", 0) == 1;
+    prefs.end();
 
     String output;
     serializeJson(doc, output);
@@ -770,6 +902,45 @@ void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
 
     // Free scan memory for next scan
     WiFi.scanDelete();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    // Mode list (static for now; will grow with ModeRegistry in future stories)
+    JsonArray modes = data["modes"].to<JsonArray>();
+
+    const char* activeId = ModeOrchestrator::getActiveModeId();
+
+    // Classic Card mode
+    JsonObject mClassic = modes.add<JsonObject>();
+    mClassic["id"] = "classic_card";
+    mClassic["name"] = "Classic Card";
+    mClassic["active"] = (strcmp(activeId, "classic_card") == 0);
+
+    // Live Flight Card mode
+    JsonObject mLive = modes.add<JsonObject>();
+    mLive["id"] = "live_flight";
+    mLive["name"] = "Live Flight Card";
+    mLive["active"] = (strcmp(activeId, "live_flight") == 0);
+
+    // Clock mode
+    JsonObject mClock = modes.add<JsonObject>();
+    mClock["id"] = "clock";
+    mClock["name"] = "Clock";
+    mClock["active"] = (strcmp(activeId, "clock") == 0);
+
+    data["active"] = activeId;
+    data["switch_state"] = "idle";
+    data["orchestrator_state"] = ModeOrchestrator::getStateString();
+    data["state_reason"] = ModeOrchestrator::getStateReason();
 
     String output;
     serializeJson(doc, output);

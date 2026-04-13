@@ -1,0 +1,3372 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BMAD Prompt Run Metadata -->
+<!-- Epic: fn-1 -->
+<!-- Story: 7 -->
+<!-- Phase: code-review -->
+<!-- Timestamp: 20260413T023001Z -->
+<compiled-workflow>
+<mission><![CDATA[
+
+Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+
+Target: Story fn-1.7 - settings-import-in-setup-wizard
+Find 3-10 specific issues. Challenge every claim.
+
+]]></mission>
+<context>
+<file id="ed7fe483" path="_bmad-output/project-context.md" label="PROJECT CONTEXT"><![CDATA[
+
+---
+project_name: TheFlightWall_OSS-main
+date: '2026-04-12'
+---
+
+# Project Context for AI Agents
+
+Lean rules for implementing FlightWall (ESP32 LED flight display + captive-portal web UI). Prefer existing patterns in `firmware/` over new abstractions.
+
+## Technology Stack
+
+- **Firmware:** C++11, ESP32 (Arduino/PlatformIO), FastLED + Adafruit GFX + FastLED NeoMatrix, ArduinoJson ^7.4.2.
+- **Web on device:** ESPAsyncWebServer (**mathieucarbou fork**), AsyncTCP (**Carbou fork**), LittleFS (`board_build.filesystem = littlefs`), custom `custom_partitions.csv` (~2MB app + ~2MB LittleFS).
+- **Dashboard assets:** Editable sources under `firmware/data-src/`; served bundles are **gzip** under `firmware/data/`. After editing a source file, regenerate the matching `.gz` from `firmware/` (e.g. `gzip -9 -c data-src/common.js > data/common.js.gz`).
+
+## Critical Implementation Rules
+
+- **Core pinning:** Display/task driving LEDs on **Core 0**; WiFi, HTTP server, and flight fetch pipeline on **Core 1** (FastLED + WiFi ISR constraints).
+- **Config:** `ConfigManager` + NVS; debounce writes; atomic saves; use category getters; `POST /api/settings` JSON envelope `{ ok, data, error, code }` pattern for REST responses.
+- **Heap / concurrency:** Cap concurrent web clients (~2–3); stream LittleFS reads; use ArduinoJson filter/streaming for large JSON; avoid full-file RAM buffering for uploads.
+- **WiFi:** WiFiManager-style state machine (AP setup → STA → reconnect / AP fallback); mDNS `flightwall.local` in STA.
+- **Structure:** Extend hexagonal layout — `firmware/core/`, `firmware/adapters/` (e.g. `WebPortal.cpp`), `firmware/interfaces/`, `firmware/models/`, `firmware/config/`, `firmware/utils/`.
+- **Tooling:** Build from `firmware/` with `pio run`. On macOS serial: use `/dev/cu.*` (not `tty.*`); release serial monitor before upload.
+- **Scope for code reviews:** Product code under `firmware/` and tests under `firmware/test/` and repo `tests/`; do not treat BMAD-only paths as product defects unless the task says so.
+
+## Planning Artifacts
+
+- Requirements and design: `_bmad-output/planning-artifacts/` (`architecture.md`, `epics.md`, PRDs).
+- Stories and sprint line items: `_bmad-output/implementation-artifacts/` (e.g. `sprint-status.yaml`, per-story markdown).
+
+
+]]></file>
+<file id="893ad01d" path="_bmad-output/planning-artifacts/architecture.md" label="ARCHITECTURE"><![CDATA[
+
+# Architecture Decision Document — TheFlightWall OSS
+
+## Project Context
+
+**Functional Requirements:** 48 FRs across 9 groups: Device Setup & Onboarding (FR1-8), Configuration (FR9-14), Calibration (FR15-18), Flight Data (FR19-25), Logo Display (FR26-29), Responsive Layout (FR30-33), Logo Management (FR34-37), System Ops (FR38-48).
+
+**Key Non-Functional Requirements:**
+| NFR | Target | Driver |
+|-----|--------|--------|
+| Hot-reload latency | <1s | ConfigManager atomic flag, no polling |
+| Page load | <3s | Gzipped assets, minimal JS, ~280KB RAM ceiling |
+| WiFi recovery | <60s | Auto-reconnect + AP fallback |
+| Flash budget | 4MB total: 2MB app + 2MB LittleFS | Monitor usage, gzip web assets |
+| Concurrent ops | Web + flight + display | FreeRTOS task pinning: display Core 0, WiFi/web/API Core 1 |
+
+**Technology Stack (Locked):**
+- Language: C++11 (Arduino ESP32)
+- Platform: ESP32 with PlatformIO
+- Dependencies: FastLED ^3.6.0, Adafruit GFX ^1.11.9, FastLED NeoMatrix ^1.2, ArduinoJson ^7.4.2, **ESPAsyncWebServer (mathieucarbou fork) ^3.6.0**, **AsyncTCP (mathieucarbou fork)**, LittleFS (built-in), ESPmDNS (built-in)
+
+## Core Architectural Decisions
+
+### D1: ConfigManager — Singleton with Category Struct Getters
+Central singleton initialized first. Config values grouped into structs (DisplayConfig, LocationConfig, HardwareConfig, TimingConfig, NetworkConfig) for clean API and efficient access.
+
+**NVS Key Abbreviations (15-char limit):**
+| Key | Type | Default | Category |
+|-----|------|---------|----------|
+| brightness | uint8 | 5 | display |
+| text_color_r/g/b | uint8 | 255 | display |
+| center_lat/lon | double | 37.7749/-122.4194 | location |
+| radius_km | double | 10.0 | location |
+| tiles_x, tiles_y, tile_pixels | uint8 | 10,2,16 | hardware |
+| display_pin | uint8 | 25 | hardware |
+| origin_corner, scan_dir, zigzag | uint8 | 0 | hardware |
+| fetch_interval, display_cycle | uint16 | 30,3 | timing |
+| wifi_ssid, wifi_password | string | "" | network |
+| os_client_id, os_client_sec | string | "" | network |
+| aeroapi_key | string | "" | network |
+
+**Config flow:** Compile-time defaults → NVS read on boot → RAM cache (struct fields) → runtime changes via web UI → debounced NVS write (2s quiet period) → hot-reload via atomic flag (config) or FreeRTOS queue (flight data).
+
+**Reboot-required keys:** wifi_ssid, wifi_password, opensky credentials, aeroapi_key, display_pin. **Hot-reload keys:** brightness, text color, fetch/display intervals, layout params.
+
+### D2: Inter-Task Communication — Hybrid (Atomic Flags + FreeRTOS Queue)
+**Config changes:** `std::atomic<bool> configChanged` signals display task to re-read from ConfigManager.
+**Flight data:** `QueueHandle_t flightQueue` with `xQueueOverwrite()` — display task always gets latest data.
+
+### D3: WiFi State Machine — WiFiManager
+**States:** WIFI_AP_SETUP → WIFI_CONNECTING → WIFI_STA_CONNECTED ↔ WIFI_STA_RECONNECTING → WIFI_AP_FALLBACK
+
+**Transitions:** No WiFi config = AP_SETUP. Connected successfully = STA_CONNECTED. WiFi lost = STA_RECONNECTING (configurable timeout) → AP_FALLBACK. Long press GPIO 0 during boot = force AP_SETUP.
+
+### D4: Web API Endpoints (11 REST)
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/` | wizard.html (AP) or dashboard.html (STA) |
+| GET/POST | `/api/settings` | Get/apply config (reboot flag in response) |
+| GET | `/api/status` | System health |
+| GET | `/api/wifi/scan` | Async WiFi scan |
+| POST | `/api/reboot` | Save + reboot |
+| POST | `/api/reset` | Factory reset |
+| GET/POST/DELETE | `/api/logos` | Logo management |
+| GET | `/api/layout` | Zone layout (initial load) |
+
+Response envelope: `{ "ok": bool, "data": {...} }` or `{ "ok": false, "error": "message", "code": "..." }`
+
+### D5: Component Integration
+**Init sequence:** ConfigManager → SystemStatus → LogoManager → LayoutEngine → WiFiManager → WebPortal → FlightDataFetcher → displayTask on Core 0.
+
+**Dependency graph:** ConfigManager (all depend on). DisplayTask is read-only (atomic flag + queue peel). WebPortal is only write path.
+
+### D6: SystemStatus Registry
+Health tracking for subsystems (WIFI, OPENSKY, AEROAPI, CDN, NVS, LITTLEFS) with levels (OK/Warning/Error) and human-readable messages. API call counter with monthly NTP-based reset.
+
+### D7: Shared Zone Calculation Algorithm
+**Critical:** Implemented identically in C++ (LayoutEngine) and JavaScript (dashboard.js) to ensure canvas preview matches LEDs.
+
+**Test vectors:**
+| Config | Matrix | Mode | Logo Zone | Flight Card | Telemetry |
+|--------|--------|------|-----------|-------------|-----------|
+| 10x2 @ 16px | 160x32 | full | 0,0→32x32 | 32,0→128x16 | 32,16→128x16 |
+| 5x2 @ 16px | 80x32 | full | 0,0→32x32 | 32,0→48x16 | 32,16→48x16 |
+
+## Project Structure
+
+**Complete directory tree (44 files, 13 existing → updated, 5 new):**
+
+```
+firmware/
+├── platformio.ini (board_build.filesystem=littlefs, custom_partitions.csv)
+├── custom_partitions.csv (nvs 20KB, otadata 8KB, app0 2MB, spiffs 2MB)
+├── src/main.cpp (init sequence, loop, display task, FreeRTOS)
+├── core/
+│   ├── ConfigManager.h/.cpp
+│   ├── FlightDataFetcher.h/.cpp (updated: ConfigManager)
+│   ├── LayoutEngine.h/.cpp
+│   ├── LogoManager.h/.cpp
+│   └── SystemStatus.h/.cpp
+├── adapters/
+│   ├── NeoMatrixDisplay.h/.cpp
+│   ├── WebPortal.h/.cpp (11 endpoints)
+│   ├── WiFiManager.h/.cpp
+│   ├── OpenSkyFetcher.h/.cpp (updated: ConfigManager)
+│   ├── AeroAPIFetcher.h/.cpp (updated: ConfigManager)
+│   └── FlightWallFetcher.h/.cpp
+├── interfaces/ (unchanged: BaseDisplay, BaseFlightFetcher, BaseStateVectorFetcher)
+├── models/ (unchanged: FlightInfo, StateVector, AirportInfo)
+├── config/ (unchanged: compile-time defaults, migrated to ConfigManager)
+├── utils/
+│   └── Log.h (LOG_E/I/V compile-time macros, LOG_LEVEL build flag)
+├── data/ (LittleFS: *.gz web assets + logos/)
+└── test/ (test_config_manager, test_layout_engine)
+```
+
+## Foundation Release — OTA, Night Mode, Settings Export
+
+**4 new NVS keys (schedule):**
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| timezone | string | "UTC0" | POSIX timezone (from browser-side IANA-to-POSIX mapping) |
+| sched_enabled | uint8 | 0 | Schedule enable flag |
+| sched_dim_start, sched_dim_end | uint16 | 1380, 420 | Minutes since midnight (23:00 - 07:00) |
+| sched_dim_brt | uint8 | 10 | Brightness during dim window |
+
+**F1: Dual-OTA Partition Table**
+```
+nvs (20KB) | otadata (8KB) | app0 (1.5MB) | app1 (1.5MB) | spiffs (960KB)
+```
+Flash budget: 4MB total. LittleFS reduces 56% (2MB→960KB). One-time USB reflash required.
+
+**F2: OTA Handler (WebPortal + main.cpp)**
+Upload via `POST /api/ota/upload` multipart. Stream-to-partition via `Update.write()` per chunk. No RAM buffering of binary. Validate magic byte 0xE9 on first chunk. Reboot after successful `Update.end(true)`.
+
+**F3: OTA Self-Check — WiFi-OR-Timeout (60s)**
+Mark firmware valid when WiFi connects OR after 60-second timeout (whichever first). No self-HTTP-request. Watchdog handles crash-on-boot. If timeout path taken (WiFi down), device remains reachable via AP fallback for re-flash.
+
+**F4: IANA-to-POSIX Timezone Mapping — Browser-Side**
+JS object in wizard.js/dashboard.js: `{ "America/Los_Angeles": "PST8PDT,M3.2.0,M11.1.0", ... }`. Auto-detect via `Intl.DateTimeFormat()`. Send POSIX string to ESP32 via POST /api/settings.
+
+**F5: Night Mode Scheduler — Non-Blocking Main Loop**
+Schedule times as `uint16` minutes since midnight (0-1439). Midnight-crossing logic: if (dimStart <= dimEnd) then (current >= start && current < end), else (current >= start || current < end). Brightness scheduler overrides ConfigManager brightness. NTP sync via `configTzTime()` after WiFi connect. LWIP auto-resync every 1 hour.
+
+**F6: ConfigManager Expansion — 5 new keys + ScheduleConfig struct**
+All hot-reload, no reboot required. Timezone change calls `configTzTime()` immediately.
+
+**F7: API Endpoint Additions**
+| Endpoint | Purpose |
+|----------|---------|
+| POST `/api/ota/upload` | Multipart firmware upload |
+| GET `/api/settings/export` | Download JSON config file |
+| Updated `/api/status` | +firmware_version, +rollback_detected |
+
+**Settings export:** Flat JSON with `flightwall_settings_version: 1`, all NVS keys. Import is client-side only (wizard pre-fills form fields).
+
+## Display System Release — Mode System, Classic Card, Live Flight Card
+
+**4 new components: DisplayMode interface, ModeRegistry, ClassicCardMode, LiveFlightCardMode.**
+
+### DS1: DisplayMode Interface — Abstract Class with RenderContext
+```cpp
+class DisplayMode {
+    bool init(const RenderContext& ctx);
+    void render(const RenderContext& ctx, const std::vector<FlightInfo>& flights);
+    void teardown();
+    const char* getName() const;
+    const ModeZoneDescriptor& getZoneDescriptor() const;  // static metadata
+};
+
+struct RenderContext {
+    Adafruit_NeoMatrix* matrix;     // GFX primitives
+    LayoutResult layout;             // zone bounds
+    uint16_t textColor;              // pre-computed
+    uint8_t brightness;              // read-only
+    uint16_t* logoBuffer;            // shared 2KB
+    uint16_t displayCycleMs;         // cycle timing
+};
+```
+
+**Key rules:** Modes receive RenderContext const ref (cannot modify shared state). Modes own flight cycling state (_currentFlightIndex, _lastCycleMs). Empty flight vector is valid (modes decide idle state). Modes must NOT call FastLED.show() — frame commit is display task's responsibility.
+
+### DS2: ModeRegistry — Static Table with Cooperative Switch Serialization
+```cpp
+struct ModeEntry {
+    const char* id;           // e.g., "classic_card"
+    const char* displayName;
+    DisplayMode* (*factory)();  // factory function
+    uint32_t (*memoryRequirement)();  // static function, no instance
+    uint8_t priority;
+};
+
+class ModeRegistry {
+    static void init(const ModeEntry* table, uint8_t count);
+    static bool requestSwitch(const char* modeId);  // Core 1
+    static void tick(const RenderContext& ctx, const std::vector<FlightInfo>& flights);  // Core 0
+    static DisplayMode* getActiveMode();
+    static SwitchState getSwitchState();
+};
+```
+
+**Switch flow (in tick()):**
+1. _switchState = SWITCHING
+2. Teardown current mode
+3. Heap check: `ESP.getFreeHeap()` vs `memoryRequirement()`
+4. If sufficient: factory() → new mode → init(). If init() fails: restore previous.
+5. If insufficient: re-init previous, set error
+6. Debounced NVS write (2s quiet period)
+
+**Switch restoration pattern:** Teardown-but-don't-delete previous mode shell, enabling safe re-init on failure without re-allocation.
+
+### DS3: NeoMatrixDisplay Responsibility Split
+**Retained:** Hardware init, brightness control, frame commit (show()), fallback card rendering, calibration/positioning modes, shared resources (logo buffer, matrix, layout).
+
+**Extracted:** renderZoneFlight(), renderFlightZone(), renderTelemetryZone(), renderLogoZone() → ClassicCardMode.
+
+**New methods:** `RenderContext buildRenderContext()` (assembles context from internals), `show()` (wraps FastLED.show()).
+
+### DS4: Display Task Integration
+**In setup():** ModeRegistry::init(MODE_TABLE, MODE_COUNT). Restore last mode from NVS, default to "classic_card".
+
+**In displayTask():**
+```cpp
+if (g_configChanged.exchange(false)) {
+    cachedCtx = g_display.buildRenderContext();
+}
+if (calibrationMode) { ... }
+else if (positioningMode) { ... }
+else if (statusMessage) { ... }
+else {
+    ModeRegistry::tick(cachedCtx, flights);  // mode rendering
+}
+g_display.show();  // frame commit after mode renders
+```
+
+### DS5: Mode Switch API
+| Endpoint | Response |
+|----------|----------|
+| GET `/api/display/modes` | modes[], active, switch_state, upgrade_notification |
+| POST `/api/display/mode` | { switching_to: "mode_id" } or error |
+
+Response includes mode metadata (zones, description) for wireframe UI.
+
+### DS6: NVS Persistence — Single Key
+**Key:** `display_mode` (string, mode ID). **Default:** `"classic_card"`. **Debounce:** 2s after successful switch. Boot restoration reads from NVS, defaults to classic_card if absent.
+
+### DS7: Mode Picker UI
+Dashboard section with CSS Grid wireframe schematics. Each mode card is entire tap target. Tap triggers synchronous POST (returns after mode is rendering or fails). Transition feedback: card in "Switching..." state during POST, sibling cards disabled. All three dismiss actions (Try, Browse, X) clear notification via localStorage + POST /api/display/ack-notification.
+
+**NVS key pattern:** `display_mode` (unique with all MVP + Foundation keys, within namespace "flightwall").
+
+**Enforcement:** ClassicCardMode extraction — 3-phase (copy, validate parity, delete from source). Terminal fallback: if mode init fails twice, displayFallbackCard() renders single-flight legacy card.
+
+## Delight Release — Clock Mode, Departures Board, Scheduling, OTA Pull
+
+**New components: ModeOrchestrator (state machine), OTAUpdater (GitHub API client), ClockMode, DeparturesBoardMode.**
+
+### DL1: Fade Transition — RGB888 Dual Buffers (Transient)
+**Buffers:** ~30KB RGB888 (two CRGB arrays, 160x32 @ 3 bytes/pixel). Allocate at transition start, free immediately after fade completes. If malloc() fails: instant cut (graceful degradation, not error).
+
+**Blend:** 15 frames @ 66ms/frame = ~1s. Per-pixel linear interpolation: `r = (out*15 + in*step)/15`.
+
+### DL2: Mode Orchestration — State Machine
+**States:** MANUAL (user selection), SCHEDULED (time-based rule active), IDLE_FALLBACK (zero flights).
+**Priority:** SCHEDULED > IDLE_FALLBACK > MANUAL.
+
+**ModeOrchestrator::tick() (Core 1, ~1/sec):**
+1. Evaluate schedule rules (first match wins)
+2. If rule matches: SCHEDULED state, switch to rule mode
+3. If no rule && was SCHEDULED: MANUAL state, restore user selection
+4. If zero flights && MANUAL state: IDLE_FALLBACK, switch to Clock Mode
+5. If flights > 0 && IDLE_FALLBACK state: MANUAL, restore selection
+
+**Flight count signaling:** `std::atomic<uint8_t> g_flightCount` updated by FlightDataFetcher after queue write.
+
+### DL3: OTAUpdater — GitHub Releases API Client with SHA-256
+**Check (synchronous, ~1-2s):** GET releases/latest, parse JSON, compare tag_name vs FW_VERSION.
+
+**Download (FreeRTOS task, Core 1):**
+1. ModeRegistry::prepareForOTA() (teardown mode, set _switchState = SWITCHING)
+2. Download .sha256 (64-char hex string)
+3. Update.begin(partitionSize)
+4. Stream .bin: Update.write() + mbedtls_sha256_update() per chunk
+5. mbedtls_sha256_finish(), compare vs downloaded hash
+6. If match: Update.end(true) → ESP.restart(). If mismatch: Update.abort() → ERROR.
+
+**Error paths:** All errors after Update.begin() must call Update.abort(). Task self-deletes via `_downloadTask = nullptr; vTaskDelete(NULL)`.
+
+### DL4: Schedule Rules NVS Storage
+**Max 8 rules, indexed keys:**
+```
+sched_r{N}_start (uint16)    minutes since midnight
+sched_r{N}_end (uint16)      minutes since midnight
+sched_r{N}_mode (string)     mode ID
+sched_r{N}_ena (uint8)       enabled flag
+sched_r_count (uint8)        active rule count
+```
+Rules always compacted (no index gaps on delete).
+
+### DL5: Per-Mode Settings Schema
+**Mode declares settings as static const:**
+```cpp
+struct ModeSettingDef {
+    const char* key;      // ≤7 chars (NVS suffix)
+    const char* label;    // UI display name
+    const char* type;     // "uint8", "enum", etc.
+    int32_t defaultValue, minValue, maxValue;
+    const char* enumOptions;
+};
+
+struct ModeSettingsSchema {
+    const char* modeAbbrev;   // ≤5 chars for NVS prefix
+    const ModeSettingDef* settings;
+    uint8_t settingCount;
+};
+```
+
+**NVS key format:** `m_{abbrev}_{key}` (total ≤15 chars). ConfigManager helpers: `getModeSetting()` / `setModeSetting()`. API iterates settingsSchema dynamically (never hardcode field names).
+
+### DL6: API Endpoint Additions
+| Endpoint | Purpose |
+|----------|---------|
+| GET `/api/ota/check` | Check GitHub for update |
+| POST `/api/ota/pull` | Start download (spawns FreeRTOS task) |
+| GET `/api/ota/status` | Poll progress (state, %) |
+| GET `/api/schedule` | Get rules |
+| POST `/api/schedule` | Save rules |
+
+Updated `/api/display/modes`: includes `settings` array per mode (schema + current values, null for modes without settings).
+
+## Implementation Patterns & Consistency Rules
+
+**MVP Naming Conventions:**
+- Classes: PascalCase (ConfigManager, FlightDataFetcher)
+- Methods: camelCase (applyJson, fetchFlights)
+- Private members: _camelCase (_matrix, _currentFlightIndex)
+- Struct fields: snake_case (brightness, text_color_r, center_lat)
+- Constants: UPPER_SNAKE_CASE
+- Namespaces: PascalCase
+- Files: PascalCase.h/.cpp
+- Headers: #pragma once
+
+**NVS Key Convention:** snake_case, max 15 chars. Abbreviations documented in ConfigManager.h.
+
+**Logging Pattern:** #include "utils/Log.h", use LOG_E/LOG_I/LOG_V macros (compile-time levels).
+
+**Error Handling:** Boolean return + output parameter (no exceptions). SystemStatus reporting + log macros. JSON API responses: { "ok": bool, "data": {...} } or { "ok": false, "error": "message", "code": "..." }.
+
+**Memory:** String for dynamic text, const char* for constants. Avoid new/delete. Stream LittleFS files.
+
+**Web Assets:** Every fetch() must check json.ok and call showToast() on failure.
+
+**Enforcement Rules (30 total):**
+
+1-11 MVP: naming, NVS keys, includes, memory, logging, error handling, web patterns.
+
+12-16 Foundation: OTA validation (header before write), streaming (no RAM buffer), getLocalTime non-blocking (timeout=0), schedule times as uint16 minutes, settings import client-side only.
+
+17-23 Display System: modes in firmware/modes/, RenderContext isolation (no ConfigManager/WiFiManager from modes), modes never call FastLED.show(), heap allocation only in init/teardown, shared utils from DisplayUtils.h, adding mode = 2 touch points (file + MODE_TABLE line), MEMORY_REQUIREMENT static constexpr.
+
+24-30 Delight: ModeRegistry::requestSwitch() called from exactly 2 methods (ModeOrchestrator::tick/onManualSwitch), OTA SHA-256 incremental + Update.abort() on errors, prepareForOTA() sets _switchState=SWITCHING, fade buffers malloc/free in single call + alloc failure uses instant cut, per-mode settings via ConfigManager helpers + dynamic schema iteration, settings schemas in mode .h files not centralized, cross-core atomics in main.cpp only (modes/adapters don't access directly).
+
+## Validation Summary
+
+**Coverage:** 48 MVP + 37 Foundation + 36 Display System + 43 Delight = 164 FRs. All mapped to specific files and decisions. 21 MVP NFRs + 8 Foundation + 12 Display System + 21 Delight NFRs all addressed architecturally.
+
+**No critical gaps.** Party mode reviews across 3+ sessions incorporated 30+ refinements. Key catches: platformio.ini build filter blocker, DisplayMode interface vs instance methods contradiction, terminal fallback for mode init failure, flight cycling timing as highest-risk extraction point.
+
+**Readiness:** All decisions have code examples, struct definitions, API formats, state diagrams. File change maps complete. Enforcement rules with anti-patterns. Boot/loop integration points specified. Implementation sequence with dependencies. Tests required for ConfigManager, LayoutEngine, ModeRegistry, ModeOrchestrator, OTAUpdater, schedule NVS.
+
+**MVP implementation handoff:** Add ESPAsyncWebServer Carbou fork + LittleFS to platformio.ini, create custom_partitions.csv, build and verify existing flight pipeline still works, then implement ConfigManager + SystemStatus as foundation.
+
+**Foundation handoff:** Pre-implementation size gate (binary ≤1.3MB), then update partitions, expand ConfigManager (schedule), add OTA upload + self-check, integrate NTP + scheduler.
+
+**Display System handoff:** Measure heap baseline post-Foundation, create DisplayMode interface, ModeRegistry, extract ClassicCardMode with pixel-parity validation gate (human confirmation required), then LiveFlightCardMode, then Mode Picker UI.
+
+**Delight handoff:** ModeOrchestrator state machine, ClockMode + DeparturesBoardMode, OTAUpdater with GitHub API + SHA-256, schedule CRUD, mode settings schemas, UI for OTA Pull + scheduling.
+
+]]></file>
+<file id="ff10d1c0" path="_bmad-output/implementation-artifacts/stories/fn-1-7-settings-import-in-setup-wizard.md" label="DOCUMENTATION"><![CDATA[
+
+
+
+# Story fn-1.7: Settings Import in Setup Wizard
+
+Status: Ready for Review
+
+<!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
+
+## Story
+
+As a **user**,
+I want **to import a previously exported settings file in the setup wizard**,
+So that **I can quickly reconfigure my device after a partition migration without retyping API keys and coordinates**.
+
+## Acceptance Criteria
+
+1. **Given** the setup wizard loads **When** an import option is available **Then** the user can select a `.json` file via a file upload zone (reusing `.logo-upload-zone` CSS pattern) **And** the import zone appears at the top of Step 1 before the WiFi form fields **And** the import zone has `role="button"`, `tabindex="0"`, and descriptive `aria-label`
+
+2. **Given** a valid `flightwall-settings.json` file is selected **When** the browser reads the file via FileReader API **Then** the JSON is parsed client-side **And** recognized config keys pre-fill their corresponding wizard form fields across all steps (WiFi, API keys, location, hardware) **And** the user can navigate forward through pre-filled steps, reviewing each before confirming **And** a success toast shows the count of imported keys (e.g., "Imported 12 settings")
+
+3. **Given** the imported JSON contains unrecognized keys (e.g., `flightwall_settings_version`, `exported_at`, or future keys) **When** processing the import **Then** unrecognized keys are silently ignored without error **And** all recognized keys are still pre-filled correctly
+
+4. **Given** the imported file is not valid JSON **When** parsing fails **Then** an error toast shows "Could not read settings file — invalid format" **And** the wizard continues without pre-fill (manual entry still available) **And** the import zone resets to its initial state
+
+5. **Given** the imported file is valid JSON but contains no recognized config keys **When** processing completes **Then** a warning toast shows "No recognized settings found in file" **And** all form fields remain at their defaults
+
+6. **Given** settings are imported and the user completes the wizard **When** "Save & Connect" is tapped **Then** settings are applied via the normal `POST /api/settings` path (no new server-side import endpoint) **And** any imported keys that are NOT part of the wizard's 12 core fields (e.g., brightness, timing, calibration, schedule settings) are included in the POST payload alongside the wizard fields
+
+7. **Given** the import zone is visible **When** the user opts not to import **Then** the wizard functions identically to its current behavior — WiFi scan runs, steps proceed normally, no import-related UI interferes
+
+8. **Given** a settings file is imported **When** the user navigates to a pre-filled step **Then** the pre-filled fields are visually indistinguishable from user-typed values (no special styling needed — they're just pre-populated form values)
+
+9. **Given** updated web assets (wizard.html, wizard.js, style.css) **When** gzipped and placed in `firmware/data/` **Then** the gzipped copies replace existing ones for LittleFS upload
+
+## Tasks / Subtasks
+
+- [x] **Task 1: Add import zone HTML to wizard.html** (AC: #1, #7)
+  - [x] Add a settings import section at the top of Step 1 (`#step-1`), BEFORE the `#scan-status` div
+  - [x] HTML structure:
+    ```html
+    <div class="settings-import-zone" id="settings-import-zone" role="button" tabindex="0" aria-label="Select settings backup file to import">
+      <p class="upload-prompt">Have a backup? <strong>Import settings</strong></p>
+      <p class="upload-hint">Select a flightwall-settings.json file</p>
+      <input type="file" id="import-file-input" accept=".json" hidden>
+    </div>
+    ```
+  - [x] The import zone should be compact — 2 lines of text max, dashed border, same visual pattern as `.logo-upload-zone` but more minimal
+  - [x] Add a hidden success indicator `<p id="import-status" class="import-status" style="display:none"></p>` below the import zone to show "12 settings imported" after successful import
+
+- [x] **Task 2: Add import zone CSS to style.css** (AC: #1)
+  - [x] `.settings-import-zone` — Reuse pattern from `.logo-upload-zone`: dashed border `2px dashed var(--border)`, padding `12px`, border-radius `var(--radius)`, cursor pointer, text-align center, transition for border-color
+  - [x] `.settings-import-zone.drag-over` — Solid border `var(--primary)`, background `rgba(88,166,255,0.08)`
+  - [x] `.import-status` — font-size `0.8125rem`, color `var(--success)`, text-align center, margin-top `8px`
+  - [x] Target: ~15 lines of CSS, minimal footprint
+  - [x] All interactive elements meet 44x44px minimum touch targets
+  - [x] Works at 320px minimum viewport width
+
+- [x] **Task 3: Implement settings import logic in wizard.js** (AC: #2, #3, #4, #5, #6, #7, #8)
+  - [x] Add DOM references for import elements: `settings-import-zone`, `import-file-input`, `import-status`
+  - [x] Add `importedExtras` object (initially empty `{}`) to hold non-wizard keys from import
+  - [x] Define `WIZARD_KEYS` constant: the 12 keys that map to wizard form fields:
+    ```javascript
+    var WIZARD_KEYS = [
+      'wifi_ssid', 'wifi_password',
+      'os_client_id', 'os_client_sec', 'aeroapi_key',
+      'center_lat', 'center_lon', 'radius_km',
+      'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin'
+    ];
+    ```
+  - [x] Define `KNOWN_EXTRA_KEYS` constant: non-wizard config keys that should be preserved:
+    ```javascript
+    var KNOWN_EXTRA_KEYS = [
+      'brightness', 'text_color_r', 'text_color_g', 'text_color_b',
+      'origin_corner', 'scan_dir', 'zigzag',
+      'zone_logo_pct', 'zone_split_pct', 'zone_layout',
+      'fetch_interval', 'display_cycle',
+      'timezone', 'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
+    ];
+    ```
+  - [x] **Click/keyboard handler**: click on `.settings-import-zone` or Enter/Space key triggers hidden `#import-file-input` click
+  - [x] **File input change handler**: when a file is selected, read via `FileReader.readAsText()`, then call `processImportedSettings(text)`
+  - [x] **`processImportedSettings(text)` function**:
+    1. Try `JSON.parse(text)` — on failure: `FW.showToast('Could not read settings file — invalid format', 'error')`, return
+    2. Check parsed object is a plain object (not array/null) — on failure: same error toast, return
+    3. Iterate keys — for each key in `WIZARD_KEYS`, if present in parsed object, assign `state[key] = String(parsed[key])`
+    4. Iterate keys — for each key in `KNOWN_EXTRA_KEYS`, if present in parsed object, assign `importedExtras[key] = parsed[key]`
+    5. Count total recognized keys (wizard + extras)
+    6. If count === 0: `FW.showToast('No recognized settings found in file', 'warning')`, return
+    7. If count > 0: `FW.showToast('Imported ' + count + ' settings', 'success')`
+    8. Show import status indicator with count
+    9. Rehydrate current step's form fields from updated state (call `showStep(currentStep)`)
+  - [x] **Modify `saveAndConnect()` payload**: merge `importedExtras` into the payload object before POSTing:
+    ```javascript
+    // After building the existing 12-key payload:
+    var key;
+    for (key in importedExtras) {
+      if (importedExtras.hasOwnProperty(key)) {
+        payload[key] = importedExtras[key];
+      }
+    }
+    ```
+  - [x] **Guard against re-import**: if the user selects a new file after already importing, reset `importedExtras = {}` and re-process
+
+- [x] **Task 4: Add drag-and-drop support for import zone** (AC: #1)
+  - [x] `dragenter`/`dragover` on zone — add `.drag-over` class, prevent default
+  - [x] `dragleave` — remove `.drag-over` class (use `contains(e.relatedTarget)` check to avoid child-element flicker)
+  - [x] `drop` — remove `.drag-over` class, extract `e.dataTransfer.files[0]`, read via FileReader
+  - [x] Pattern matches the existing logo upload and OTA upload drag-and-drop implementations
+
+- [x] **Task 5: Gzip updated web assets** (AC: #9)
+  - [x] From `firmware/` directory, regenerate gzipped assets:
+    ```
+    gzip -9 -c data-src/wizard.html > data/wizard.html.gz
+    gzip -9 -c data-src/wizard.js > data/wizard.js.gz
+    gzip -9 -c data-src/style.css > data/style.css.gz
+    ```
+  - [x] Verify gzipped files replaced in `firmware/data/`
+
+- [x] **Task 6: Build and verify** (AC: #1-#9)
+  - [x] Run `~/.platformio/penv/bin/pio run` from `firmware/` — verify clean build
+  - [x] Verify binary size remains under 1.5MB limit
+  - [x] Measure total gzipped web asset size (should remain well under 50KB budget)
+
+## Dev Notes
+
+### Critical Architecture Constraints
+
+**Web Asset Build Pipeline (MANUAL)**
+Per project memory: No automated gzip build script. After editing any file in `firmware/data-src/`, manually run:
+```bash
+cd firmware
+gzip -9 -c data-src/wizard.html > data/wizard.html.gz
+gzip -9 -c data-src/wizard.js > data/wizard.js.gz
+gzip -9 -c data-src/style.css > data/style.css.gz
+```
+
+**This is a CLIENT-SIDE ONLY change — NO new server-side endpoints or firmware modifications are needed.** The import reads a JSON file in the browser, pre-fills the wizard state object, and the existing `POST /api/settings` path handles persistence. The only firmware files that change are the gzipped web assets.
+
+### Settings Export Format (from fn-1.6)
+
+The `GET /api/settings/export` endpoint (implemented in fn-1.6, Task 4) returns a JSON file with this structure:
+```json
+{
+  "flightwall_settings_version": 1,
+  "exported_at": "2026-04-12T15:30:45",
+  "brightness": 5,
+  "text_color_r": 255, "text_color_g": 255, "text_color_b": 255,
+  "center_lat": 37.7749, "center_lon": -122.4194, "radius_km": 10.0,
+  "tiles_x": 10, "tiles_y": 2, "tile_pixels": 16, "display_pin": 25,
+  "origin_corner": 0, "scan_dir": 0, "zigzag": 0,
+  "zone_logo_pct": 0, "zone_split_pct": 0, "zone_layout": 0,
+  "fetch_interval": 600, "display_cycle": 3,
+  "wifi_ssid": "MyNetwork", "wifi_password": "secret",
+  "os_client_id": "abc123", "os_client_sec": "def456",
+  "aeroapi_key": "ghi789",
+  "timezone": "PST8PDT,M3.2.0,M11.1.0",
+  "sched_enabled": 0,
+  "sched_dim_start": 1380, "sched_dim_end": 420, "sched_dim_brt": 10
+}
+```
+
+**Key mapping:**
+- 12 keys map directly to wizard `state` fields (wifi, API, location, hardware)
+- 18 keys are "extras" that the wizard doesn't display but should preserve in the POST payload
+- 2 keys are metadata (`flightwall_settings_version`, `exported_at`) — silently ignored
+
+### Wizard State Architecture
+
+The wizard maintains an in-memory `state` object with 12 keys (wizard.js lines 9-22). Each step rehydrates form fields from `state` when entered (lines 308-339) and saves fields back to `state` when leaving (lines 342-359).
+
+**Import strategy:** Pre-fill `state` with wizard-relevant keys from the imported JSON. Store non-wizard keys in a separate `importedExtras` object. When `saveAndConnect()` builds the POST payload (lines 463-476), merge `importedExtras` into it.
+
+**Hydration guard (wizard.js lines 62-77):** The existing `hydrateDefaults()` function checks `if (!state.center_lat && ...)` before populating from `/api/settings`. After import, these fields will already be non-empty, so `hydrateDefaults()` will correctly skip them. **No modification to `hydrateDefaults()` is needed.**
+
+### Import Zone Placement
+
+The import zone goes at the TOP of Step 1 (`#step-1`), before `#scan-status`. This placement:
+1. Is the first thing the user sees on wizard load
+2. Allows import before any WiFi scanning happens
+3. Doesn't interfere with the scan flow (scan still runs in the background)
+4. Pre-fills ALL steps, not just the current one
+
+After a successful import, the import zone can optionally collapse or show a success state, but it should NOT be removed — the user might want to re-import a different file.
+
+### Type Coercion for State Fields
+
+The wizard `state` object stores all values as **strings** (see lines 9-22). The import JSON has numeric values for location/hardware keys. When importing:
+- Wizard-state keys must be converted to strings: `state[key] = String(parsed[key])`
+- Extra keys should preserve their original types (numbers stay numbers) since they go directly into the POST payload which already handles the numeric conversion
+
+### Existing Patterns to Reuse
+
+**File upload zone CSS:** Reuse `.logo-upload-zone` pattern from style.css (lines ~310-320) — dashed border, drag-over state, centered text.
+
+**Drag-and-drop:** Reuse the pattern from the OTA upload zone in dashboard.js — `dragenter`/`dragover`/`dragleave`/`drop` with `contains(e.relatedTarget)` guard for dragleave.
+
+**Toast notifications:** Use `FW.showToast(message, severity)` from common.js — already available in wizard context.
+
+**FileReader API:** Already used in dashboard.js for OTA magic byte validation. Here we use `readAsText()` instead of `readAsArrayBuffer()`.
+
+### POST /api/settings Behavior with Extra Keys
+
+The `ConfigManager::applyJson()` method (called by `POST /api/settings`) processes each key individually and returns which keys were applied. Unknown keys cause the endpoint to return a 400 error (WebPortal.cpp line 207: "Unknown or invalid settings key"). 
+
+**Important:** The validation checks `if (result.applied.size() != settings.size())` — if ANY key is unrecognized, the entire request fails. This means:
+- `importedExtras` must ONLY contain keys that ConfigManager recognizes
+- The `KNOWN_EXTRA_KEYS` list must exactly match ConfigManager's accepted keys
+- Metadata keys like `flightwall_settings_version` and `exported_at` must NOT be included in `importedExtras`
+
+### What NOT to Do
+
+- **Do NOT create a new server-side endpoint** — import is purely client-side
+- **Do NOT modify `hydrateDefaults()`** — the existing guard logic handles pre-filled state correctly
+- **Do NOT modify wizard step count or flow** — the import is additive UI at the top of Step 1
+- **Do NOT add the import zone to dashboard.html** — import is wizard-only (the dashboard has direct settings editing)
+- **Do NOT include `flightwall_settings_version` or `exported_at` in `importedExtras`** — these are metadata keys, not config keys, and will cause the POST to fail with "Unknown or invalid settings key"
+
+### Project Structure Notes
+
+**Files to modify:**
+1. `firmware/data-src/wizard.html` — Add import zone HTML to Step 1
+2. `firmware/data-src/wizard.js` — Add import logic, modify `saveAndConnect()` payload
+3. `firmware/data-src/style.css` — Add import zone styles (~15 lines)
+4. `firmware/data/wizard.html.gz` — Regenerated
+5. `firmware/data/wizard.js.gz` — Regenerated
+6. `firmware/data/style.css.gz` — Regenerated
+
+**Files NOT to modify:**
+- `firmware/adapters/WebPortal.cpp` — No new endpoints needed
+- `firmware/adapters/WebPortal.h` — No changes
+- `firmware/core/ConfigManager.h/.cpp` — No changes
+- `firmware/data-src/dashboard.html` — Import is wizard-only
+- `firmware/data-src/dashboard.js` — Import is wizard-only
+- `firmware/data-src/common.js` — `FW.showToast` already available
+- `firmware/src/main.cpp` — No changes
+
+### References
+
+- [Source: epic-fn-1.md#Story fn-1.7 — All acceptance criteria, story definition]
+- [Source: architecture.md#D4 — POST /api/settings endpoint, JSON envelope pattern]
+- [Source: architecture.md#F7 — GET /api/settings/export format definition]
+- [Source: prd.md#FR1 — User can complete initial configuration from mobile browser]
+- [Source: prd.md#FR10 — Persist all configuration to NVS]
+- [Source: wizard.js lines 9-22 — Wizard state object with 12 keys]
+- [Source: wizard.js lines 62-77 — hydrateDefaults() guard logic]
+- [Source: wizard.js lines 342-359 — saveCurrentStepState() state persistence]
+- [Source: wizard.js lines 457-501 — saveAndConnect() POST payload construction]
+- [Source: wizard.js lines 290-339 — showStep() rehydration from state]
+- [Source: wizard.html lines 18-33 — Step 1 HTML structure, insertion point for import zone]
+- [Source: WebPortal.cpp lines 653-680 — GET /api/settings/export endpoint implementation]
+- [Source: WebPortal.cpp lines 200-208 — POST /api/settings validation (applied.size != settings.size = 400)]
+- [Source: ConfigManager.cpp lines 469-521 — dumpSettingsJson() exports all 30 config keys]
+- [Source: style.css lines ~310-320 — .logo-upload-zone pattern for reuse]
+- [Source: dashboard.js OTA upload zone — drag-and-drop pattern with relatedTarget guard]
+- [Source: fn-1-6 story — Settings export endpoint implementation details, CSS patterns]
+
+### Dependencies
+
+**This story depends on:**
+- fn-1.5 (Settings Export Endpoint) — COMPLETE (defines the JSON export format this story imports)
+- fn-1.6 (Dashboard Firmware Card & OTA Upload UI) — COMPLETE (implemented `GET /api/settings/export`, established file upload UI patterns)
+
+**No stories depend on this story** — fn-1.7 is the final story in Epic fn-1.
+
+### Previous Story Intelligence
+
+**From fn-1.1:** Binary size 1.15MB (76.8%). Partition size 0x180000 (1,572,864 bytes). `FW_VERSION` build flag established.
+
+**From fn-1.2:** `ConfigManager::dumpSettingsJson()` method exports all 30 config keys as flat JSON. NVS namespace is `"flightwall"`. ConfigManager accepts 30 known keys via `applyJson()`.
+
+**From fn-1.6:** `GET /api/settings/export` implemented with `Content-Disposition: attachment` header. Exports `flightwall_settings_version: 1` and `exported_at` metadata alongside all config keys. OTA upload zone established drag-and-drop patterns with `contains(e.relatedTarget)` dragleave guard. Build verified at 1.17MB (78.2%), 38KB total gzipped web assets.
+
+**Antipatterns from previous stories to avoid:**
+- Don't include metadata keys (`flightwall_settings_version`, `exported_at`) in the POST payload — they'll cause a 400 error from ConfigManager
+- Ensure all error paths reset UI to initial state (learned from fn-1.3/fn-1.6 cleanup patterns)
+- Use `contains(e.relatedTarget)` for dragleave events (learned from fn-1.6 code review)
+- Don't modify files outside the stated scope — this is a client-side-only change
+
+### Testing Strategy
+
+**Build verification:**
+```bash
+cd firmware && ~/.platformio/penv/bin/pio run
+# Expect: SUCCESS, binary < 1.5MB
+```
+
+**Gzip verification:**
+```bash
+cd firmware
+gzip -9 -c data-src/wizard.html > data/wizard.html.gz
+gzip -9 -c data-src/wizard.js > data/wizard.js.gz
+gzip -9 -c data-src/style.css > data/style.css.gz
+ls -la data/wizard.html.gz data/wizard.js.gz data/style.css.gz
+# Verify files exist and are reasonable size
+```
+
+**Manual test cases:**
+
+1. **Wizard loads — import zone visible:**
+   - Open wizard (connect to FlightWall AP, navigate to 192.168.4.1)
+   - Expect: Import zone visible at top of Step 1 before WiFi scan
+   - Expect: WiFi scan still runs normally below the import zone
+
+2. **Import valid settings file:**
+   - Export settings from dashboard (`Download Settings` in System card)
+   - Reset device to AP mode
+   - Open wizard, tap import zone, select the exported .json file
+   - Expect: Success toast "Imported N settings"
+   - Navigate through all 5 steps
+   - Expect: WiFi SSID/password, API keys, location, hardware all pre-filled
+   - Tap "Save & Connect"
+   - Expect: Settings applied and device reboots
+
+3. **Import file with extra keys only (no wizard keys):**
+   - Create a JSON file with only `{"brightness": 50, "fetch_interval": 120}`
+   - Import it
+   - Expect: Success toast "Imported 2 settings"
+   - Wizard fields remain at defaults (extras don't appear in wizard steps)
+   - Complete wizard with manual entry
+   - Expect: POST payload includes brightness=50 and fetch_interval=120 alongside wizard values
+
+4. **Import invalid JSON:**
+   - Select a non-JSON file (e.g., a .bin logo file, or a text file with invalid JSON)
+   - Expect: Error toast "Could not read settings file — invalid format"
+   - Wizard continues normally
+
+5. **Import JSON with no recognized keys:**
+   - Create `{"foo": "bar", "baz": 123}` file
+   - Import it
+   - Expect: Warning toast "No recognized settings found in file"
+
+6. **Import file with metadata keys:**
+   - Create `{"flightwall_settings_version": 1, "exported_at": "2026-01-01", "brightness": 50}`
+   - Import it
+   - Expect: Success toast "Imported 1 settings" (only brightness counted)
+   - Expect: `flightwall_settings_version` and `exported_at` NOT in POST payload
+
+7. **Skip import — wizard works normally:**
+   - Don't tap the import zone at all
+   - Navigate through all steps manually
+   - Expect: Wizard behaves identically to pre-import behavior
+
+8. **Import zone — keyboard access:**
+   - Tab to import zone, press Enter or Space
+   - Expect: File picker opens
+
+9. **Import zone — drag and drop:**
+   - Drag a .json file over the import zone
+   - Expect: Border becomes solid, background lightens
+   - Drop file
+   - Expect: File is processed
+
+10. **Responsive — 320px viewport:**
+    - Resize browser to 320px width
+    - Expect: Import zone visible and functional, doesn't overflow
+
+### Risk Mitigation
+
+1. **POST /api/settings key validation:** The server rejects the entire request if any key is unknown. The `KNOWN_EXTRA_KEYS` list must be kept in sync with ConfigManager's accepted keys. If a future firmware version adds new config keys but the user imports an old settings file, that's fine — missing keys just aren't sent. If a user imports a settings file from a NEWER firmware version with unknown keys, the extras filtering via `KNOWN_EXTRA_KEYS` ensures only recognized keys are sent.
+
+2. **Wizard.js file size:** Currently ~14KB unminified (~3.5KB gzipped). Adding ~80-100 lines of import logic is proportional (~7% increase). Well within the gzip budget.
+
+3. **WiFi password in settings export:** The exported JSON includes `wifi_password` in plaintext. This is by design (per architecture.md Security Model: "No authentication on web config UI, single-user trusted network"). The import simply reads it back. No additional security concern beyond what the export already accepts.
+
+4. **Type safety:** The wizard state stores strings; the export has numbers for location/hardware. The `String()` conversion in import handles this safely. The POST payload in `saveAndConnect()` already converts state strings to `Number()` (wizard.js lines 469-476), so the round-trip is: export(number) → import(String) → state(string) → payload(Number) → POST.
+
+## Dev Agent Record
+
+### Agent Model Used
+
+Claude Opus 4.6 (Implementation)
+
+### Debug Log References
+
+N/A
+
+### Completion Notes List
+
+**2026-04-12: Implementation complete — all 6 tasks, 9 ACs satisfied**
+- Task 1: Added import zone HTML to wizard.html Step 1, before scan-status div. Includes `role="button"`, `tabindex="0"`, `aria-label`, hidden file input, and status indicator.
+- Task 2: Added 10 lines of CSS for `.settings-import-zone`, `.drag-over` state, focus-visible outline, and `.import-status`. Reuses `.logo-upload-zone` dashed-border pattern. 44px min-height touch target.
+- Task 3: Added `WIZARD_KEYS` (12), `KNOWN_EXTRA_KEYS` (17), `importedExtras` object. `processImportedSettings()` handles JSON parse errors (AC #4), no-recognized-keys (AC #5), metadata key filtering (AC #3), wizard key pre-fill with `String()` coercion (AC #2, #8). Modified `saveAndConnect()` to merge extras into POST payload (AC #6). Re-import resets extras (guard against stale state).
+- Task 4: Drag-and-drop with `dragenter`/`dragover`/`dragleave`/`drop`. Uses `contains(e.relatedTarget)` guard per fn-1.6 antipattern lesson.
+- Task 5: Gzipped all 3 modified assets. wizard.html.gz=1.6KB, wizard.js.gz=6.2KB, style.css.gz=4.8KB. Total web assets 40.1KB (under 50KB budget).
+- Task 6: Build SUCCESS — 1.22MB (77.7% of 1.5MB partition). No regressions.
+- No server-side changes required — purely client-side import via FileReader + existing POST /api/settings.
+
+**2026-04-12: Code review synthesis round 2 — 3 issues fixed**
+- HIGH (wizard.js): `saveCurrentStepState()` was placed AFTER import populated `state`, causing DOM field reads (empty strings) to overwrite imported values before `showStep()` rehydrated. AC #2 was broken — Step 1 WiFi fields never showed imported values. Fixed by moving `saveCurrentStepState()` to the VERY FIRST line of `processImportedSettings()`, before JSON parsing. Imported values now correctly win over user-typed DOM values.
+- HIGH (WizardPage.ts): `configureMatrix()` called `tilePixelsSelect.selectOption()` on `#tile-pixels` which is `<input type="text">`, not `<select>`. Playwright's `selectOption()` throws on text inputs. Fixed to `fillInput()`.
+- MEDIUM (WizardPage.ts): `stepIndicator` getter targeted `.step-indicator, .wizard-steps` — neither of these selectors exists in the 5-step wizard HTML. The real element is `#progress`. Fixed locator.
+- wizard.js.gz regenerated at 6404 bytes (within 50KB budget, under 10KB per file).
+
+**2026-04-12: Ultimate context engine analysis completed**
+- Comprehensive analysis of epic-fn-1.md extracted all 6 acceptance criteria with BDD format, expanded to 9 ACs with additional edge cases
+- Full wizard.html structure analyzed (103 lines, 5 steps) — import zone insertion point identified at top of Step 1 before scan-status
+- Full wizard.js analyzed (558 lines) — state management, hydration, validation, saveAndConnect payload all documented
+- Full style.css analyzed — `.logo-upload-zone` CSS pattern identified for reuse
+- WebPortal.cpp POST /api/settings validation analyzed — critical finding: unknown keys cause entire request to fail (line 207)
+- ConfigManager.cpp dumpSettingsJson() analyzed — all 30 exportable config keys mapped to wizard-keys (12) and extra-keys (18)
+- Settings export format fully documented from fn-1.6 implementation
+- 6 tasks created with explicit code patterns, insertion points, and key-mapping logic
+- POST payload key-filtering design prevents metadata keys from causing server-side 400 errors
+- hydrateDefaults() guard logic analyzed — no modification needed (import pre-fills state, guard skips hydration correctly)
+- All dependency stories (fn-1.5, fn-1.6) verified complete with relevant implementation details extracted
+- Antipatterns from fn-1.6 code reviews incorporated (dragleave relatedTarget, UI reset on error)
+
+### Change Log
+
+| Date | Change | Author |
+|------|--------|--------|
+| 2026-04-12 | Story created with comprehensive developer context | BMad |
+| 2026-04-12 | Implementation complete — all 6 tasks done, build verified at 1.22MB (77.7%) | Claude Opus 4.6 |
+
+### File List
+
+| File | Action |
+|------|--------|
+| `firmware/data-src/wizard.html` | Modified — added import zone HTML to Step 1 |
+| `firmware/data-src/wizard.js` | Modified — added import logic, WIZARD_KEYS, KNOWN_EXTRA_KEYS, drag-and-drop, payload merge |
+| `firmware/data-src/style.css` | Modified — added .settings-import-zone, .drag-over, .import-status CSS |
+| `firmware/data/wizard.html.gz` | Regenerated |
+| `firmware/data/wizard.js.gz` | Regenerated |
+| `firmware/data/style.css.gz` | Regenerated |
+| `firmware/data-src/wizard.js` | Modified (synthesis) — fixed importStatus reset, saveCurrentStepState() before rehydration, Object.prototype.hasOwnProperty.call(), null/object type guards, 1 MB file-size check |
+| `firmware/data/wizard.js.gz` | Regenerated (synthesis) — 6402 bytes |
+| `tests/e2e/page-objects/WizardPage.ts` | Modified (synthesis) — fixed importSettingsButton locator from 'button' to '#settings-import-zone' |
+| `firmware/data-src/wizard.js` | Modified (synthesis round 2) — moved saveCurrentStepState() to top of processImportedSettings() so imported values win over empty DOM fields (AC #2 fix) |
+| `firmware/data/wizard.js.gz` | Regenerated (synthesis round 2) — 6404 bytes |
+| `tests/e2e/page-objects/WizardPage.ts` | Modified (synthesis round 2) — fixed stepIndicator locator (#progress), fixed configureMatrix() tilePixels from selectOption() to fillInput() |
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-12
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 4.5 / 9.7 / 3.8 (three reviewers, all MAJOR REWORK) → Changes Requested
+- **Issues Found:** 6 verified (after dismissing 13 false positives across 3 reviewers)
+- **Issues Fixed:** 6
+- **Action Items Created:** 0
+
+### Review: 2026-04-12 (Round 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 6.9 / 5.3 / 5.8 (three reviewers, all MAJOR REWORK) → Approved after fixes
+- **Issues Found:** 3 verified (after dismissing 12 false positives across 3 reviewers)
+- **Issues Fixed:** 3
+- **Action Items Created:** 0
+
+
+]]></file>
+<file id="6a793299" path="firmware/data-src/style.css" label="STYLESHEET"><![CDATA[
+
+/* FlightWall shared design tokens and layout */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--text-muted:#8b949e;
+  --primary:#58a6ff;--primary-hover:#79c0ff;
+  --error:#f85149;--success:#3fb950;--warning:#d29922;
+  --radius:8px;--gap:16px;
+}
+html{font-size:16px}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;justify-content:center;
+  padding:0;margin:0;
+  -webkit-text-size-adjust:100%;
+}
+
+/* Wizard layout */
+.wizard{
+  width:100%;max-width:480px;min-height:100vh;
+  display:flex;flex-direction:column;
+  padding:var(--gap);
+}
+.wizard-header{text-align:center;padding:var(--gap) 0;flex-shrink:0}
+.wizard-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.wizard-header #progress{color:var(--text-muted);font-size:0.875rem}
+.wizard-content{flex:1;overflow-y:auto;padding-bottom:var(--gap)}
+
+.step{display:none}
+.step.active{display:block}
+.step h2{font-size:1.125rem;margin-bottom:8px}
+.step-desc{color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--gap)}
+.placeholder-note{color:var(--text-muted);font-style:italic;margin-top:var(--gap)}
+
+/* Form fields */
+.form-fields{display:flex;flex-direction:column;gap:8px}
+.form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
+.form-fields input[type="text"],
+.form-fields input[type="password"]{
+  width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+}
+.form-fields input:focus{border-color:var(--primary)}
+.form-fields input.input-error{border-color:var(--error)}
+.field-error{color:var(--error);font-size:0.8125rem;margin-top:4px}
+
+/* Scan states */
+.scan-status{text-align:center;padding:var(--gap) 0}
+.scan-msg{color:var(--text-muted);margin-bottom:8px}
+.spinner{
+  width:24px;height:24px;margin:0 auto;
+  border:3px solid var(--border);border-top-color:var(--primary);
+  border-radius:50%;animation:spin 0.8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Scan results */
+.scan-results{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--gap)}
+.scan-row{
+  padding:12px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;display:flex;justify-content:space-between;align-items:center;
+  transition:border-color 0.15s;
+}
+.scan-row:hover,.scan-row:active{border-color:var(--primary)}
+.scan-row .ssid{font-size:0.9375rem}
+.scan-row .rssi{font-size:0.75rem;color:var(--text-muted)}
+
+/* Link button */
+.link-btn{
+  background:none;border:none;color:var(--primary);
+  font-size:0.875rem;cursor:pointer;padding:8px 0;
+  text-decoration:underline;
+}
+.link-btn:hover{color:var(--primary-hover)}
+
+/* Wizard navigation */
+.wizard-nav{
+  display:flex;justify-content:space-between;
+  padding:var(--gap) 0;flex-shrink:0;
+  border-top:1px solid var(--border);
+}
+.nav-btn{
+  padding:12px 24px;font-size:1rem;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--surface);
+  color:var(--text);cursor:pointer;min-width:110px;
+  transition:background 0.15s,border-color 0.15s;
+}
+.nav-btn:hover{border-color:var(--text-muted)}
+.nav-btn-primary{
+  background:var(--primary);color:#0d1117;border-color:var(--primary);
+  font-weight:600;
+}
+.nav-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.nav-btn-save{
+  background:var(--success);color:#0d1117;border-color:var(--success);
+  font-weight:600;
+}
+.nav-btn-save:hover{background:#46d05a;border-color:#46d05a}
+.nav-btn:disabled{opacity:0.5;cursor:default}
+
+/* Geolocation button (Step 3) */
+.geo-btn{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--primary);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;margin-bottom:8px;
+  transition:background 0.15s,color 0.15s;
+}
+.geo-btn:hover{background:var(--primary);color:#0d1117}
+.geo-btn:disabled{opacity:0.5;cursor:default}
+.geo-status{font-size:0.8125rem;margin-bottom:8px}
+.geo-ok{color:var(--success)}
+.geo-error{color:var(--text-muted)}
+.helper-copy{color:var(--text-muted);font-size:0.8125rem;font-style:italic;margin-top:var(--gap)}
+
+/* Resolution text (Step 4) */
+.resolution-text{
+  color:var(--primary);font-size:0.9375rem;
+  font-weight:500;margin-top:var(--gap);text-align:center;
+}
+
+/* Review cards (Step 5) */
+.review-sections{display:flex;flex-direction:column;gap:8px}
+.review-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px;cursor:pointer;
+  transition:border-color 0.15s;
+}
+.review-card:hover,.review-card:active{border-color:var(--primary)}
+.review-card-header{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:8px;
+}
+.review-card-header span:first-child{font-weight:600;font-size:0.9375rem}
+.review-edit{color:var(--primary);font-size:0.8125rem}
+.review-item{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:2px 0;font-size:0.875rem;
+}
+.review-label{color:var(--text-muted)}
+.review-value{color:var(--text);text-align:right;word-break:break-all;max-width:60%}
+
+/* Dashboard layout */
+.dashboard{
+  width:100%;max-width:480px;
+  display:flex;flex-direction:column;
+  padding:var(--gap);
+}
+.dash-header{text-align:center;padding:var(--gap) 0}
+.dash-header h1{font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.dash-header .dash-ip{color:var(--text-muted);font-size:0.8125rem}
+.dash-header nav{margin-top:8px}
+.dash-header nav a{color:var(--primary);font-size:0.875rem;text-decoration:none}
+.dash-header nav a:hover{color:var(--primary-hover);text-decoration:underline}
+.dash-cards{display:flex;flex-direction:column;gap:var(--gap)}
+
+/* Cards */
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:var(--gap);
+}
+.card h2{font-size:1rem;font-weight:600;margin-bottom:12px}
+.card label{display:block;font-size:0.875rem;color:var(--text-muted);margin-bottom:4px;margin-top:12px}
+.card label:first-of-type{margin-top:0}
+.card input[type="range"]{width:100%;accent-color:var(--primary)}
+.card .range-row{display:flex;align-items:center;gap:8px}
+.card .range-val{font-size:0.875rem;min-width:32px;text-align:right;color:var(--text)}
+.card .rgb-row{display:flex;gap:8px}
+.card .rgb-row .rgb-field{flex:1;display:flex;flex-direction:column}
+.card .rgb-row input[type="number"]{
+  width:100%;padding:8px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;text-align:center;
+  -moz-appearance:textfield;
+}
+.card .rgb-row input[type="number"]::-webkit-inner-spin-button,
+.card .rgb-row input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.card .rgb-row input:focus{border-color:var(--primary)}
+.card .rgb-row .rgb-label{font-size:0.75rem;color:var(--text-muted);text-align:center;margin-top:4px}
+.color-preview{
+  height:24px;border-radius:4px;margin-top:8px;
+  border:1px solid var(--border);
+}
+
+/* Apply button (dashboard cards) */
+.apply-btn{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  margin-top:var(--gap);
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+}
+.apply-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.apply-btn:disabled{opacity:0.5;cursor:default}
+
+/* Unified apply bar */
+.apply-bar{
+  position:sticky;bottom:0;z-index:100;
+  background:var(--surface);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  padding:12px var(--gap);margin-top:var(--gap);
+  display:flex;justify-content:space-between;align-items:center;
+  box-shadow:0 -4px 12px rgba(0,0,0,0.4);
+}
+.apply-bar-text{font-size:0.875rem;color:var(--primary);font-weight:500}
+.apply-bar-btn{
+  padding:10px 24px;font-size:1rem;
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+  white-space:nowrap;
+}
+.apply-bar-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.apply-bar-btn:disabled{opacity:0.5;cursor:default}
+
+/* Card form fields (dashboard) */
+.card .form-fields{display:flex;flex-direction:column;gap:4px}
+.card .form-fields label{font-size:0.875rem;color:var(--text-muted);margin-top:8px}
+.card .form-fields label:first-child{margin-top:0}
+.card .form-fields input[type="text"],
+.card .form-fields input[type="password"]{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+}
+.card .form-fields input:focus{border-color:var(--primary)}
+
+/* Scan inline (dashboard WiFi) */
+.scan-row-inline{margin-bottom:4px}
+
+/* Estimate line */
+.estimate-line{font-size:0.875rem;color:var(--text-muted);margin-top:4px}
+.estimate-warning{color:#d29922;font-weight:600}
+.estimate-note{font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px}
+
+/* Toast system */
+#toast-container{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);
+  z-index:9999;display:flex;flex-direction:column;gap:8px;
+  width:calc(100% - 32px);max-width:400px;pointer-events:none;
+}
+.toast{
+  padding:12px 16px;border-radius:var(--radius);
+  font-size:0.875rem;font-weight:500;
+  transform:translateY(-20px);opacity:0;
+  transition:transform 0.25s ease,opacity 0.25s ease;
+  pointer-events:auto;
+}
+.toast-visible{transform:translateY(0);opacity:1}
+.toast-exit{transform:translateY(-20px);opacity:0}
+.toast-success{background:var(--success);color:#0d1117}
+.toast-warning{background:#d29922;color:#0d1117}
+.toast-error{background:var(--error);color:#fff}
+
+@media (prefers-reduced-motion:reduce){
+  .toast{transition:none;transform:none}
+  .toast-visible{opacity:1}
+  .toast-exit{opacity:0;transition:opacity 0.15s ease}
+}
+
+/* Settings import zone (wizard) */
+.settings-import-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:12px;text-align:center;cursor:pointer;
+  transition:border-color 0.2s,background 0.2s;
+  margin-bottom:var(--gap);min-height:44px;
+}
+.settings-import-zone:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.settings-import-zone.drag-over{border-color:var(--primary);border-style:solid;background:rgba(88,166,255,0.08)}
+.import-status{font-size:0.8125rem;color:var(--success);text-align:center;margin-top:8px;margin-bottom:var(--gap)}
+
+/* Handoff screen */
+.handoff{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;min-height:80vh;padding:var(--gap);gap:var(--gap);
+}
+.handoff h1{font-size:1.5rem;color:var(--success)}
+.handoff p{font-size:1rem;color:var(--text);max-width:320px}
+.handoff-note{color:var(--text-muted)!important;font-size:0.875rem!important}
+
+/* Health page (Story 2.4) */
+.health-loading{color:var(--text-muted);font-size:0.875rem}
+.status-row{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:6px 0;border-bottom:1px solid var(--border);
+}
+.status-row:last-child{border-bottom:none}
+.status-label{font-size:0.875rem;color:var(--text-muted)}
+.status-value{font-size:0.875rem;color:var(--text);text-align:right}
+.status-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:6px;vertical-align:middle;
+}
+.card.over-pace{border-color:#d29922}
+.card.over-pace h2{color:#d29922}
+
+/* Layout preview (Story 3.4) */
+.preview-container{margin-top:var(--gap)}
+.preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+.preview-legend{
+  display:flex;align-items:center;gap:12px;
+  margin-top:8px;font-size:0.75rem;color:var(--text-muted);flex-wrap:wrap;
+}
+.legend-chip{
+  display:inline-block;width:12px;height:12px;border-radius:2px;
+  margin-right:4px;vertical-align:middle;
+}
+
+.wiring-label{
+  font-size:0.8125rem;font-weight:600;color:var(--text-muted);
+  margin:var(--gap) 0 6px;
+}
+
+/* Location card (Story 4.1) */
+.location-toggle{cursor:pointer;user-select:none}
+.location-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#location-card .location-toggle.open::after{
+  transform:rotate(90deg);
+}
+#location-map{
+  height:260px;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--bg);
+}
+.location-radius-handle{
+  width:16px;height:16px;border-radius:50%;
+  background:var(--primary);border:2px solid #fff;
+  box-shadow:0 0 0 2px rgba(13,17,23,0.85);
+}
+.map-loading{
+  color:var(--text-muted);font-size:0.875rem;
+  text-align:center;padding:var(--gap) 0;
+}
+#location-fallback input[type="number"]{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -moz-appearance:textfield;
+}
+#location-fallback input[type="number"]::-webkit-inner-spin-button,
+#location-fallback input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+#location-fallback input:focus{border-color:var(--primary)}
+
+/* Leaflet dark-theme overrides */
+.leaflet-container{background:var(--bg)!important}
+.leaflet-control-zoom a{
+  background:var(--surface)!important;color:var(--text)!important;
+  border-color:var(--border)!important;
+}
+.leaflet-control-attribution{
+  background:rgba(22,27,34,0.8)!important;color:var(--text-muted)!important;
+  font-size:0.625rem!important;
+}
+.leaflet-control-attribution a{color:var(--primary)!important}
+
+/* Calibration card (Story 4.2) */
+.calibration-toggle{cursor:pointer;user-select:none}
+.calibration-toggle::after{
+  content:' \25B6';font-size:0.75em;color:var(--text-muted);
+  transition:transform 0.2s;display:inline-block;margin-left:6px;
+}
+#calibration-card .calibration-toggle.open::after{
+  transform:rotate(90deg);
+}
+.cal-select{
+  width:100%;padding:10px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b949e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;
+  padding-right:30px;
+}
+.cal-select:focus{border-color:var(--primary)}
+.cal-preview-container{margin-top:var(--gap)}
+.cal-preview-container canvas{
+  display:block;width:100%;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+
+/* Calibration pattern toggle */
+.cal-pattern-toggle{display:flex;gap:0;margin-bottom:var(--gap)}
+.cal-pattern-btn{
+  flex:1;padding:6px 0;border:1px solid var(--border);
+  background:var(--bg);color:var(--text-muted);cursor:pointer;
+  font-size:0.8125rem;
+}
+.cal-pattern-btn:first-child{border-radius:var(--radius) 0 0 var(--radius)}
+.cal-pattern-btn:last-child{border-radius:0 var(--radius) var(--radius) 0}
+.cal-pattern-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+
+/* Logo upload (Story 4.3) */
+.logo-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);text-align:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.logo-upload-zone.drag-over{
+  border-color:var(--primary);background:rgba(88,166,255,0.08);
+}
+.upload-prompt{font-size:0.875rem;color:var(--text-muted);margin-bottom:8px}
+.upload-prompt code{color:var(--primary);font-size:0.8125rem}
+.upload-label{
+  display:inline-block;padding:8px 16px;font-size:0.875rem;
+  background:var(--surface);color:var(--primary);
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s;
+}
+.upload-label:hover{background:var(--primary);color:#0d1117}
+.upload-hint{font-size:0.75rem;color:var(--text-muted);margin-top:8px}
+.logo-file-list{display:flex;flex-direction:column;gap:6px;margin-top:var(--gap)}
+.logo-file-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-file-row.file-error{border-color:var(--error)}
+.logo-file-row.file-ok{border-color:var(--success)}
+.logo-file-preview{
+  width:128px;height:128px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-file-info{flex:1;min-width:0}
+.logo-file-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-file-status{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-file-status.status-error{color:var(--error)}
+.logo-file-status.status-ok{color:var(--success)}
+.logo-file-remove{
+  background:none;border:none;color:var(--text-muted);
+  font-size:1.125rem;cursor:pointer;padding:4px;line-height:1;
+}
+.logo-file-remove:hover{color:var(--error)}
+
+/* Logo list management (Story 4.4) */
+.logo-storage-summary{
+  font-size:0.8125rem;color:var(--text-muted);margin-top:var(--gap);
+  text-align:center;
+}
+.logo-list-container{margin-top:var(--gap)}
+.logo-empty-state{
+  font-size:0.875rem;color:var(--text-muted);font-style:italic;
+  text-align:center;padding:var(--gap) 0;
+}
+.logo-list{display:flex;flex-direction:column;gap:6px}
+.logo-list-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.logo-list-thumb{
+  width:48px;height:48px;border-radius:4px;
+  background:var(--bg);flex-shrink:0;
+  image-rendering:pixelated;
+}
+.logo-list-info{flex:1;min-width:0}
+.logo-list-name{
+  display:block;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.logo-list-size{display:block;font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.logo-list-actions{flex-shrink:0;display:flex;align-items:center;gap:6px}
+.logo-list-delete{
+  background:none;border:1px solid var(--error);color:var(--error);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;transition:background 0.15s,color 0.15s;
+  white-space:nowrap;
+}
+.logo-list-delete:hover{background:var(--error);color:#fff}
+.logo-list-delete:disabled{opacity:0.5;cursor:default}
+.logo-list-confirm-text{
+  font-size:0.75rem;color:var(--error);white-space:nowrap;
+}
+.logo-list-confirm-btn{
+  background:var(--error);border:1px solid var(--error);color:#fff;
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;font-weight:600;white-space:nowrap;
+}
+.logo-list-confirm-btn:disabled{opacity:0.5;cursor:default}
+.logo-list-cancel-btn{
+  background:none;border:1px solid var(--border);color:var(--text);
+  font-size:0.75rem;padding:4px 8px;border-radius:var(--radius);
+  cursor:pointer;white-space:nowrap;
+}
+.logo-list-cancel-btn:hover{border-color:var(--text-muted)}
+
+/* Mode Picker (Story dl-1.5) */
+.mode-status-line{
+  font-size:0.9rem;padding:8px 0;margin-bottom:12px;
+  border-bottom:1px solid var(--border);
+  color:var(--text-muted);
+}
+.mode-status-name{font-weight:600;color:var(--text)}
+.mode-status-reason{font-weight:400}
+.mode-cards-list{display:flex;flex-direction:column;gap:8px}
+.mode-card{
+  padding:12px;background:var(--bg);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;transition:border-color 0.15s;
+}
+.mode-card:hover{border-color:var(--primary)}
+.mode-card.active{border-color:var(--primary);background:rgba(88,166,255,0.08)}
+.mode-card-name{font-size:0.9375rem;font-weight:500}
+.mode-card-subtitle{font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.mode-card.switching{opacity:0.6;pointer-events:none}
+
+/* Danger zone / System card (Story 2.5) */
+.card-danger{border-color:var(--error)}
+.card-danger h2{color:var(--error)}
+.btn-danger{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--error);color:#fff;
+  border:1px solid var(--error);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+}
+.btn-danger:hover{background:#e5443c;border-color:#e5443c}
+.btn-danger:disabled{opacity:0.5;cursor:default}
+.btn-cancel{
+  display:block;width:100%;padding:12px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;font-weight:500;
+  transition:border-color 0.15s;
+}
+.btn-cancel:hover{border-color:var(--text-muted)}
+.btn-cancel:disabled{opacity:0.5;cursor:default}
+.reset-row{margin-top:4px}
+.reset-warning{
+  font-size:0.875rem;color:var(--error);margin-bottom:12px;
+}
+.reset-actions{display:flex;gap:8px}
+.reset-actions .btn-danger,.reset-actions .btn-cancel{flex:1}
+
+/* Firmware card / OTA Upload (Story fn-1.6) */
+.fw-version-text{font-size:0.9375rem;color:var(--text);margin-bottom:12px}
+.ota-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);min-height:80px;cursor:pointer;
+  text-align:center;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.ota-upload-zone.drag-over{border-color:var(--primary);border-style:solid;background:rgba(88,166,255,0.08)}
+.ota-file-info{display:flex;align-items:center;gap:8px;margin-top:var(--gap);flex-wrap:wrap}
+.ota-file-info span{font-size:0.875rem;word-break:break-all}
+.ota-progress{
+  position:relative;height:28px;border-radius:var(--radius);
+  background:var(--border);margin-top:var(--gap);overflow:hidden;
+}
+.ota-progress-bar{height:100%;background:var(--primary);transition:width 0.3s;border-radius:var(--radius)}
+.ota-progress-text{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.875rem;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.65),0 -1px 2px rgba(0,0,0,0.65),1px 0 2px rgba(0,0,0,0.65),-1px 0 2px rgba(0,0,0,0.65)}
+.ota-reboot{text-align:center;padding:var(--gap);font-size:1.125rem;color:var(--primary)}
+.banner-warning{
+  background:#2d2738;border-left:4px solid #d29922;
+  padding:12px 16px;border-radius:var(--radius);
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:12px;font-size:0.875rem;
+}
+.banner-warning .dismiss-btn{
+  background:none;border:none;color:var(--text);cursor:pointer;
+  font-size:1.25rem;min-width:44px;min-height:44px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius);
+}
+.banner-warning .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.ota-file-info .apply-btn{min-height:44px;margin-top:0;width:auto}
+.btn-ota-cancel{width:auto;padding:10px 16px;margin-top:0;min-height:44px}
+.btn-secondary{
+  display:block;width:100%;padding:12px;font-size:1rem;min-height:44px;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;font-weight:500;
+  transition:border-color 0.15s,background 0.15s;
+}
+.btn-secondary:hover{border-color:var(--text-muted);background:rgba(255,255,255,0.03)}
+
+
+]]></file>
+<file id="d5f806c1" path="firmware/data-src/wizard.html" label="HTML TEMPLATE"><![CDATA[
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FlightWall Setup</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wizard">
+  <header class="wizard-header">
+    <h1>FlightWall Setup</h1>
+    <p id="progress">Step 1 of 5</p>
+  </header>
+
+  <main class="wizard-content">
+    <!-- Step 1: WiFi -->
+    <section id="step-1" class="step active">
+      <h2>WiFi Network</h2>
+      <div class="settings-import-zone" id="settings-import-zone" role="button" tabindex="0" aria-label="Select settings backup file to import">
+        <p class="upload-prompt">Have a backup? <strong>Import settings</strong></p>
+        <p class="upload-hint">Select a flightwall-settings.json file</p>
+        <input type="file" id="import-file-input" accept=".json" hidden>
+      </div>
+      <p id="import-status" class="import-status" style="display:none"></p>
+      <div id="scan-status" class="scan-status">
+        <p class="scan-msg">Scanning for networks...</p>
+        <div class="spinner"></div>
+      </div>
+      <div id="scan-results" class="scan-results" style="display:none"></div>
+      <button type="button" id="btn-manual" class="link-btn">Enter manually instead</button>
+      <div id="wifi-form" class="form-fields">
+        <label for="wifi-ssid">Network Name (SSID)</label>
+        <input type="text" id="wifi-ssid" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Enter SSID">
+        <label for="wifi-pass">Password</label>
+        <input type="password" id="wifi-pass" autocomplete="off" placeholder="Enter password">
+        <p id="wifi-err" class="field-error" style="display:none">SSID and password are required.</p>
+      </div>
+    </section>
+
+    <!-- Step 2: API Keys -->
+    <section id="step-2" class="step">
+      <h2>API Keys</h2>
+      <p class="step-desc">Enter your API credentials. These are used to fetch live flight data.</p>
+      <div class="form-fields">
+        <label for="os-client-id">OpenSky Client ID</label>
+        <input type="text" id="os-client-id" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client ID">
+        <label for="os-client-sec">OpenSky Client Secret</label>
+        <input type="text" id="os-client-sec" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client secret">
+        <label for="aeroapi-key">AeroAPI Key</label>
+        <input type="text" id="aeroapi-key" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key">
+        <p id="api-err" class="field-error" style="display:none">All three API fields are required.</p>
+      </div>
+    </section>
+
+    <!-- Step 3: Location -->
+    <section id="step-3" class="step">
+      <h2>Location</h2>
+      <p class="step-desc">Set the center point and radius for flight tracking.</p>
+      <button type="button" id="btn-geolocate" class="geo-btn">Use my location</button>
+      <p id="geo-status" class="geo-status" style="display:none"></p>
+      <div class="form-fields">
+        <label for="center-lat">Latitude</label>
+        <input type="text" id="center-lat" inputmode="decimal" autocomplete="off" placeholder="e.g. 37.7749">
+        <label for="center-lon">Longitude</label>
+        <input type="text" id="center-lon" inputmode="decimal" autocomplete="off" placeholder="e.g. -122.4194">
+        <label for="radius-km">Radius (km)</label>
+        <input type="text" id="radius-km" inputmode="decimal" autocomplete="off" placeholder="e.g. 50">
+        <p id="loc-err" class="field-error" style="display:none"></p>
+      </div>
+      <p class="helper-copy">An interactive map is available later in the dashboard.</p>
+    </section>
+
+    <!-- Step 4: Hardware -->
+    <section id="step-4" class="step">
+      <h2>Hardware</h2>
+      <p class="step-desc">Configure your LED matrix dimensions.</p>
+      <div class="form-fields">
+        <label for="tiles-x">Tiles Wide</label>
+        <input type="text" id="tiles-x" inputmode="numeric" autocomplete="off" placeholder="10">
+        <label for="tiles-y">Tiles High</label>
+        <input type="text" id="tiles-y" inputmode="numeric" autocomplete="off" placeholder="2">
+        <label for="tile-pixels">Pixels per Tile</label>
+        <input type="text" id="tile-pixels" inputmode="numeric" autocomplete="off" placeholder="16">
+        <label for="display-pin">Data Pin (GPIO)</label>
+        <input type="text" id="display-pin" inputmode="numeric" autocomplete="off" placeholder="25">
+        <p id="hw-err" class="field-error" style="display:none"></p>
+      </div>
+      <p id="resolution-text" class="resolution-text"></p>
+    </section>
+
+    <!-- Step 5: Review & Connect -->
+    <section id="step-5" class="step">
+      <h2>Review &amp; Connect</h2>
+      <p class="step-desc">Confirm your settings, then save and connect.</p>
+      <div id="review-sections" class="review-sections"></div>
+    </section>
+  </main>
+
+  <nav class="wizard-nav">
+    <button type="button" id="btn-back" class="nav-btn" style="visibility:hidden">&larr; Back</button>
+    <button type="button" id="btn-next" class="nav-btn nav-btn-primary">Next &rarr;</button>
+  </nav>
+</div>
+
+<script src="/common.js"></script>
+<script src="/wizard.js"></script>
+</body>
+</html>
+
+
+]]></file>
+<file id="75a3699e" path="firmware/data-src/wizard.js" label="SOURCE CODE"><![CDATA[
+
+/* FlightWall Setup Wizard — Step navigation, WiFi scan polling, validation, state preservation */
+(function() {
+  'use strict';
+
+  var TOTAL_STEPS = 5;
+  var currentStep = 1;
+
+  // In-memory wizard state using exact firmware config key names
+  var state = {
+    wifi_ssid: '',
+    wifi_password: '',
+    os_client_id: '',
+    os_client_sec: '',
+    aeroapi_key: '',
+    center_lat: '',
+    center_lon: '',
+    radius_km: '',
+    tiles_x: '',
+    tiles_y: '',
+    tile_pixels: '',
+    display_pin: ''
+  };
+
+  // Valid GPIO pins for display_pin (matches ConfigManager validation)
+  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
+
+  // Keys that map to wizard form fields (12 keys)
+  var WIZARD_KEYS = [
+    'wifi_ssid', 'wifi_password',
+    'os_client_id', 'os_client_sec', 'aeroapi_key',
+    'center_lat', 'center_lon', 'radius_km',
+    'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin'
+  ];
+
+  // Non-wizard config keys preserved in POST payload
+  var KNOWN_EXTRA_KEYS = [
+    'brightness', 'text_color_r', 'text_color_g', 'text_color_b',
+    'origin_corner', 'scan_dir', 'zigzag',
+    'zone_logo_pct', 'zone_split_pct', 'zone_layout',
+    'fetch_interval', 'display_cycle',
+    'timezone', 'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
+  ];
+
+  // Extra keys from import (not shown in wizard, but sent with POST)
+  var importedExtras = {};
+
+  // DOM references — Import zone
+  var importZone = document.getElementById('settings-import-zone');
+  var importFileInput = document.getElementById('import-file-input');
+  var importStatus = document.getElementById('import-status');
+
+  // DOM references — Steps 1-2
+  var progress = document.getElementById('progress');
+  var btnBack = document.getElementById('btn-back');
+  var btnNext = document.getElementById('btn-next');
+  var scanStatus = document.getElementById('scan-status');
+  var scanResults = document.getElementById('scan-results');
+  var btnManual = document.getElementById('btn-manual');
+  var wifiSsid = document.getElementById('wifi-ssid');
+  var wifiPass = document.getElementById('wifi-pass');
+  var wifiErr = document.getElementById('wifi-err');
+  var osClientId = document.getElementById('os-client-id');
+  var osClientSec = document.getElementById('os-client-sec');
+  var aeroKey = document.getElementById('aeroapi-key');
+  var apiErr = document.getElementById('api-err');
+
+  // DOM references — Step 3
+  var btnGeolocate = document.getElementById('btn-geolocate');
+  var geoStatus = document.getElementById('geo-status');
+  var centerLat = document.getElementById('center-lat');
+  var centerLon = document.getElementById('center-lon');
+  var radiusKm = document.getElementById('radius-km');
+  var locErr = document.getElementById('loc-err');
+
+  // DOM references — Step 4
+  var tilesX = document.getElementById('tiles-x');
+  var tilesY = document.getElementById('tiles-y');
+  var tilePixels = document.getElementById('tile-pixels');
+  var displayPin = document.getElementById('display-pin');
+  var hwErr = document.getElementById('hw-err');
+  var resolutionText = document.getElementById('resolution-text');
+
+  // DOM references — Step 5
+  var reviewSections = document.getElementById('review-sections');
+
+  // --- Bootstrap: hydrate defaults from firmware ---
+  function hydrateDefaults() {
+    FW.get('/api/settings').then(function(res) {
+      if (!res.body.ok || !res.body.data) return;
+      var d = res.body.data;
+      // Only hydrate Step 3-4 keys if state is still empty (user hasn't typed yet)
+      if (!state.center_lat && d.center_lat !== undefined) state.center_lat = String(d.center_lat);
+      if (!state.center_lon && d.center_lon !== undefined) state.center_lon = String(d.center_lon);
+      if (!state.radius_km && d.radius_km !== undefined) state.radius_km = String(d.radius_km);
+      if (!state.tiles_x && d.tiles_x !== undefined) state.tiles_x = String(d.tiles_x);
+      if (!state.tiles_y && d.tiles_y !== undefined) state.tiles_y = String(d.tiles_y);
+      if (!state.tile_pixels && d.tile_pixels !== undefined) state.tile_pixels = String(d.tile_pixels);
+      if (!state.display_pin && d.display_pin !== undefined) state.display_pin = String(d.display_pin);
+    }).catch(function() {
+      // Settings endpoint unavailable — user will fill manually
+    });
+  }
+
+  // --- WiFi Scan ---
+  var scanTimer = null;
+  var scanStartTime = 0;
+  var SCAN_TIMEOUT_MS = 5000;
+  var SCAN_POLL_MS = 800;
+  var manualMode = false;
+
+  function startScan() {
+    clearTimeout(scanTimer);
+    manualMode = false;
+    scanStatus.style.display = '';
+    scanResults.style.display = 'none';
+    scanStatus.querySelector('.scan-msg').textContent = 'Scanning for networks...';
+    var spinner = scanStatus.querySelector('.spinner');
+    if (spinner) spinner.style.display = '';
+    scanStartTime = Date.now();
+    pollScan();
+  }
+
+  function pollScan() {
+    FW.get('/api/wifi/scan').then(function(res) {
+      if (manualMode) return;
+      var d = res.body;
+      if (d.ok && !d.scanning && d.data && d.data.length > 0) {
+        showScanResults(d.data);
+        return;
+      }
+      if (d.ok && !d.scanning) {
+        showScanEmpty();
+        return;
+      }
+      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
+        showScanEmpty();
+        return;
+      }
+      scanTimer = setTimeout(pollScan, SCAN_POLL_MS);
+    }).catch(function() {
+      if (manualMode) return;
+      if (Date.now() - scanStartTime >= SCAN_TIMEOUT_MS) {
+        showScanEmpty();
+        return;
+      }
+      scanTimer = setTimeout(pollScan, SCAN_POLL_MS);
+    });
+  }
+
+  function showScanResults(networks) {
+    clearTimeout(scanTimer);
+    scanStatus.style.display = 'none';
+    scanResults.style.display = '';
+    scanResults.innerHTML = '';
+    // Deduplicate by SSID, keep strongest RSSI
+    var seen = {};
+    networks.forEach(function(n) {
+      if (!n.ssid) return;
+      if (!seen[n.ssid] || n.rssi > seen[n.ssid].rssi) {
+        seen[n.ssid] = n;
+      }
+    });
+    var unique = Object.keys(seen).map(function(k) { return seen[k]; });
+    unique.sort(function(a, b) { return b.rssi - a.rssi; });
+
+    unique.forEach(function(n) {
+      var row = document.createElement('div');
+      row.className = 'scan-row';
+      row.innerHTML = '<span class="ssid">' + escHtml(n.ssid) + '</span><span class="rssi">' + rssiLabel(n.rssi) + '</span>';
+      row.addEventListener('click', function() { selectSsid(n.ssid); });
+      scanResults.appendChild(row);
+    });
+  }
+
+  function showScanEmpty() {
+    clearTimeout(scanTimer);
+    scanStatus.querySelector('.scan-msg').textContent = 'No networks found - enter manually';
+    var spinner = scanStatus.querySelector('.spinner');
+    if (spinner) spinner.style.display = 'none';
+    scanResults.style.display = 'none';
+  }
+
+  function selectSsid(ssid) {
+    wifiSsid.value = ssid;
+    state.wifi_ssid = ssid;
+    wifiSsid.focus();
+  }
+
+  function enterManual() {
+    manualMode = true;
+    clearTimeout(scanTimer);
+    scanStatus.style.display = 'none';
+    scanResults.style.display = 'none';
+    wifiSsid.focus();
+  }
+
+  function rssiLabel(rssi) {
+    if (rssi >= -50) return 'Excellent';
+    if (rssi >= -60) return 'Good';
+    if (rssi >= -70) return 'Fair';
+    return 'Weak';
+  }
+
+  function escHtml(s) {
+    var el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  // --- Geolocation (Step 3) ---
+  function requestGeolocation() {
+    if (!navigator.geolocation) {
+      showGeoStatus('Geolocation is not available in this browser. Please enter coordinates manually.', true);
+      return;
+    }
+    btnGeolocate.disabled = true;
+    showGeoStatus('Requesting location...', false);
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        centerLat.value = pos.coords.latitude.toFixed(6);
+        centerLon.value = pos.coords.longitude.toFixed(6);
+        state.center_lat = centerLat.value;
+        state.center_lon = centerLon.value;
+        showGeoStatus('Location detected.', false);
+        btnGeolocate.disabled = false;
+      },
+      function(err) {
+        var msg = 'Could not get location. Please enter coordinates manually.';
+        if (err.code === 1) msg = 'Location permission denied. Please enter coordinates manually.';
+        if (err.code === 2) msg = 'Location unavailable. Please enter coordinates manually.';
+        showGeoStatus(msg, true);
+        btnGeolocate.disabled = false;
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+    );
+  }
+
+  function showGeoStatus(msg, isError) {
+    geoStatus.textContent = msg;
+    geoStatus.style.display = '';
+    geoStatus.className = 'geo-status' + (isError ? ' geo-error' : ' geo-ok');
+  }
+
+  // --- Hardware resolution text (Step 4) ---
+  function updateResolution() {
+    var tx = parseStrictPositiveInt(tilesX.value.trim());
+    var ty = parseStrictPositiveInt(tilesY.value.trim());
+    var tp = parseStrictPositiveInt(tilePixels.value.trim());
+    if (tx !== null && ty !== null && tp !== null) {
+      resolutionText.textContent = 'Your display: ' + (tx * tp) + ' x ' + (ty * tp) + ' pixels';
+    } else {
+      resolutionText.textContent = '';
+    }
+  }
+
+  // --- Review (Step 5) ---
+  function buildReview() {
+    reviewSections.innerHTML = '';
+    var sections = [
+      { title: 'WiFi', step: 1, items: [
+        { label: 'Network', value: state.wifi_ssid },
+        { label: 'Password', value: state.wifi_password ? '\u2022'.repeat(Math.min(state.wifi_password.length, 12)) : '' }
+      ]},
+      { title: 'API Keys', step: 2, items: [
+        { label: 'OpenSky Client ID', value: maskKey(state.os_client_id) },
+        { label: 'OpenSky Secret', value: maskKey(state.os_client_sec) },
+        { label: 'AeroAPI Key', value: maskKey(state.aeroapi_key) }
+      ]},
+      { title: 'Location', step: 3, items: [
+        { label: 'Latitude', value: state.center_lat },
+        { label: 'Longitude', value: state.center_lon },
+        { label: 'Radius', value: state.radius_km + ' km' }
+      ]},
+      { title: 'Hardware', step: 4, items: [
+        { label: 'Display', value: state.tiles_x + ' x ' + state.tiles_y + ' tiles (' + (parseInt(state.tiles_x,10)*parseInt(state.tile_pixels,10)) + ' x ' + (parseInt(state.tiles_y,10)*parseInt(state.tile_pixels,10)) + ' px)' },
+        { label: 'Pixels per tile', value: state.tile_pixels },
+        { label: 'Data pin', value: 'GPIO ' + state.display_pin }
+      ]}
+    ];
+
+    sections.forEach(function(sec) {
+      var card = document.createElement('div');
+      card.className = 'review-card';
+      card.addEventListener('click', function() {
+        showStep(sec.step);
+      });
+      var header = '<div class="review-card-header"><span>' + escHtml(sec.title) + '</span><span class="review-edit">Edit</span></div>';
+      var body = sec.items.map(function(it) {
+        return '<div class="review-item"><span class="review-label">' + escHtml(it.label) + '</span><span class="review-value">' + escHtml(it.value) + '</span></div>';
+      }).join('');
+      card.innerHTML = header + body;
+      reviewSections.appendChild(card);
+    });
+  }
+
+  function maskKey(val) {
+    if (!val || val.length < 6) return val || '';
+    return val.substring(0, 3) + '\u2022'.repeat(Math.min(val.length - 6, 8)) + val.substring(val.length - 3);
+  }
+
+  function parseStrictNumber(value) {
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(value)) return null;
+    var parsed = Number(value);
+    return isNaN(parsed) ? null : parsed;
+  }
+
+  function parseStrictPositiveInt(value) {
+    if (!/^\d+$/.test(value)) return null;
+    var parsed = Number(value);
+    if (!isFinite(parsed) || parsed <= 0 || Math.floor(parsed) !== parsed) return null;
+    return parsed;
+  }
+
+  // --- Navigation ---
+  function showStep(n) {
+    currentStep = n;
+    progress.textContent = 'Step ' + n + ' of ' + TOTAL_STEPS;
+    for (var i = 1; i <= TOTAL_STEPS; i++) {
+      var sec = document.getElementById('step-' + i);
+      if (sec) sec.classList.toggle('active', i === n);
+    }
+    btnBack.style.visibility = n === 1 ? 'hidden' : 'visible';
+
+    if (n < TOTAL_STEPS) {
+      btnNext.textContent = 'Next \u2192';
+      btnNext.className = 'nav-btn nav-btn-primary';
+    } else {
+      btnNext.textContent = 'Save & Connect';
+      btnNext.className = 'nav-btn nav-btn-save';
+    }
+
+    // Rehydrate fields from state when entering a step
+    if (n === 1) {
+      wifiSsid.value = state.wifi_ssid;
+      wifiPass.value = state.wifi_password;
+      wifiErr.style.display = 'none';
+      clearInputErrors([wifiSsid, wifiPass]);
+    }
+    if (n === 2) {
+      osClientId.value = state.os_client_id;
+      osClientSec.value = state.os_client_sec;
+      aeroKey.value = state.aeroapi_key;
+      apiErr.style.display = 'none';
+      clearInputErrors([osClientId, osClientSec, aeroKey]);
+    }
+    if (n === 3) {
+      centerLat.value = state.center_lat;
+      centerLon.value = state.center_lon;
+      radiusKm.value = state.radius_km;
+      locErr.style.display = 'none';
+      clearInputErrors([centerLat, centerLon, radiusKm]);
+    }
+    if (n === 4) {
+      tilesX.value = state.tiles_x;
+      tilesY.value = state.tiles_y;
+      tilePixels.value = state.tile_pixels;
+      displayPin.value = state.display_pin;
+      hwErr.style.display = 'none';
+      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
+      updateResolution();
+    }
+    if (n === 5) {
+      buildReview();
+    }
+  }
+
+  function saveCurrentStepState() {
+    if (currentStep === 1) {
+      state.wifi_ssid = wifiSsid.value.trim();
+      state.wifi_password = wifiPass.value;
+    } else if (currentStep === 2) {
+      state.os_client_id = osClientId.value.trim();
+      state.os_client_sec = osClientSec.value.trim();
+      state.aeroapi_key = aeroKey.value.trim();
+    } else if (currentStep === 3) {
+      state.center_lat = centerLat.value.trim();
+      state.center_lon = centerLon.value.trim();
+      state.radius_km = radiusKm.value.trim();
+    } else if (currentStep === 4) {
+      state.tiles_x = tilesX.value.trim();
+      state.tiles_y = tilesY.value.trim();
+      state.tile_pixels = tilePixels.value.trim();
+      state.display_pin = displayPin.value.trim();
+    }
+  }
+
+  function validateStep(n) {
+    if (n === 1) {
+      state.wifi_ssid = wifiSsid.value.trim();
+      state.wifi_password = wifiPass.value;
+      var missing = [];
+      if (!state.wifi_ssid) missing.push(wifiSsid);
+      if (!state.wifi_password) missing.push(wifiPass);
+      if (missing.length > 0) {
+        wifiErr.style.display = '';
+        markInputErrors(missing);
+        return false;
+      }
+      wifiErr.style.display = 'none';
+      clearInputErrors([wifiSsid, wifiPass]);
+      return true;
+    }
+    if (n === 2) {
+      state.os_client_id = osClientId.value.trim();
+      state.os_client_sec = osClientSec.value.trim();
+      state.aeroapi_key = aeroKey.value.trim();
+      var missing2 = [];
+      if (!state.os_client_id) missing2.push(osClientId);
+      if (!state.os_client_sec) missing2.push(osClientSec);
+      if (!state.aeroapi_key) missing2.push(aeroKey);
+      if (missing2.length > 0) {
+        apiErr.style.display = '';
+        markInputErrors(missing2);
+        return false;
+      }
+      apiErr.style.display = 'none';
+      clearInputErrors([osClientId, osClientSec, aeroKey]);
+      return true;
+    }
+    if (n === 3) {
+      state.center_lat = centerLat.value.trim();
+      state.center_lon = centerLon.value.trim();
+      state.radius_km = radiusKm.value.trim();
+      var errs = [];
+      var lat = parseStrictNumber(state.center_lat);
+      var lon = parseStrictNumber(state.center_lon);
+      var rad = parseStrictNumber(state.radius_km);
+      if (lat === null || lat < -90 || lat > 90) errs.push(centerLat);
+      if (lon === null || lon < -180 || lon > 180) errs.push(centerLon);
+      if (rad === null || rad <= 0) errs.push(radiusKm);
+      if (errs.length > 0) {
+        locErr.textContent = 'Latitude (-90 to 90), longitude (-180 to 180), and a positive radius are required.';
+        locErr.style.display = '';
+        markInputErrors(errs);
+        return false;
+      }
+      locErr.style.display = 'none';
+      clearInputErrors([centerLat, centerLon, radiusKm]);
+      return true;
+    }
+    if (n === 4) {
+      state.tiles_x = tilesX.value.trim();
+      state.tiles_y = tilesY.value.trim();
+      state.tile_pixels = tilePixels.value.trim();
+      state.display_pin = displayPin.value.trim();
+      var errs4 = [];
+      var tx = parseStrictPositiveInt(state.tiles_x);
+      var ty = parseStrictPositiveInt(state.tiles_y);
+      var tp = parseStrictPositiveInt(state.tile_pixels);
+      var dp = parseStrictPositiveInt(state.display_pin);
+      if (tx === null) errs4.push(tilesX);
+      if (ty === null) errs4.push(tilesY);
+      if (tp === null) errs4.push(tilePixels);
+      if (dp === null || VALID_PINS.indexOf(dp) === -1) errs4.push(displayPin);
+      if (errs4.length > 0) {
+        var msg = 'All fields must be positive integers.';
+        if (errs4.length === 1 && errs4[0] === displayPin) {
+          msg = 'Invalid GPIO pin. Supported: ' + VALID_PINS.join(', ') + '.';
+        }
+        hwErr.textContent = msg;
+        hwErr.style.display = '';
+        markInputErrors(errs4);
+        return false;
+      }
+      hwErr.style.display = 'none';
+      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
+      return true;
+    }
+    // Step 5: no field validation — review only
+    return true;
+  }
+
+  function markInputErrors(inputs) {
+    inputs.forEach(function(el) { el.classList.add('input-error'); });
+  }
+
+  function clearInputErrors(inputs) {
+    inputs.forEach(function(el) { el.classList.remove('input-error'); });
+  }
+
+  // --- Save & Connect (Step 5 final action) ---
+  function saveAndConnect() {
+    var rebootRequested = false;
+
+    btnNext.disabled = true;
+    btnNext.textContent = 'Saving...';
+
+    var payload = {
+      wifi_ssid: state.wifi_ssid,
+      wifi_password: state.wifi_password,
+      os_client_id: state.os_client_id,
+      os_client_sec: state.os_client_sec,
+      aeroapi_key: state.aeroapi_key,
+      center_lat: Number(state.center_lat),
+      center_lon: Number(state.center_lon),
+      radius_km: Number(state.radius_km),
+      tiles_x: Number(state.tiles_x),
+      tiles_y: Number(state.tiles_y),
+      tile_pixels: Number(state.tile_pixels),
+      display_pin: Number(state.display_pin)
+    };
+
+    // Merge imported extra keys (brightness, timing, schedule, etc.)
+    var key;
+    for (key in importedExtras) {
+      if (importedExtras.hasOwnProperty(key)) {
+        payload[key] = importedExtras[key];
+      }
+    }
+
+    FW.post('/api/settings', payload).then(function(res) {
+      if (!res.body.ok) {
+        throw new Error('Save failed: ' + (res.body.error || 'Unknown error'));
+      }
+      // Settings saved — trigger reboot
+      btnNext.textContent = 'Rebooting...';
+      rebootRequested = true;
+      return FW.post('/api/reboot', {});
+    }).then(function(res) {
+      if (!res || !res.body || !res.body.ok) {
+        throw new Error('Reboot failed: ' + ((res && res.body && res.body.error) || 'Unknown error'));
+      }
+      showHandoff();
+    }).catch(function(err) {
+      if (rebootRequested) {
+        // Network loss after requesting reboot is expected because the device is leaving AP mode.
+        showHandoff();
+        return;
+      }
+      btnNext.disabled = false;
+      btnNext.textContent = 'Save & Connect';
+      showSaveError(err && err.message ? err.message : 'Save failed: Network error');
+    });
+  }
+
+  function showSaveError(msg) {
+    // Show error inline in the review section
+    var errEl = document.getElementById('save-err');
+    if (!errEl) {
+      errEl = document.createElement('p');
+      errEl.id = 'save-err';
+      errEl.className = 'field-error';
+      reviewSections.parentNode.appendChild(errEl);
+    }
+    errEl.textContent = msg;
+    errEl.style.display = '';
+  }
+
+  function showHandoff() {
+    // Replace wizard content with handoff message
+    var wizard = document.querySelector('.wizard');
+    wizard.innerHTML =
+      '<div class="handoff">' +
+        '<h1>Configuration Saved</h1>' +
+        '<p>Your FlightWall is rebooting and connecting to <strong>' + escHtml(state.wifi_ssid) + '</strong>.</p>' +
+        '<p>Look at the LED wall for progress.</p>' +
+        '<p class="handoff-note">This page will no longer update because the device is leaving setup mode.</p>' +
+      '</div>';
+  }
+
+  // --- Event Listeners ---
+  btnNext.addEventListener('click', function() {
+    if (!validateStep(currentStep)) return;
+    saveCurrentStepState();
+    if (currentStep < TOTAL_STEPS) {
+      showStep(currentStep + 1);
+    } else {
+      saveAndConnect();
+    }
+  });
+
+  btnBack.addEventListener('click', function() {
+    saveCurrentStepState();
+    if (currentStep > 1) {
+      showStep(currentStep - 1);
+    }
+  });
+
+  btnManual.addEventListener('click', enterManual);
+  btnGeolocate.addEventListener('click', requestGeolocation);
+
+  // Live resolution update on Step 4 inputs
+  tilesX.addEventListener('input', updateResolution);
+  tilesY.addEventListener('input', updateResolution);
+  tilePixels.addEventListener('input', updateResolution);
+
+  // --- Settings Import ---
+  function processImportedSettings(text) {
+    // Flush any in-progress DOM input to state FIRST — imported values then win over typed values
+    saveCurrentStepState();
+    // Reset UI and extras at the start of every attempt — covers re-import and error paths (AC #4)
+    importStatus.style.display = 'none';
+    importStatus.textContent = '';
+    importedExtras = {};
+    var parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      FW.showToast('Could not read settings file \u2014 invalid format', 'error');
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      FW.showToast('Could not read settings file \u2014 invalid format', 'error');
+      return;
+    }
+    var count = 0;
+    var i, key, val;
+    for (i = 0; i < WIZARD_KEYS.length; i++) {
+      key = WIZARD_KEYS[i];
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        val = parsed[key];
+        // Skip null and non-primitive values to avoid "null" / "[object Object]" in state
+        if (val !== null && typeof val !== 'object') {
+          state[key] = String(val);
+          count++;
+        }
+      }
+    }
+    for (i = 0; i < KNOWN_EXTRA_KEYS.length; i++) {
+      key = KNOWN_EXTRA_KEYS[i];
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        val = parsed[key];
+        if (val !== null && typeof val !== 'object') {
+          importedExtras[key] = val;
+          count++;
+        }
+      }
+    }
+    if (count === 0) {
+      FW.showToast('No recognized settings found in file', 'warning');
+      return;
+    }
+    FW.showToast('Imported ' + count + ' settings', 'success');
+    importStatus.textContent = count + ' settings imported';
+    importStatus.style.display = '';
+    showStep(currentStep);
+  }
+
+  function handleImportFile(file) {
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      FW.showToast('Settings file too large \u2014 maximum 1\u00a0MB', 'error');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(e) { processImportedSettings(e.target.result); };
+    reader.onerror = function() { FW.showToast('Could not read settings file \u2014 invalid format', 'error'); };
+    reader.readAsText(file);
+  }
+
+  // Click / keyboard handler for import zone
+  importZone.addEventListener('click', function() { importFileInput.click(); });
+  importZone.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); importFileInput.click(); }
+  });
+  importFileInput.addEventListener('change', function() {
+    if (importFileInput.files && importFileInput.files[0]) {
+      handleImportFile(importFileInput.files[0]);
+    }
+    importFileInput.value = '';
+  });
+
+  // Drag-and-drop for import zone
+  importZone.addEventListener('dragenter', function(e) { e.preventDefault(); importZone.classList.add('drag-over'); });
+  importZone.addEventListener('dragover', function(e) { e.preventDefault(); });
+  importZone.addEventListener('dragleave', function(e) {
+    if (!importZone.contains(e.relatedTarget)) importZone.classList.remove('drag-over');
+  });
+  importZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    importZone.classList.remove('drag-over');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleImportFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // --- Init ---
+  hydrateDefaults();
+  showStep(1);
+  startScan();
+})();
+
+
+]]></file>
+<file id="36e50130" path="tests/e2e/page-objects/WizardPage.ts" label="SOURCE CODE"><![CDATA[
+
+/**
+ * Wizard Page Object
+ *
+ * Page object for the FlightWall Setup Wizard (AP mode).
+ * Handles the multi-step onboarding flow for initial device configuration.
+ *
+ * Architecture Reference:
+ * - Wizard served in AP mode (device acts as access point)
+ * - Steps: WiFi → API Credentials → Location → Hardware → Test → Complete
+ * - Reboot required after wizard completion
+ */
+import { type Locator, expect } from '@playwright/test';
+import { BasePage } from './BasePage.js';
+
+export type WizardStep =
+  | 'wifi'
+  | 'api'
+  | 'location'
+  | 'hardware'
+  | 'test'
+  | 'complete';
+
+export class WizardPage extends BasePage {
+  // ============================================================================
+  // Page Identification
+  // ============================================================================
+
+  get path(): string {
+    return '/';
+  }
+
+  get pageIdentifier(): Locator {
+    return this.page.locator('text=FlightWall Setup');
+  }
+
+  // ============================================================================
+  // Step Navigation
+  // ============================================================================
+
+  get stepIndicator(): Locator {
+    return this.page.locator('#progress');
+  }
+
+  get nextButton(): Locator {
+    return this.page.locator('button', { hasText: /next|continue/i });
+  }
+
+  get backButton(): Locator {
+    return this.page.locator('button', { hasText: /back|previous/i });
+  }
+
+  get skipButton(): Locator {
+    return this.page.locator('button', { hasText: /skip/i });
+  }
+
+  // ============================================================================
+  // Step 1: WiFi Configuration
+  // ============================================================================
+
+  get wifiSsidInput(): Locator {
+    return this.page.locator('#wifi-ssid, [name="wifi_ssid"]');
+  }
+
+  get wifiPasswordInput(): Locator {
+    return this.page.locator('#wifi-pass, [name="wifi_password"]');
+  }
+
+  get wifiScanButton(): Locator {
+    return this.page.locator('button', { hasText: /scan/i });
+  }
+
+  get wifiNetworkList(): Locator {
+    return this.page.locator('.wifi-networks, #scan-results');
+  }
+
+  // ============================================================================
+  // Step 2: API Credentials
+  // ============================================================================
+
+  get openSkyClientIdInput(): Locator {
+    return this.page.locator('#os-client-id, [name="os_client_id"]');
+  }
+
+  get openSkyClientSecretInput(): Locator {
+    return this.page.locator('#os-client-sec, [name="os_client_sec"]');
+  }
+
+  get aeroApiKeyInput(): Locator {
+    return this.page.locator('#aeroapi-key, [name="aeroapi_key"]');
+  }
+
+  // ============================================================================
+  // Step 3: Location Configuration
+  // ============================================================================
+
+  get centerLatInput(): Locator {
+    return this.page.locator('#center-lat, [name="center_lat"]');
+  }
+
+  get centerLonInput(): Locator {
+    return this.page.locator('#center-lon, [name="center_lon"]');
+  }
+
+  get radiusKmInput(): Locator {
+    return this.page.locator('#radius-km, [name="radius_km"]');
+  }
+
+  get useMyLocationButton(): Locator {
+    return this.page.locator('button', { hasText: /my location|detect/i });
+  }
+
+  get mapContainer(): Locator {
+    return this.page.locator('#map, .leaflet-container');
+  }
+
+  // ============================================================================
+  // Step 4: Hardware Configuration
+  // ============================================================================
+
+  get tilesXInput(): Locator {
+    return this.page.locator('#tiles-x, [name="tiles_x"]');
+  }
+
+  get tilesYInput(): Locator {
+    return this.page.locator('#tiles-y, [name="tiles_y"]');
+  }
+
+  get tilePixelsSelect(): Locator {
+    return this.page.locator('#tile-pixels, [name="tile_pixels"]');
+  }
+
+  get displayPinInput(): Locator {
+    return this.page.locator('#display-pin, [name="display_pin"]');
+  }
+
+  get previewCanvas(): Locator {
+    return this.page.locator('#preview-canvas, canvas');
+  }
+
+  // ============================================================================
+  // Step 5: Test Display
+  // ============================================================================
+
+  get testPatternButton(): Locator {
+    return this.page.locator('button', { hasText: /test pattern|show test/i });
+  }
+
+  get calibrationModeToggle(): Locator {
+    return this.page.locator('#calibration-mode, [name="calibration"]');
+  }
+
+  // ============================================================================
+  // Step 6: Complete
+  // ============================================================================
+
+  get completeMessage(): Locator {
+    return this.page.locator('text=/setup complete|ready to use/i');
+  }
+
+  get rebootButton(): Locator {
+    return this.page.locator('button', { hasText: /reboot|finish|start/i });
+  }
+
+  // ============================================================================
+  // Settings Import/Export (Foundation Release)
+  // ============================================================================
+
+  get importSettingsButton(): Locator {
+    // Import zone is a div[role="button"], not a <button> element
+    return this.page.locator('#settings-import-zone');
+  }
+
+  get importFileInput(): Locator {
+    return this.page.locator('input[type="file"]');
+  }
+
+  // ============================================================================
+  // Step Navigation Actions
+  // ============================================================================
+
+  /**
+   * Navigate to the next wizard step.
+   */
+  async goNext(): Promise<void> {
+    await this.nextButton.click();
+    await this.page.waitForLoadState('networkidle');
+  }
+
+  /**
+   * Navigate to the previous wizard step.
+   */
+  async goBack(): Promise<void> {
+    await this.backButton.click();
+    await this.page.waitForLoadState('networkidle');
+  }
+
+  /**
+   * Skip the current optional step.
+   */
+  async skipStep(): Promise<void> {
+    if (await this.skipButton.isVisible()) {
+      await this.skipButton.click();
+      await this.page.waitForLoadState('networkidle');
+    }
+  }
+
+  /**
+   * Get the current step number (1-based).
+   */
+  async getCurrentStep(): Promise<number> {
+    // Try to extract from step indicator or URL
+    const indicator = await this.stepIndicator.textContent();
+    const match = indicator?.match(/step\s*(\d+)/i);
+    if (match) {
+      return parseInt(match[1], 10);
+    }
+    // Fallback: check which step elements are visible
+    if (await this.wifiSsidInput.isVisible()) return 1;
+    if (await this.openSkyClientIdInput.isVisible()) return 2;
+    if (await this.centerLatInput.isVisible()) return 3;
+    if (await this.tilesXInput.isVisible()) return 4;
+    if (await this.testPatternButton.isVisible()) return 5;
+    if (await this.completeMessage.isVisible()) return 6;
+    return 0;
+  }
+
+  // ============================================================================
+  // Step 1: WiFi Actions
+  // ============================================================================
+
+  /**
+   * Configure WiFi credentials.
+   */
+  async configureWifi(ssid: string, password: string): Promise<void> {
+    await this.fillInput(this.wifiSsidInput, ssid);
+    await this.fillInput(this.wifiPasswordInput, password);
+  }
+
+  /**
+   * Scan for available WiFi networks.
+   */
+  async scanForNetworks(): Promise<void> {
+    await this.wifiScanButton.click();
+    // Wait for scan to complete
+    await this.page.waitForResponse(
+      (res) => res.url().includes('/api/wifi/scan'),
+      { timeout: 30_000 }
+    );
+    // Wait for results to render
+    await expect(this.wifiNetworkList).toBeVisible();
+  }
+
+  /**
+   * Select a network from the scan results.
+   */
+  async selectNetwork(ssid: string): Promise<void> {
+    const networkItem = this.wifiNetworkList.locator(`text=${ssid}`);
+    await networkItem.click();
+    // Network SSID should be populated
+    await expect(this.wifiSsidInput).toHaveValue(ssid);
+  }
+
+  // ============================================================================
+  // Step 2: API Credentials Actions
+  // ============================================================================
+
+  /**
+   * Configure API credentials.
+   */
+  async configureApiCredentials(
+    openSkyClientId: string,
+    openSkyClientSecret: string,
+    aeroApiKey: string
+  ): Promise<void> {
+    await this.fillInput(this.openSkyClientIdInput, openSkyClientId);
+    await this.fillInput(this.openSkyClientSecretInput, openSkyClientSecret);
+    await this.fillInput(this.aeroApiKeyInput, aeroApiKey);
+  }
+
+  // ============================================================================
+  // Step 3: Location Actions
+  // ============================================================================
+
+  /**
+   * Configure location manually.
+   */
+  async configureLocation(
+    lat: number,
+    lon: number,
+    radiusKm: number
+  ): Promise<void> {
+    await this.fillInput(this.centerLatInput, String(lat));
+    await this.fillInput(this.centerLonInput, String(lon));
+    await this.fillInput(this.radiusKmInput, String(radiusKm));
+  }
+
+  /**
+   * Use browser geolocation to detect location.
+   */
+  async useMyLocation(): Promise<void> {
+    await this.useMyLocationButton.click();
+    // Wait for geolocation to complete (browser permission required)
+    await this.page.waitForFunction(
+      () => {
+        const latInput = document.querySelector(
+          '#center-lat, [name="center_lat"]'
+        ) as HTMLInputElement;
+        return latInput && latInput.value !== '';
+      },
+      { timeout: 10_000 }
+    );
+  }
+
+  // ============================================================================
+  // Step 4: Hardware Actions
+  // ============================================================================
+
+  /**
+   * Configure matrix dimensions.
+   */
+  async configureMatrix(
+    tilesX: number,
+    tilesY: number,
+    tilePixels: number
+  ): Promise<void> {
+    await this.fillInput(this.tilesXInput, String(tilesX));
+    await this.fillInput(this.tilesYInput, String(tilesY));
+    await this.fillInput(this.tilePixelsSelect, String(tilePixels));
+  }
+
+  /**
+   * Set the LED data pin.
+   */
+  async setDisplayPin(pin: number): Promise<void> {
+    await this.fillInput(this.displayPinInput, String(pin));
+  }
+
+  // ============================================================================
+  // Step 5: Test Actions
+  // ============================================================================
+
+  /**
+   * Trigger a test pattern on the display.
+   */
+  async showTestPattern(): Promise<void> {
+    await this.testPatternButton.click();
+    // Wait for pattern to be sent to device
+    await this.page.waitForResponse(
+      (res) =>
+        res.url().includes('/api/calibration') ||
+        res.url().includes('/api/test'),
+      { timeout: 5_000 }
+    );
+  }
+
+  // ============================================================================
+  // Step 6: Complete Actions
+  // ============================================================================
+
+  /**
+   * Complete the wizard and reboot the device.
+   */
+  async completeWizard(): Promise<void> {
+    await expect(this.completeMessage).toBeVisible();
+    await this.rebootButton.click();
+    // Device will reboot, connection will be lost
+    await this.page.waitForResponse(
+      (res) => res.url().includes('/api/reboot'),
+      { timeout: 5_000 }
+    );
+  }
+
+  // ============================================================================
+  // Full Wizard Flow
+  // ============================================================================
+
+  /**
+   * Complete the entire wizard with provided configuration.
+   */
+  async completeSetup(config: {
+    wifi: { ssid: string; password: string };
+    api: {
+      openSkyClientId: string;
+      openSkyClientSecret: string;
+      aeroApiKey: string;
+    };
+    location: { lat: number; lon: number; radiusKm: number };
+    hardware: { tilesX: number; tilesY: number; tilePixels: number };
+  }): Promise<void> {
+    // Step 1: WiFi
+    await this.configureWifi(config.wifi.ssid, config.wifi.password);
+    await this.goNext();
+
+    // Step 2: API Credentials
+    await this.configureApiCredentials(
+      config.api.openSkyClientId,
+      config.api.openSkyClientSecret,
+      config.api.aeroApiKey
+    );
+    await this.goNext();
+
+    // Step 3: Location
+    await this.configureLocation(
+      config.location.lat,
+      config.location.lon,
+      config.location.radiusKm
+    );
+    await this.goNext();
+
+    // Step 4: Hardware
+    await this.configureMatrix(
+      config.hardware.tilesX,
+      config.hardware.tilesY,
+      config.hardware.tilePixels
+    );
+    await this.goNext();
+
+    // Step 5: Test (optional, skip for speed)
+    await this.skipStep();
+
+    // Step 6: Complete
+    await this.completeWizard();
+  }
+
+  // ============================================================================
+  // Assertions
+  // ============================================================================
+
+  /**
+   * Assert the wizard is on a specific step.
+   */
+  async expectStep(step: number): Promise<void> {
+    const currentStep = await this.getCurrentStep();
+    expect(currentStep).toBe(step);
+  }
+
+  /**
+   * Assert WiFi scan results are displayed.
+   */
+  async expectNetworksVisible(): Promise<void> {
+    await expect(this.wifiNetworkList).toBeVisible();
+    const networks = this.wifiNetworkList.locator('li, .network-item');
+    await expect(networks).toHaveCount(
+      expect.any(Number) as unknown as number
+    );
+  }
+
+  /**
+   * Assert the preview canvas is rendering.
+   */
+  async expectPreviewVisible(): Promise<void> {
+    await expect(this.previewCanvas).toBeVisible();
+  }
+}
+
+
+]]></file>
+<file id="90dfc412" path="[ANTIPATTERNS - DO NOT REPEAT]" label="VIRTUAL CONTENT"><![CDATA[
+
+# Epic fn-1 - Code Antipatterns
+
+> **WARNING: ANTI-PATTERNS**
+> The issues below were MISTAKES found during code review of previous stories.
+> DO NOT repeat these patterns. Learn from them and avoid similar errors.
+> These represent implementation mistakes (race conditions, missing tests, weak assertions, etc.)
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | AC #1 Automation Missing**: Binary size logging was manual, not automated in build process | Created `check_size.py` PlatformIO pre-action script that runs on every build, logs binary size, warns at 1.3MB threshold, fails at 1.5MB limit. Added `extra_scripts = pre:check_size.py` to platformio.ini. |
+| critical | Silent Data Loss Risk**: LittleFS.begin(true) auto-formats on mount failure without notification | Changed to `LittleFS.begin(false)` with explicit error logging and user-visible instructions to reflash filesystem. Device continues boot but warns user of unavailable web assets/logos. |
+| high | Missing Partition Runtime Validation**: No verification that running firmware matches expected partition layout | Added `validatePartitionLayout()` function that checks running app partition size (0x180000) and LittleFS partition size (0xF0000) against expectations. Logs warnings if mismatches detected. Called during setup before LittleFS mount. |
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | Silent Exit in check_size.py if Binary Missing | Added explicit error logging when binary is missing |
+| low | Magic Numbers for Timing/Thresholds | Named constants already exist for some values (AUTHENTICATING_DISPLAY_MS, BUTTON_DEBOUNCE_MS). Additional refactoring would require broader changes. |
+| low | Interface Segregation - WiFiManager Callback | Changed to C++ comment syntax to clarify intent |
+
+## Story fn-1-1 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Silent Exit in check_size.py When Binary Missing | Added explicit error logging and `env.Exit(1)` when binary is missing |
+| high | Magic Numbers for Partition Sizes - No Cross-Reference | Added cross-reference comments in all 3 files to alert developers when updating partition sizes |
+| medium | Partition Table Gap Not Documented | Added comment documenting reserved gap |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Missing `getSchedule()` implementation | Added `ConfigManager::getSchedule()` method at line 536 following existing getter pattern with ConfigLockGuard for thread safety. Method returns copy of `_schedule` struct. |
+| critical | Schedule keys missing from `dumpSettingsJson()` API | Added `snapshot.schedule = _schedule` to snapshot capture at line 469 and added all 5 schedule keys to JSON output at lines 507-511. GET /api/settings now returns 27 total keys (22 existing + 5 new). |
+| critical | OTA and NTP subsystems not added to SystemStatus | Added `OTA` and `NTP` to Subsystem enum, updated `SUBSYSTEM_COUNT` from 6 to 8, and added "ota" and "ntp" cases to `subsystemName()` switch. Also fixed stale comment "existing six" → "subsystems". |
+| high | Required unit tests missing from test suite | Added 5 new test functions: `test_defaults_schedule()`, `test_nvs_write_read_roundtrip_schedule()`, `test_apply_json_schedule_hot_reload()`, `test_apply_json_schedule_validation()`, and `test_system_status_ota_ntp()`. All tests integrated into `setup()` test runner. |
+| low | Stale comment in SystemStatus.cpp | Updated comment from "existing six" to "subsystems" to reflect new count of 8. |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Integer Overflow in `sched_enabled` Validation | Changed from `value.as<uint8_t>()` (wraps 256→0) to validating as `unsigned int` before cast. Now properly rejects values >1. Added type check `value.is<unsigned int>()`. |
+| critical | Missing Validation for `sched_dim_brt` | Added bounds checking (0-255) and type validation. Previously accepted any value without validation, violating story requirements. |
+| critical | Test Suite Contradicts Implementation | Renamed `test_apply_json_ignores_unknown_keys` → `test_apply_json_rejects_unknown_keys` and corrected assertions. applyJson uses all-or-nothing validation, not partial success. |
+| high | Missing Test Coverage for AC #4 | Added `test_dump_settings_json_includes_schedule()` — verifies all 5 schedule keys present in JSON and total key count = 27. |
+| high | Validation Test Coverage Gaps | Extended `test_apply_json_schedule_validation()` with 2 additional test cases: `sched_dim_brt > 255` rejection and `sched_enabled = 256` overflow rejection. |
+| dismissed | `/api/settings` exposes secrets (wifi_password, API keys) in plaintext | FALSE POSITIVE: Pre-existing design, not introduced by this story. Requires separate security story to implement credential masking. Story scope was schedule keys + SystemStatus subsystems only. |
+| dismissed | ConfigSnapshot heap allocation overhead in applyJson | FALSE POSITIVE: Necessary for atomic semantics — applyJson must validate all keys before committing any changes. Snapshot pattern is intentional design. |
+| dismissed | SystemStatus mutex timeout fallback is unsafe | FALSE POSITIVE: Pre-existing pattern across SystemStatus implementation (lines 35-44, 53-58, 65-73). Requires broader refactor outside story scope. This story only added OTA/NTP subsystems. |
+| dismissed | SystemStatus tight coupling to WiFi, LittleFS, ConfigManager | FALSE POSITIVE: Pre-existing architecture in `toExtendedJson()` method. Not introduced by this story — story only added 2 subsystems to existing enum. |
+| dismissed | Hardcoded NVS namespace string | FALSE POSITIVE: Pre-existing pattern, not story scope. NVS namespace was defined before this story. |
+
+## Story fn-1-2 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | Test baseline claims 27 keys but implementation has 29 | Updated test assertion from 27 to 29 to match actual implementation |
+| critical | Missing negative number validation for schedule time fields | Added type validation with `value.is<int>()` and signed bounds checking before unsigned cast |
+| critical | Missing type validation for timezone string | Added `value.is<const char*>()` type check before string conversion |
+| high | Missing test coverage for AC #4 - JSON dump includes all schedule keys | Corrected key count assertion from 27 to 29 |
+| high | Validation test coverage gaps | Already present in current code (lines 373-382) - FALSE POSITIVE on reviewer's part, but validation logic in implementation was incomplete (see fixes #6, #7) |
+| high | Integer overflow in sched_enabled validation | Already has type check `value.is<unsigned int>()` - validation is correct. Reviewing again...actually the test exists to verify 256 is rejected (line 380). This is working correctly. |
+| high | Missing validation for sched_dim_brt | Code already has type check and >255 rejection (lines 163-167) after Round 2 fixes. Verified correct. |
+| medium | Test suite contradicts implementation (unknown key handling) | Test already renamed to `test_apply_json_rejects_unknown_keys` with correct assertions after Round 2 fixes |
+
+## Story fn-1-3 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | `clearOTAUpload()` unconditionally calls `Update.abort()` when `started == true`, including the success path where `clearOTAUpload()` is called immediately after `Update.end(true)` — aborting the just-written firmware | Set `state->started = false` after successful `Update.end(true)` so the completed-update flag is cleared before cleanup runs |
+| high | No concurrent upload guard; a second client can call `Update.begin()` while an upload is in-flight, sharing the non-reentrant `Update` singleton and risking flash corruption | Added `g_otaInProgress` static bool; second upload receives `OTA_BUSY` / 409 Conflict immediately |
+| medium | `SystemStatus::set()` is called on `WRITE_FAILED`/`VERIFY_FAILED` but silently omitted from `INVALID_FIRMWARE`, `NO_OTA_PARTITION`, and `BEGIN_FAILED` — OTA subsystem status does not reflect these failures | Added `SystemStatus::set(ERROR)` to all three missing error paths |
+| low | Task 3 claimed partition info logging was complete, but code only emitted `LOG_I("OTA", "Update started")` with no label/size | Added `Serial.printf("[OTA] Writing to %s, size 0x%x\n", partition->label, partition->size);` |
+| low | `NO_OTA_PARTITION`, `BEGIN_FAILED`, `WRITE_FAILED`, `VERIFY_FAILED` (server-side failures) return HTTP 400 (client error); `OTA_BUSY` conflicts returned as 400 | Error-code-to-HTTP mapping: `INVALID_FIRMWARE` → 400, `OTA_BUSY` → 409, server failures → 500 |
+| dismissed | `POST /api/ota/upload` is unauthenticated / CSRF-vulnerable | FALSE POSITIVE: No endpoint in this device has authentication — `/api/reboot`, `/api/reset`, `/api/settings` are all unauthenticated. This is a pre-existing architectural design gap (LAN-only device), not introduced by this story. Requires a dedicated security story. |
+| dismissed | Missing `return` statements after `NO_OTA_PARTITION` and `BEGIN_FAILED` — code falls through to write path | FALSE POSITIVE: FALSE POSITIVE. The actual code at lines 480 and 490 contains explicit `return;` statements. Validator C misread a code snippet. |
+| dismissed | Task 8 (header declaration) incomplete — `_handleOTAUpload()` not in `WebPortal.h` | FALSE POSITIVE: FALSE POSITIVE. The task itself states "or keep inline like logo upload" as an explicit alternative. The inline lambda approach is the correct pattern and matches the logo upload implementation. |
+| dismissed | `std::vector<OTAUploadState>` introduces heap churn on hot async path | FALSE POSITIVE: This is the established project pattern — `g_logoUploads` uses the same `std::vector` approach. OTA is single-flight (now enforced), so the vector holds at most one entry. Not worth a divergent pattern. |
+| dismissed | Oversized binary not rejected before flash writes begin | FALSE POSITIVE: `Update.begin(partition->size)` tells the library the maximum expected size. `Update.write()` will fail and return fewer-than-requested bytes when the partition is full, which the existing write-failure path handles. `Update.end(true)` accepts partial writes correctly. The library itself is the bounds guard. --- |
+
+## Story fn-1-4 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | `g_otaSelfCheckDone = true` placed outside the `err == ESP_OK` block — self-check silently completes even when `esp_ota_mark_app_valid_cancel_rollback()` fails, leaving firmware in unvalidated state with no retry | Moved `g_otaSelfCheckDone = true` inside the success branch. On failure, function exits without setting the flag so the next loop iteration retries. |
+| high | AC #2 requires "a WARNING log message" for the timeout path, but `LOG_I` was used — wrong log level AND there was no `LOG_W` macro in the project | Added `LOG_W` macro to `Log.h` at level `>= 1` (same severity tier as errors). Changed `LOG_I` → `LOG_W` on the timeout path. |
+| medium | `isPendingVerify` OTA state computed via two IDF flash-read calls (`esp_ota_get_running_partition()` + `esp_ota_get_state_partition()`) on every `loop()` iteration for up to 60 seconds — state cannot change during this window | Introduced `static int8_t s_isPendingVerify = -1` cached on first call; subsequent iterations skip the IDF calls entirely. |
+| medium | `("Firmware verified — WiFi connected in " + String(elapsedSec) + "s").c_str()` passes a pointer to a temporary `String`'s internal buffer to `SystemStatus::set(const String&)` — technically safe but fragile code smell | Extracted to named `String okMsg` variable before the call. Same pattern applied in the error path. |
+| low | `OTA_SELF_CHECK_TIMEOUT_MS = 60000` had no inline comment explaining the rationale for the 60s value | Added 3-line comment citing Architecture Decision F3, typical WiFi connect time, and no-WiFi fallback scenario. |
+| dismissed | AC #6 violated — rollback WARNING emitted on normal boots after a prior rollback | FALSE POSITIVE: Story Gotcha #2 explicitly states: *"g_rollbackDetected will be true on every subsequent boot until a new successful OTA… This means /api/status will return rollback_detected: true on every boot until that happens — this is correct and intentional API behavior."* The deferred `SystemStatus::set(WARNING)` is the mechanism that surfaces the persisted rollback state through the health API. Suppressing it would hide a real device condition. |
+| dismissed | `g_bootStartMs` uninitialized read risk — if called before `setup()`, `millis() - 0` returns a large value triggering immediate timeout | FALSE POSITIVE: In Arduino on ESP32, `setup()` is guaranteed to execute before `loop()`. `g_bootStartMs` is set at the top of `setup()`. There is no code path where `performOtaSelfCheck()` can run before `setup()`. |
+| dismissed | `SystemStatus::set()` best-effort mutex fallback is unsafe | FALSE POSITIVE: Pre-existing pattern across the entire `SystemStatus` implementation (lines 41–50, 59–64, 71–79). Not introduced by this story. Requires broader architectural refactor outside story scope. |
+| dismissed | Magic numbers 2000/4000 in `tickStartupProgress()` | FALSE POSITIVE: Pre-existing code in `tickStartupProgress()` from a prior story. Not introduced by fn-1.4. Out of scope for this synthesis. |
+| dismissed | LOG macros used inconsistently with `Serial.printf` — project logging pattern violated | FALSE POSITIVE: `Log.h` macros (`LOG_E`, `LOG_I`, `LOG_V`) only accept **fixed string literals** — they have no format-string support. `Serial.printf` is the only viable option when embedding runtime values (partition labels, elapsed time, error codes). The mixed usage is correct project practice, not an inconsistency. The sole actionable logging issue was the `LOG_I` vs `LOG_W` severity mismatch (fixed above). |
+| dismissed | `FW_VERSION` format not validated at runtime | FALSE POSITIVE: `FW_VERSION` is a compile-time build flag enforced by the build system and team convention. Runtime validation of a compile-time constant is over-engineering and has no failure mode that warrants it. |
+| dismissed | `FlightStatsSnapshot` location not explicit in story docs | FALSE POSITIVE: Documentation gap only, not a code defect. The struct is defined in `main.cpp` as confirmed by reading the source. No code fix needed. |
+
+## Story fn-1-4 (2026-04-12)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| medium | `s_isPendingVerify` error caching — `s_isPendingVerify = 0` was set unconditionally before the conditional, so if `esp_ota_get_running_partition()` returned NULL or `esp_ota_get_state_partition()` returned non-`ESP_OK`, the pending-verify state was permanently cached as 0 (normal boot). A transient IDF probe error on the first loop iteration would suppress AC #1/#2 status and timing logs on a real post-OTA boot for the entire 60s window. | Removed `s_isPendingVerify = 0` pre-assignment; now only set on successful probe. State probe retries on next loop iteration if running partition is NULL or probe fails. |
+| low | Rollback WARNING blocked by `err == ESP_OK` check — the `SystemStatus::set(WARNING, "Firmware rolled back...")` call was inside the `if (err == ESP_OK)` block, meaning if `esp_ota_mark_app_valid_cancel_rollback()` persistently failed, AC #4's required WARNING status was never emitted. | Moved rollback `SystemStatus::set()` before the mark_valid call, inside the WiFi/timeout condition but outside the success guard. Added `static bool s_rollbackStatusSet` to prevent repeated calls on retry iterations. |
+| low | Boot timing starts 200ms late — `g_bootStartMs = millis()` was assigned after `Serial.begin(115200)` and `delay(200)`, understating the reported "WiFi connected in Xms" timing by 200ms. Story task requirement explicitly states capture before delays. | Moved `g_bootStartMs = millis()` to be the very first statement in `setup()`, before `Serial.begin()` and `delay(200)`. |
+| low | Log spam on mark_valid failure — when `esp_ota_mark_app_valid_cancel_rollback()` failed, `Serial.printf()` and `SystemStatus::set(ERROR)` were called on every loop iteration (potentially 20/sec) since neither `g_otaSelfCheckDone` is set (correctly) nor the error path had a throttle. | Added `static bool s_markValidErrorLogged = false` guard so the error is logged and status set only on the first failure; subsequent retries are silent. |
+
+## Story fn-1-6 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| critical | No cancel/re-select path once a valid file is chosen | Added `<button id="btn-cancel-ota">Cancel</button>` to `.ota-file-info`, wired to `resetOtaUploadState()` in JS. |
+| critical | Polling race condition — timeout check fires immediately after async `FW.get()` starts, allowing both "Device unreachable" message AND success toast to show simultaneously on the final attempt | Restructured `startRebootPolling()` to check `attempts >= maxAttempts` **before** issuing the request; added `done` boolean guard so late-arriving responses are discarded after timeout. |
+| high | `resetOtaUploadState()` does not reset `otaRebootText.style.color` or `otaRebootText.textContent` — amber timeout color and stale text persist into subsequent upload attempts | Added `otaRebootText.textContent = ''` and `otaRebootText.style.color = ''` to `resetOtaUploadState()`. |
+| high | `.banner-warning .dismiss-btn` has no `:focus` style — WCAG 2.1 AA violation (visible focus indicator required) | Added `.banner-warning .dismiss-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px }` rule. |
+| high | `prefs.putUChar("ota_rb_ack", 1)` return value ignored in ack-rollback handler — silent failure if NVS write fails | Added `prefs.begin()` return check and `written == 0` check; return 500 error responses with inline JSON (not `_sendJsonError` — lambda is `[]`, no `this` capture). |
+| medium | `dragleave` removes `.drag-over` class when cursor moves over child elements — causes visual flicker mid-drag | Added `e.relatedTarget` guard: `if (!otaUploadZone.contains(e.relatedTarget))`. |
+| low | Zero-byte file produces misleading error "Not a valid ESP32 firmware image" instead of "File is empty" | Added explicit `file.size === 0` check with message "File is empty — select a valid firmware .bin file" before the magic byte check. |
+
+## Story fn-1-6 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | WCAG AA contrast failure — white text (#fff) over `--primary` (#58a6ff) on `.ota-progress-text` yields 2.40:1 contrast ratio, below the 4.5:1 AA minimum. Text overlays both filled (#58a6ff) and unfilled (#30363d) progress bar regions, creating variable backgrounds | Added four-direction `text-shadow: rgba(0,0,0,0.65)` to create a dark halo that ensures readability on both light-blue and dark-grey backgrounds |
+| medium | `btnUploadFirmware` not disabled at start of `uploadFirmware()` — rapid double-tap could enqueue two concurrent uploads before the `otaFileInfo` section is hidden. Server guards with `g_otaInProgress` (returning 409), but the second request still generates an error toast, confusing UX | `btnUploadFirmware.disabled = true` at function entry, re-enabled in both `xhr.onload` and `xhr.onerror` |
+| low | Polling `FW.get('/api/status')` lacks cache-busting — browsers with aggressive cache policies could serve a stale 200 from the pre-reboot device, falsely triggering "Updated to v..." before the new firmware is running | Changed to `FW.get('/api/status?_=' + Date.now())` to guarantee a fresh request |
+| low | `#d29922` amber color hardcoded in JS for the "Device unreachable" timeout message, bypassing the design system. `--warning` CSS variable was also absent, making `var(--warning)` fallback impossible | Added `--warning: #d29922` to `:root` CSS variables; updated JS to `getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() \|\| '#d29922'` |
+| dismissed | Server-side OTA file size check missing (DoS vulnerability) | FALSE POSITIVE: Explicitly dismissed as FALSE POSITIVE in fn-1.3 antipatterns: "Update.begin(partition->size) tells the library the maximum expected size. Update.write() will fail when the partition is full." Client-side 1.5MB check provides UX feedback; server-side is handled by the Update library. |
+| dismissed | `_sendJsonError` should replace inline JSON in ack-rollback handler | FALSE POSITIVE: `_sendJsonError` is a `WebPortal` class member function. The `/api/ota/ack-rollback` handler is a `[]` lambda (no `this` capture) — calling `_sendJsonError` is syntactically impossible without restructuring the handler. Inline JSON strings are the correct pattern for captureless lambdas. |
+| dismissed | `OTA_MAX_SIZE` should be driven by API (`/api/status.ota_max_size`) | FALSE POSITIVE: Over-engineering. The 1.5MB partition size is a compile-time constant (custom_partitions.csv) that cannot change at runtime. Adding an API field and HTTP round-trip for this is disproportionate; the constant is clearly documented with its hex value. |
+| dismissed | Drag-over border uses `--primary` instead of `--accent` (AC #3) | FALSE POSITIVE: `--accent` does not exist in the project's CSS design system (`:root` defines `--primary`, `--primary-hover`, `--error`, `--success`, `--warning` — no `--accent`). The Dev Notes explicitly lists `--primary` as the correct token for "drag-over border." The AC spec contains a stale/incorrect variable name. |
+| dismissed | Race condition in `startRebootPolling` — timeout and success could fire simultaneously | FALSE POSITIVE: Already fixed in Pass 1 synthesis. Lines 2818-2831 show: `done` flag prevents double-finish; `attempts >= maxAttempts` check fires BEFORE the next request is issued; `if (done) return` discards late-arriving responses. |
+| dismissed | `FileReader.readAsArrayBuffer(file.slice(0, 4))` reads 4 bytes but only `bytes[0]` is used | FALSE POSITIVE: Negligible inefficiency. Reading 4 bytes on a modern browser is identical cost to reading 1 byte (minimum slice size). Functionally correct; no impact on correctness or performance. |
+| dismissed | `FW.get()` reboot polling is "falsely optimistic" — could return cached pre-reboot 200 | FALSE POSITIVE: The server calls `request->send(200, ...)` before scheduling the 500ms reboot timer (WebPortal.cpp:494). The full 50-byte JSON response will be in the TCP send buffer before the timer fires. `xhr.onerror` cannot fire on a response that was successfully sent and received. Only genuine network failures during upload reach `onerror`. |
+| dismissed | Story file omits WebPortal.h and main.cpp from modified file list | FALSE POSITIVE: Documentation concern, not a code defect. The synthesis mission is to verify and fix SOURCE CODE — story record auditing is out of scope. No code correction needed. |
+| dismissed | Settings export silently backs up stale persisted config when form has unsaved edits | FALSE POSITIVE: AC #10 specifies "triggers `GET /api/settings/export`" — exporting persisted server config is the intended behavior. The helper text instructs users to download settings as a backup "before migration or reflash" — not mid-edit. A warning when `applyBar` is visible would be a UX enhancement, not a bug fix. Out of scope. |
+| dismissed | No automated test coverage for new OTA/export endpoints | FALSE POSITIVE: Valid concern but outside synthesis scope. ESP32 integration tests require hardware-in-the-loop or mock server infrastructure not present in this repo. Would need a dedicated testing story. |
+| dismissed | CSRF protection missing on POST /api/ota/upload | FALSE POSITIVE: Explicitly dismissed as FALSE POSITIVE in fn-1.3 antipatterns: "No endpoint in this device has authentication — `/api/reboot`, `/api/reset`, `/api/settings` are all unauthenticated. This is a pre-existing architectural design gap (LAN-only device), not introduced by this story." |
+| dismissed | No upload cancellation mechanism | FALSE POSITIVE: ALREADY IMPLEMENTED in Pass 1 synthesis. `btn-cancel-ota` exists in dashboard.html:248 and is wired to `resetOtaUploadState()` in dashboard.js:2620-2623. |
+| dismissed | Unthrottled XHR progress events violate AC #6 ("every 2 seconds") | FALSE POSITIVE: Misread. AC #6 states "updates at least every 2 seconds" — this is a MINIMUM frequency requirement. The XHR progress handler fires MORE frequently (on each browser progress event), which satisfies "at least every 2s." Throttling to 500ms would still satisfy the AC. Throttling to 2s would be the minimum required and is not needed since XHR events are already frequent enough. |
+| dismissed | XHR object not explicitly nulled after upload — memory leak | FALSE POSITIVE: JavaScript GC handles local variable cleanup. On an embedded single-page dashboard with one upload per session, a 1-2KB XHR object is negligible. Not a real leak; the object is properly scoped. |
+| dismissed | CSS line count is 41 lines, not "~35 lines" as claimed in AC #11 | FALSE POSITIVE: AC #11 says "approximately 35 lines" — 41 lines is within reasonable approximation range and has no functional impact. --- |
+
+## Story fn-1-6 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | `.ota-upload-zone.drag-over` only changes `border-color`, not `border-style` — border stays `dashed` during drag, violating AC #3 ("border becomes solid") | Added `border-style:solid` to `.ota-upload-zone.drag-over` rule |
+| high | OTA buttons below 44×44px touch target minimum — `.btn-ota-cancel` renders at ~36px height with `padding:10px`; `#btn-upload-firmware` renders at ~40px with `padding:12px` — violates AC #11 | Added `min-height:44px` to `.btn-secondary`, `.btn-ota-cancel`, and `.ota-file-info .apply-btn` override |
+| medium | OTA success path `otaPrefs.begin()` return value not checked before `putUChar()` — silent NVS failure leaves rollback banner permanently dismissed after a good-OTA-then-rollback sequence | Wrapped NVS calls in `if (otaPrefs.begin(...))` with `LOG_E` on failure path |
+| medium | `loadFirmwareStatus()` catch block completely silent — firmware card shows blank version and hidden banner with no user feedback on network failure | Added `FW.showToast('Could not load firmware status — check connection', 'error')` to catch |
+| medium | Reboot polling uses `setInterval` — if `FW.get()` hangs >3s, the next poll fires before resolution, piling concurrent requests on the ESP32 during recovery | Replaced `setInterval` with recursive `setTimeout` — next poll only fires after current request resolves (success or error) |
+| low | No `xhr.timeout` on the upload XHR — a stalled upload on a degraded network hangs indefinitely with no feedback | Added `xhr.timeout = 120000` and `xhr.ontimeout` handler showing error toast and resetting UI |
+
+## Story fn-1-7 (2026-04-13)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| high | `importStatus` element not hidden on error/zero-count paths — stale "N settings imported" badge persists after a failed re-import, violating AC #4 ("import zone resets to its initial state") | Moved `importStatus.style.display = 'none'`, `importStatus.textContent = ''`, and `importedExtras = {}` to the very top of `processImportedSettings()`, before the try/catch. Covers all error exit paths. |
+| high | `showStep(currentStep)` called from `processImportedSettings()` without first flushing in-progress input — if the user typed values into Step 1 that hadn't been saved to `state`, the subsequent rehydration would overwrite those typed values with the (empty) stale state | Added `saveCurrentStepState()` call immediately before `showStep(currentStep)` in the success path. |
+| medium | `parsed.hasOwnProperty(key)` is unsafe on user-controlled JSON — a file containing `{"hasOwnProperty": 1}` turns the method lookup into a TypeError and bypasses all normal toast/reset behavior | Replaced both occurrences with `Object.prototype.hasOwnProperty.call(parsed, key)`. |
+| medium | No file-size guard in `handleImportFile()` — a multi-MB file passed via drag-and-drop could hang the browser tab on `FileReader.readAsText()` | Added `if (file.size > 1024 * 1024)` check with error toast before the FileReader is created. |
+| low | `String(null)` → `"null"`, `String({})` → `"[object Object]"` — a hand-crafted import file with `null` or nested-object values could silently write garbage strings into wizard `state` fields, which would then pass through to the POST payload | Added `if (val !== null && typeof val !== 'object')` type guard in both the WIZARD_KEYS and KNOWN_EXTRA_KEYS loops before assignment. |
+| low | `WizardPage.importSettingsButton` locator targets `<button>` elements, but the import zone is a `<div role="button">` — the locator would never match and any test using it would fail | Replaced `this.page.locator('button', { hasText: /import/i })` with `this.page.locator('#settings-import-zone')`. |
+| dismissed | Hardcoded `WIZARD_KEYS`/`KNOWN_EXTRA_KEYS` violates OCP; fix with `/api/settings/schema` endpoint | FALSE POSITIVE: The story explicitly states "Do NOT create a new server-side endpoint." This is a client-side-only change by design. A schema endpoint would add firmware code, flash usage, and a network round-trip to the boot path for no practical gain on a single-firmware device. |
+| dismissed | `importedExtras` is a "global mutable state" SRP violation | FALSE POSITIVE: The entire `wizard.js` runs inside an IIFE — `importedExtras` is a module-level closure variable, not a true global. This is the established pattern for the project's vanilla-JS embedded UI (see `state`, `scanTimer`, `manualMode`). |
+| dismissed | Missing API-key format validation in `validateStep(2)` | FALSE POSITIVE: Pre-existing pattern present before fn-1.7 and outside story scope. No change introduced by this story. |
+| dismissed | Missing `min`/`max` HTML attributes on numeric inputs | FALSE POSITIVE: Pre-existing pattern; not introduced by fn-1.7. |
+| dismissed | `saveAndConnect` catch block uses `showSaveError` instead of `FW.showToast` | FALSE POSITIVE: Pre-existing intentional pattern — `showSaveError` renders inline within the review section because Step 5 is still visible. Not introduced by fn-1.7. |
+| dismissed | Hardcoded `TOTAL_STEPS` | FALSE POSITIVE: Pre-existing; not introduced by fn-1.7. |
+| dismissed | Missing cache-busting on `hydrateDefaults()` fetch | FALSE POSITIVE: Pre-existing; not introduced by fn-1.7. ESP32 AsyncWebServer does not cache API responses. |
+| dismissed | Em dash `\u2014` in error message is inconsistent with other error messages using `-` | FALSE POSITIVE: The AC #4 spec text reads "Could not read settings file — invalid format" — the em dash is the spec-required format. Correct as written. |
+| dismissed | Re-import mixes wizard state keys from old and new files | FALSE POSITIVE: The story explicitly specifies "reset `importedExtras = {}` and re-process." Wizard state keys are intentionally additive so that a targeted re-import (WiFi-only file) doesn't wipe hardware/location already present. This is a documented design decision. |
+| dismissed | MIME-type validation missing on drag-and-drop | FALSE POSITIVE: This is a single-user trusted LAN device with no authentication on any endpoint. The `accept=".json"` file-picker filter is adequate UX guidance. A strict MIME check would also cause false positives on some OS/browser combinations that assign `application/octet-stream` to `.json` files. |
+| dismissed | FileReader `onerror` message says "invalid format" when the actual cause could be a permission/IO error | FALSE POSITIVE: AC #4 specifies exactly: "an error toast shows 'Could not read settings file — invalid format'." No distinction is required by the spec. |
+| dismissed | Drag-over CSS class not cleared when FileReader errors | FALSE POSITIVE: False positive. The `drop` event handler calls `importZone.classList.remove('drag-over')` synchronously *before* `handleImportFile()` is called. The FileReader fires asynchronously; by that point `.drag-over` is already gone. |
+| dismissed | `KNOWN_EXTRA_KEYS` needs `display_mode` and future `m_*`/`sched_r*` keys | FALSE POSITIVE: Future firmware keys are a known design tradeoff documented in the story's Risk Mitigation section. The list is intentionally bounded to the 30 keys that `ConfigManager::applyJson()` accepts today. Adding speculative future keys would cause 400 errors if those keys don't exist in current firmware. --- |
+
+
+]]></file>
+</context>
+<variables>
+<var name="architecture_file" file_id="893ad01d" description="System architecture for review context" load_strategy="EMBEDDED" token_approx="59787">embedded in prompt, file id: 893ad01d</var>
+<var name="author">BMad</var>
+<var name="communication_language">English</var>
+<var name="date">2026-04-12</var>
+<var name="description">Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.</var>
+<var name="document_output_language">English</var>
+<var name="document_project_file" description="Brownfield project documentation (optional)" load_strategy="INDEX_GUIDED">_bmad-output/planning-artifacts/index.md</var>
+<var name="epic_num">fn-1</var>
+<var name="epics_file" description="Epic containing story being reviewed" load_strategy="SELECTIVE_LOAD" token_approx="13622">_bmad-output/planning-artifacts/epics-delight.md</var>
+<var name="implementation_artifacts">_bmad-output/implementation-artifacts</var>
+<var name="instructions">embedded context</var>
+<var name="name">code-review</var>
+<var name="output_folder">_bmad-output/implementation-artifacts</var>
+<var name="planning_artifacts">_bmad-output/planning-artifacts</var>
+<var name="project_context">{project-root}/docs/project-context.md</var>
+<var name="project_knowledge">docs</var>
+<var name="project_name">TheFlightWall_OSS-main</var>
+<var name="sprint_status">_bmad-output/implementation-artifacts/sprint-status.yaml</var>
+<var name="story_dir">_bmad-output/implementation-artifacts/stories</var>
+<var name="story_file" file_id="ff10d1c0">embedded in prompt, file id: ff10d1c0</var>
+<var name="story_id">fn-1.7</var>
+<var name="story_key">fn-1-7-settings-import-in-setup-wizard</var>
+<var name="story_num">7</var>
+<var name="story_title">settings-import-in-setup-wizard</var>
+<var name="template">False</var>
+<var name="timestamp">20260412_2230</var>
+<var name="user_name">Christian</var>
+<var name="user_skill_level">expert</var>
+<var name="ux_design_file" description="UX design specification (if UI review)" load_strategy="FULL_LOAD" token_approx="30146">_bmad-output/planning-artifacts/ux-design-specification-delight.md</var>
+<var name="validation">embedded context</var>
+</variables>
+<instructions><workflow>
+  <critical>SCOPE LIMITATION: You are a READ-ONLY VALIDATOR. Output your code review report to stdout ONLY. Do NOT create files, do NOT modify files, do NOT use Write/Edit/Bash tools. Your stdout output will be captured and saved by the orchestration system.</critical>
+  <critical>All configuration and context is available in the VARIABLES section below. Use these resolved values directly.</critical>
+  <critical>Communicate all responses in English and language MUST be tailored to expert</critical>
+  <critical>Generate all documents in English</critical>
+
+  <critical>🔥 YOU ARE AN ADVERSARIAL CODE REVIEWER - Find what's wrong or missing! 🔥</critical>
+  <critical>Your purpose: Validate story file claims against actual implementation</critical>
+  <critical>Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.</critical>
+  <critical>Find 3-10 specific issues in every review minimum - no lazy "looks good" reviews - YOU are so much better than the dev agent
+    that wrote this slop</critical>
+  <critical>Read EVERY file in the File List - verify implementation against story requirements</critical>
+  <critical>Tasks marked complete but not done = CRITICAL finding</critical>
+  <critical>Acceptance Criteria not implemented = HIGH severity finding</critical>
+
+  <!-- Step 1 removed: file discovery handled by compiler -->
+
+  <step n="1" goal="Execute adversarial review">
+    <critical>VALIDATE EVERY CLAIM - Check git reality vs story claims</critical>
+
+    <!-- Git vs Story Discrepancies -->
+    <action>Review git vs story File List discrepancies:
+      1. **Files changed but not in story File List** → MEDIUM finding (incomplete documentation)
+      2. **Story lists files but no git changes** → HIGH finding (false claims)
+      3. **Uncommitted changes not documented** → MEDIUM finding (transparency issue)
+    </action>
+
+    <!-- Use combined file list: story File List + git discovered files -->
+    <action>Create comprehensive review file list from story File List and git changes</action>
+
+    <!-- AC Validation -->
+    <action>For EACH Acceptance Criterion:
+      1. Read the AC requirement
+      2. Search implementation files for evidence
+      3. Determine: IMPLEMENTED, PARTIAL, or MISSING
+      4. If MISSING/PARTIAL → HIGH SEVERITY finding
+    </action>
+
+    <!-- Task Completion Audit -->
+    <action>For EACH task marked [x]:
+      1. Read the task description
+      2. Search files for evidence it was actually done
+      3. **CRITICAL**: If marked [x] but NOT DONE → CRITICAL finding
+      4. Record specific proof (file:line)
+    </action>
+
+    <!-- Code Quality Deep Dive -->
+    <action>For EACH file in comprehensive review list:
+      1. **Security**: Look for injection risks, missing validation, auth issues
+      2. **Performance**: N+1 queries, inefficient loops, missing caching
+      3. **Error Handling**: Missing try/catch, poor error messages
+      4. **Code Quality**: Complex functions, magic numbers, poor naming
+      5. **Test Quality**: Are tests real assertions or placeholders?
+    </action>
+
+    <check if="total_issues_found lt 3">
+      <critical>NOT LOOKING HARD ENOUGH - Find more problems!</critical>
+      <action>Re-examine code for:
+        - Edge cases and null handling
+        - Architecture violations
+        - Documentation gaps
+        - Integration issues
+        - Dependency problems
+        - Git commit message quality (if applicable)
+      </action>
+      <action>Find at least 3 more specific, actionable issues</action>
+    </check>
+  </step>
+
+  <step n="2" goal="Systematic Code Quality Assessment">
+    <critical>🎯 RUTHLESS CODE QUALITY GATE: Systematic review against senior developer standards!</critical>
+
+    <substep n="3a" title="SOLID Principles Violations">
+      <action>Hunt for SOLID violations with surgical precision:
+        - **S - Single Responsibility**: Classes/functions doing too much
+        - **O - Open/Closed**: Code requiring modification for extension
+        - **L - Liskov Substitution**: Subclasses breaking parent contracts
+        - **I - Interface Segregation**: Fat interfaces forcing unused dependencies
+        - **D - Dependency Inversion**: High-level modules depending on low-level details
+      </action>
+      <action>Document each violation with file:line and severity (1-10)</action>
+      <action>Store as {{solid_violations}}</action>
+    </substep>
+
+    <substep n="3b" title="Hidden Bugs Detection">
+      <action>Hunt for hidden bugs and time bombs:
+        - Resource leaks: unclosed files, connections, handles
+        - Race conditions: shared state without synchronization
+        - Edge cases: null/empty/boundary conditions not handled
+        - Off-by-one errors: loop bounds, array indices
+        - Exception swallowing: catch blocks that hide errors
+        - State corruption: mutable shared state
+      </action>
+      <action>Document each bug with reproduction scenario</action>
+      <action>Store as {{hidden_bugs}}</action>
+    </substep>
+
+    <substep n="3c" title="Abstraction Level Analysis">
+      <action>Analyze abstraction appropriateness:
+        - **Over-engineering**: Unnecessary patterns, premature abstraction
+        - **Under-engineering**: Missing abstractions, code duplication
+        - **Wrong patterns**: Pattern misuse, cargo cult programming
+        - **Boundary breaches**: Layer violations, leaky abstractions
+      </action>
+      <action>Document each issue with reasoning</action>
+      <action>Store as {{abstraction_issues}}</action>
+    </substep>
+
+    <substep n="3d" title="Lying Tests Detection">
+      <action>Expose tests that lie about correctness:
+        - Tests that always pass regardless of implementation
+        - Missing assertions or weak assertions
+        - Tests that don't test the actual behavior
+        - Mocked everything - testing mocks not code
+        - Happy path only - no error/edge case coverage
+        - Tautological tests - testing what you just set up
+      </action>
+      <action>Document each lying test with explanation</action>
+      <action>Store as {{lying_tests}}</action>
+    </substep>
+
+    <substep n="3e" title="Performance Footguns">
+      <action>Identify performance anti-patterns:
+        - N+1 queries: database calls in loops
+        - Unnecessary allocations: creating objects in hot paths
+        - Missing caching: repeated expensive computations
+        - Blocking operations: sync I/O in async contexts
+        - Memory leaks: growing collections, circular references
+        - Inefficient algorithms: O(n²) when O(n) possible
+      </action>
+      <action>Document each footgun with impact assessment</action>
+      <action>Store as {{performance_footguns}}</action>
+    </substep>
+
+    <substep n="3f" title="Tech Debt Bombs">
+      <action>Find future maintenance nightmares:
+        - Hard-coded values: magic numbers, embedded strings
+        - Magic strings: undocumented string literals
+        - Copy-paste code: duplicated logic
+        - Missing TODOs: incomplete implementations
+        - Deprecated usage: using obsolete APIs
+        - Tight coupling: changes ripple across codebase
+      </action>
+      <action>Document each debt bomb with explosion radius</action>
+      <action>Store as {{tech_debt_bombs}}</action>
+    </substep>
+
+    <substep n="3g" title="PEP 8 and Pythonic Compliance">
+      <action>Check Python-specific quality (if Python code):
+        - Naming conventions: snake_case, PascalCase appropriately
+        - Import organization: stdlib, third-party, local separation
+        - Line length and formatting
+        - Docstrings: missing or inadequate documentation
+        - Pythonic idioms: using Python features correctly
+        - Type hints: missing, incorrect, or incomplete
+      </action>
+      <action>For non-Python: apply language-appropriate style standards</action>
+      <action>Document each violation</action>
+      <action>Store as {{style_violations}}</action>
+    </substep>
+
+    <substep n="3h" title="Type Safety Analysis">
+      <action>Analyze type safety issues:
+        - Missing type hints on public interfaces
+        - Incorrect type annotations
+        - Any/Unknown overuse
+        - Type narrowing issues
+        - Generic type misuse
+        - Runtime type errors waiting to happen
+      </action>
+      <action>Document each type safety issue</action>
+      <action>Store as {{type_safety_issues}}</action>
+    </substep>
+
+    <substep n="3i" title="Security Vulnerability Scan">
+      <action>Deep security review:
+        - Credential exposure: hardcoded secrets, logged credentials
+        - Injection vectors: SQL, command, template injection
+        - Authentication issues: weak validation, session problems
+        - Authorization gaps: missing permission checks
+        - Data exposure: sensitive data in logs, responses
+        - Dependency vulnerabilities: known CVEs
+      </action>
+      <action>Document each vulnerability with CVSS-like severity</action>
+      <action>Store as {{security_vulnerabilities}}</action>
+    </substep>
+
+    <substep n="3j" title="Calculate Evidence Score">
+      <critical>🔥 CRITICAL: You MUST calculate and output the Evidence Score for synthesis!</critical>
+
+      <action>Map each finding to Evidence Score severity:
+        - **🔴 CRITICAL** (+3 points): Security vulnerabilities, data corruption, blocking bugs, task completion lies
+        - **🟠 IMPORTANT** (+1 point): SOLID violations, performance issues, missing tests, AC gaps
+        - **🟡 MINOR** (+0.3 points): Style violations, documentation issues, minor refactoring
+      </action>
+
+      <action>Count CLEAN PASS categories - areas with NO issues found:
+        - Each clean category: -0.5 points
+        - Categories: SOLID, Hidden Bugs, Abstraction, Lying Tests, Performance, Tech Debt, Style, Type Safety, Security
+      </action>
+
+      <action>Calculate Evidence Score:
+        {{evidence_score}} = SUM(finding_scores) + (clean_pass_count × -0.5)
+
+        Example: 2 CRITICAL (+6) + 3 IMPORTANT (+3) + 4 CLEAN PASSES (-2) = 7.0
+      </action>
+
+      <action>Determine Evidence Verdict:
+        - **EXEMPLARY** (score ≤ -3): Many clean passes, minimal issues
+        - **APPROVED** (score &lt; 3): Acceptable quality, minor issues only
+        - **MAJOR REWORK** (3 ≤ score &lt; 7): Significant issues require attention
+        - **REJECT** (score ≥ 7): Critical problems, needs complete rewrite
+      </action>
+
+      <action>Store for output:
+        - {{evidence_findings}}: List of findings with severity_icon, severity, description, source, score
+        - {{clean_pass_count}}: Number of clean categories
+        - {{evidence_score}}: Calculated total score
+        - {{evidence_verdict}}: EXEMPLARY/APPROVED/MAJOR REWORK/REJECT
+      </action>
+    </substep>
+  </step>
+
+  <step n="3" goal="Present findings">
+    <critical>OUTPUT MARKERS REQUIRED: Your code review report MUST start with the marker &lt;!-- CODE_REVIEW_REPORT_START --&gt; on its own line BEFORE the report content, and MUST end with the marker &lt;!-- CODE_REVIEW_REPORT_END --&gt; on its own line AFTER the final line. The orchestrator extracts ONLY content between these markers. Any text outside the markers (thinking, commentary) will be discarded.</critical>
+
+    <action>Generate the code review report using the template below as FORMAT GUIDE</action>
+    <action>Replace all {{placeholders}} with actual values from your analysis</action>
+    <action>Output the complete report to stdout</action>
+
+    <o>
+<!-- CODE_REVIEW_REPORT_START -->**🔥 ADVERSARIAL CODE REVIEW COMPLETE, Christian!**
+
+**Story:** /Users/christianlee/App-Development/TheFlightWall_OSS-main/_bmad-output/implementation-artifacts/stories/fn-1-7-settings-import-in-setup-wizard.md
+
+---
+
+## 📊 Review Summary
+
+| Category | Issues Found |
+|----------|--------------|
+| Git vs Story Discrepancies | {{git_discrepancy_count}} |
+| AC Implementation Gaps | {{ac_gaps_count}} |
+| Task Completion Lies | {{task_lies_count}} |
+| SOLID Violations | {{solid_count}} |
+| Hidden Bugs | {{bugs_count}} |
+| Performance Footguns | {{perf_count}} |
+| Security Vulnerabilities | {{security_count}} |
+| **Total Issues** | **{{total_issues}}** |
+
+---
+
+## Evidence Score Summary
+
+| Severity | Description | Source | Score |
+|----------|-------------|--------|-------|
+{{#each evidence_findings}}
+| {{severity_icon}} {{severity}} | Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval. | {{source}} | +{{score}} |
+{{/each}}
+{{#if clean_pass_count}}
+| 🟢 CLEAN PASS | {{clean_pass_count}} |
+{{/if}}
+
+### Evidence Score: {{evidence_score}}
+
+| Score | Verdict |
+|-------|---------|
+| **{{evidence_score}}** | **{{evidence_verdict}}** |
+
+---
+
+## 🏛️ Architectural Sins
+
+{{#each solid_violations}}
+- **[{{severity}}/10] {{principle}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💡 Fix: {{suggestion}}
+{{/each}}
+
+{{#each abstraction_issues}}
+- **{{issue_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#if no_architectural_sins}}
+✅ No significant architectural violations detected.
+{{/if}}
+
+---
+
+## 🐍 Pythonic Crimes &amp; Readability
+
+{{#each style_violations}}
+- **{{violation_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#each type_safety_issues}}
+- **Type Safety:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+{{/each}}
+
+{{#if no_style_issues}}
+✅ Code follows style guidelines and is readable.
+{{/if}}
+
+---
+
+## ⚡ Performance &amp; Scalability
+
+{{#each performance_footguns}}
+- **[{{impact}}] {{issue_type}}:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💡 Fix: {{suggestion}}
+{{/each}}
+
+{{#if no_performance_issues}}
+✅ No significant performance issues detected.
+{{/if}}
+
+---
+
+## 🐛 Correctness &amp; Safety
+
+{{#each hidden_bugs}}
+- **🐛 Bug:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 🔄 Reproduction: {{reproduction}}
+{{/each}}
+
+{{#each security_vulnerabilities}}
+- **🔒 [{{severity}}] Security:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - ⚠️ Impact: {{impact}}
+{{/each}}
+
+{{#each lying_tests}}
+- **🎭 Lying Test:** {{test_name}}
+  - 📍 `{{file}}:{{line}}`
+  - 🤥 Why it lies: {{explanation}}
+{{/each}}
+
+{{#if no_correctness_issues}}
+✅ Code appears correct and secure.
+{{/if}}
+
+---
+
+## 🔧 Maintainability Issues
+
+{{#each tech_debt_bombs}}
+- **💣 Tech Debt:** Perform an ADVERSARIAL Senior Developer code review that finds 3-10 specific problems in every story. Challenges everything: code quality, test coverage, architecture compliance, security, performance. NEVER accepts `looks good` - must find minimum issues and can auto-fix with user approval.
+  - 📍 `{{file}}:{{line}}`
+  - 💥 Explosion radius: {{impact}}
+{{/each}}
+
+{{#if no_maintainability_issues}}
+✅ Code is maintainable and well-documented.
+{{/if}}
+
+---
+
+## 🛠️ Suggested Fixes
+
+{{#each suggested_fixes}}
+### {{number}}. {{title}}
+
+**File:** `{{file}}`
+**Issue:** {{issue_summary}}
+
+{{#if file_under_250_lines}}
+**Corrected code:**
+```{{language}}
+{{corrected_code}}
+```
+{{else}}
+**Diff:**
+```diff
+{{diff}}
+```
+{{/if}}
+
+{{/each}}
+
+---
+
+**Review Actions:**
+- Issues Found: {{total_issues}}
+- Issues Fixed: 0
+- Action Items Created: 0
+
+{{#if evidence_verdict == "EXEMPLARY"}}
+🎉 Exemplary code quality!
+{{/if}}
+{{#if evidence_verdict == "APPROVED"}}
+✅ Code is approved and ready for deployment!
+{{/if}}
+{{#if evidence_verdict == "MAJOR REWORK"}}
+⚠️ Address the identified issues before proceeding.
+{{/if}}
+{{#if evidence_verdict == "REJECT"}}
+🚫 Code requires significant rework. Review action items carefully.
+{{/if}}
+    
+<!-- CODE_REVIEW_REPORT_END -->
+</o>
+  </step>
+
+</workflow></instructions>
+<output-template></output-template>
+</compiled-workflow>

@@ -4,7 +4,7 @@
   --bg:#0d1117;--surface:#161b22;--border:#30363d;
   --text:#e6edf3;--text-muted:#8b949e;
   --primary:#58a6ff;--primary-hover:#79c0ff;
-  --error:#f85149;--success:#3fb950;
+  --error:#f85149;--success:#3fb950;--warning:#d29922;
   --radius:8px;--gap:16px;
 }
 html{font-size:16px}
@@ -266,6 +266,17 @@ body{
   .toast-exit{opacity:0;transition:opacity 0.15s ease}
 }
 
+/* Settings import zone (wizard) */
+.settings-import-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:12px;text-align:center;cursor:pointer;
+  transition:border-color 0.2s,background 0.2s;
+  margin-bottom:var(--gap);min-height:44px;
+}
+.settings-import-zone:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.settings-import-zone.drag-over{border-color:var(--primary);border-style:solid;background:rgba(88,166,255,0.08)}
+.import-status{font-size:0.8125rem;color:var(--success);text-align:center;margin-top:8px;margin-bottom:var(--gap)}
+
 /* Handoff screen */
 .handoff{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -495,6 +506,26 @@ body{
 }
 .logo-list-cancel-btn:hover{border-color:var(--text-muted)}
 
+/* Mode Picker (Story dl-1.5) */
+.mode-status-line{
+  font-size:0.9rem;padding:8px 0;margin-bottom:12px;
+  border-bottom:1px solid var(--border);
+  color:var(--text-muted);
+}
+.mode-status-name{font-weight:600;color:var(--text)}
+.mode-status-reason{font-weight:400}
+.mode-cards-list{display:flex;flex-direction:column;gap:8px}
+.mode-card{
+  padding:12px;background:var(--bg);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;transition:border-color 0.15s;
+}
+.mode-card:hover{border-color:var(--primary)}
+.mode-card.active{border-color:var(--primary);background:rgba(88,166,255,0.08)}
+.mode-card-name{font-size:0.9375rem;font-weight:500}
+.mode-card-subtitle{font-size:0.75rem;color:var(--text-muted);margin-top:2px}
+.mode-card.switching{opacity:0.6;pointer-events:none}
+
 /* Danger zone / System card (Story 2.5) */
 .card-danger{border-color:var(--error)}
 .card-danger h2{color:var(--error)}
@@ -522,3 +553,46 @@ body{
 }
 .reset-actions{display:flex;gap:8px}
 .reset-actions .btn-danger,.reset-actions .btn-cancel{flex:1}
+
+/* Firmware card / OTA Upload (Story fn-1.6) */
+.fw-version-text{font-size:0.9375rem;color:var(--text);margin-bottom:12px}
+.ota-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:var(--gap);min-height:80px;cursor:pointer;
+  text-align:center;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  transition:border-color 0.2s,background 0.2s;
+}
+.ota-upload-zone.drag-over{border-color:var(--primary);border-style:solid;background:rgba(88,166,255,0.08)}
+.ota-file-info{display:flex;align-items:center;gap:8px;margin-top:var(--gap);flex-wrap:wrap}
+.ota-file-info span{font-size:0.875rem;word-break:break-all}
+.ota-progress{
+  position:relative;height:28px;border-radius:var(--radius);
+  background:var(--border);margin-top:var(--gap);overflow:hidden;
+}
+.ota-progress-bar{height:100%;background:var(--primary);transition:width 0.3s;border-radius:var(--radius)}
+.ota-progress-text{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.875rem;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.65),0 -1px 2px rgba(0,0,0,0.65),1px 0 2px rgba(0,0,0,0.65),-1px 0 2px rgba(0,0,0,0.65)}
+.ota-reboot{text-align:center;padding:var(--gap);font-size:1.125rem;color:var(--primary)}
+.banner-warning{
+  background:#2d2738;border-left:4px solid #d29922;
+  padding:12px 16px;border-radius:var(--radius);
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:12px;font-size:0.875rem;
+}
+.banner-warning .dismiss-btn{
+  background:none;border:none;color:var(--text);cursor:pointer;
+  font-size:1.25rem;min-width:44px;min-height:44px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius);
+}
+.banner-warning .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.ota-file-info .apply-btn{min-height:44px;margin-top:0;width:auto}
+.btn-ota-cancel{width:auto;padding:10px 16px;margin-top:0;min-height:44px}
+.btn-secondary{
+  display:block;width:100%;padding:12px;font-size:1rem;min-height:44px;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;font-weight:500;
+  transition:border-color 0.15s,background 0.15s;
+}
+.btn-secondary:hover{border-color:var(--text-muted);background:rgba(255,255,255,0.03)}
