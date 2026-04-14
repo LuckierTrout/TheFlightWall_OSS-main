@@ -10,7 +10,7 @@
 <div class="wizard">
   <header class="wizard-header">
     <h1>FlightWall Setup</h1>
-    <p id="progress">Step 1 of 5</p>
+    <p id="progress">Step 1 of 6</p>
   </header>
 
   <main class="wizard-content">
@@ -66,6 +66,8 @@
         <input type="text" id="center-lon" inputmode="decimal" autocomplete="off" placeholder="e.g. -122.4194">
         <label for="radius-km">Radius (km)</label>
         <input type="text" id="radius-km" inputmode="decimal" autocomplete="off" placeholder="e.g. 50">
+        <label for="wizard-timezone">Timezone</label>
+        <select id="wizard-timezone" class="cal-select"></select>
         <p id="loc-err" class="field-error" style="display:none"></p>
       </div>
       <p class="helper-copy">An interactive map is available later in the dashboard.</p>
@@ -84,16 +86,48 @@
         <input type="text" id="tile-pixels" inputmode="numeric" autocomplete="off" placeholder="16">
         <label for="display-pin">Data Pin (GPIO)</label>
         <input type="text" id="display-pin" inputmode="numeric" autocomplete="off" placeholder="25">
+        <label for="origin-corner">Origin Corner</label>
+        <select id="origin-corner" class="cal-select">
+          <option value="0">Top-Left</option>
+          <option value="1">Top-Right</option>
+          <option value="2">Bottom-Left</option>
+          <option value="3">Bottom-Right</option>
+        </select>
+        <label for="scan-dir">Scan Direction</label>
+        <select id="scan-dir" class="cal-select">
+          <option value="0">Rows</option>
+          <option value="1">Columns</option>
+        </select>
+        <label for="zigzag">Zigzag</label>
+        <select id="zigzag" class="cal-select">
+          <option value="0">Progressive</option>
+          <option value="1">Zigzag</option>
+        </select>
         <p id="hw-err" class="field-error" style="display:none"></p>
       </div>
       <p id="resolution-text" class="resolution-text"></p>
     </section>
 
-    <!-- Step 5: Review & Connect -->
+    <!-- Step 5: Review -->
     <section id="step-5" class="step">
-      <h2>Review &amp; Connect</h2>
-      <p class="step-desc">Confirm your settings, then save and connect.</p>
+      <h2>Review</h2>
+      <p class="step-desc">Confirm your settings before testing.</p>
       <div id="review-sections" class="review-sections"></div>
+    </section>
+
+    <!-- Step 6: Test Your Wall -->
+    <section id="step-6" class="step">
+      <h2>Test Your Wall</h2>
+      <p class="step-desc">Check that your LED panel layout matches the preview below.</p>
+      <div class="wizard-test-canvas">
+        <canvas id="wizard-position-preview"></canvas>
+      </div>
+      <p class="wizard-test-question">Does your wall match this layout?</p>
+      <div class="wizard-test-actions">
+        <button type="button" id="btn-test-yes" class="nav-btn nav-btn-primary">Yes, it matches</button>
+        <button type="button" id="btn-test-no" class="nav-btn">No — take me back</button>
+      </div>
+      <p id="wizard-test-status" class="wizard-test-status" style="display:none"></p>
     </section>
   </main>
 

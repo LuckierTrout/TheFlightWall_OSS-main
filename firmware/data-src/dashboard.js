@@ -208,7 +208,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   // --- Unified apply bar ---
   var applyBar = document.getElementById('apply-bar');
   var btnApplyAll = document.getElementById('btn-apply-all');
-  var dirtySections = { display: false, timing: false, network: false, hardware: false };
+  var dirtySections = { display: false, timing: false, network: false, hardware: false, nightmode: false };
+  // nmTimezoneDirty tracks explicit user changes to the timezone dropdown separately from
+  // the nightmode dirty section, so posixToIana()'s 'UTC' fallback cannot silently overwrite
+  // a custom POSIX string stored on the device when other Night Mode fields are changed.
+  var nmTimezoneDirty = false;
 
   function markSectionDirty(section) {
     dirtySections[section] = true;
@@ -220,6 +224,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     dirtySections.timing = false;
     dirtySections.network = false;
     dirtySections.hardware = false;
+    dirtySections.nightmode = false;
+    nmTimezoneDirty = false;
     applyBar.style.display = 'none';
   }
 
@@ -271,6 +277,20 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       payload.zone_split_pct = customSplitPct;
       payload.zone_layout = zoneLayout;
     }
+    if (dirtySections.nightmode) {
+      // Use cached DOM references (nmEnabled, nmDimStart, etc.) — consistent with all
+      // other sections and avoids repeated getElementById lookups on the Apply hot path.
+      payload.sched_enabled = nmEnabled.checked ? 1 : 0;
+      payload.sched_dim_start = timeToMinutes(nmDimStart.value);
+      payload.sched_dim_end = timeToMinutes(nmDimEnd.value);
+      payload.sched_dim_brt = parseInt(nmDimBrt.value, 10);
+      // Only include timezone when the user (or auto-suggest) explicitly changed the dropdown.
+      // This prevents posixToIana()'s "UTC" fallback from silently overwriting a custom
+      // POSIX string stored on the device when the user changes an unrelated Night Mode field.
+      if (nmTimezoneDirty && nmTimezone && nmTimezone.value) {
+        payload.timezone = TZ_MAP[nmTimezone.value] || 'UTC0';
+      }
+    }
     return payload;
   }
 
@@ -289,6 +309,35 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   var dZoneLayout = document.getElementById('d-zone-layout');
 
   deviceIp.textContent = window.location.hostname || '';
+
+  // --- Night Mode time helpers (Story fn-2.3) ---
+  function timeToMinutes(timeStr) {
+    if (!timeStr || typeof timeStr !== 'string') return 0;
+    var parts = timeStr.split(':');
+    // Use < 2 (not !== 2) so that HH:MM:SS emitted by some browsers (e.g. when
+    // step < 60 is inferred) still parses correctly — we only need hours and minutes.
+    if (parts.length < 2) return 0;
+    var h = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return 0;
+    var total = h * 60 + m;
+    if (total < 0 || total > 1439) return 0;
+    return total;
+  }
+
+  function minutesToTime(mins) {
+    var h = Math.floor(mins / 60);
+    var m = mins % 60;
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+  }
+
+  function posixToIana(posix) {
+    var keys = Object.keys(TZ_MAP);
+    for (var i = 0; i < keys.length; i++) {
+      if (TZ_MAP[keys[i]] === posix) return keys[i];
+    }
+    return 'UTC';
+  }
 
   // --- Load current settings ---
   function loadSettings() {
@@ -358,6 +407,39 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         if (dZoneLayout) dZoneLayout.value = zoneLayout;
       }
       updateHwResolution();
+
+      // Night Mode (Story fn-2.3)
+      // Use typeof guards (not !==undefined) so that a null value from a malformed API
+      // response does not reach parseInt() / minutesToTime() and produce NaN display.
+      if (d.sched_enabled !== undefined && d.sched_enabled !== null) {
+        nmEnabled.checked = (d.sched_enabled === 1 || d.sched_enabled === '1' || d.sched_enabled === true);
+      }
+      if (typeof d.sched_dim_start === 'number') {
+        nmDimStart.value = minutesToTime(d.sched_dim_start);
+      }
+      if (typeof d.sched_dim_end === 'number') {
+        nmDimEnd.value = minutesToTime(d.sched_dim_end);
+      }
+      if (typeof d.sched_dim_brt === 'number') {
+        nmDimBrt.value = d.sched_dim_brt;
+        nmDimBrtVal.textContent = d.sched_dim_brt;
+      }
+      if (d.timezone !== undefined) {
+        var iana = posixToIana(d.timezone);
+        nmTimezone.value = iana;
+        // If device is still on default UTC0 and browser has a different zone, auto-suggest.
+        // Also mark nmTimezoneDirty so the auto-suggested value is included in the payload
+        // when the user confirms by clicking Apply.
+        if (d.timezone === 'UTC0') {
+          var detected = getTimezoneConfig();
+          if (detected.iana !== 'UTC' && TZ_MAP[detected.iana]) {
+            nmTimezone.value = detected.iana;
+            nmTimezoneDirty = true;
+            markSectionDirty('nightmode');
+          }
+        }
+      }
+      updateNmFieldState();
 
       // Sync calibration selectors from loaded hardware values
       syncCalibrationFromSettings();
@@ -950,6 +1032,50 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       updatePreviewFromInputs();
     });
   }
+
+  // --- Night Mode card (Story fn-2.3) ---
+  var nmEnabled = document.getElementById('nm-enabled');
+  var nmDimStart = document.getElementById('nm-dim-start');
+  var nmDimEnd = document.getElementById('nm-dim-end');
+  var nmDimBrt = document.getElementById('nm-dim-brt');
+  var nmDimBrtVal = document.getElementById('nm-dim-brt-val');
+  var nmTimezone = document.getElementById('nm-timezone');
+  var nmFields = document.getElementById('nm-fields');
+
+  // Populate timezone dropdown from TZ_MAP
+  (function() {
+    var keys = Object.keys(TZ_MAP).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = keys[i];
+      opt.textContent = keys[i].replace(/_/g, ' ');
+      nmTimezone.appendChild(opt);
+    }
+  })();
+
+  function updateNmFieldState() {
+    var on = nmEnabled.checked;
+    nmDimStart.disabled = !on;
+    nmDimEnd.disabled = !on;
+    nmDimBrt.disabled = !on;
+    nmTimezone.disabled = !on;
+    nmFields.classList.toggle('nm-fields-disabled', !on);
+  }
+
+  nmEnabled.addEventListener('change', function() {
+    updateNmFieldState();
+    markSectionDirty('nightmode');
+  });
+
+  nmDimStart.addEventListener('change', function() { markSectionDirty('nightmode'); });
+  nmDimEnd.addEventListener('change', function() { markSectionDirty('nightmode'); });
+  nmDimBrt.addEventListener('input', function() {
+    nmDimBrtVal.textContent = nmDimBrt.value;
+  });
+  nmDimBrt.addEventListener('change', function() { markSectionDirty('nightmode'); });
+  nmTimezone.addEventListener('change', function() { nmTimezoneDirty = true; markSectionDirty('nightmode'); });
+
+  updateNmFieldState();
 
   // --- WiFi Scan (Task 3 — optional SSID picker) ---
   var scanTimer = null;
@@ -2577,11 +2703,35 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     clearDirtyState();
   });
 
-  // --- Mode Picker (Story dl-1.5) ---
+  // --- Mode Picker (Story dl-1.5, ds-3.4) ---
   var modeStatusName = document.getElementById('modeStatusName');
   var modeStatusReason = document.getElementById('modeStatusReason');
   var modeCardsList = document.getElementById('modeCardsList');
+  var modePicker = document.getElementById('mode-picker');
   var modeSwitchInFlight = false;
+  var SWITCH_POLL_INTERVAL = 200;  // ms between GET polls during switch
+  var SWITCH_POLL_TIMEOUT = 2000;  // max ms to poll before treating as failure
+  var ERROR_DISMISS_MS = 5000;     // auto-dismiss scoped error after 5s
+  var modePickerHeading = document.getElementById('mode-picker-heading');
+
+  /** Focus the Mode Picker heading — shared hook for ds-3.6 banner dismiss (AC #4) */
+  function focusModePickerHeading() {
+    if (modePickerHeading) modePickerHeading.focus({ preventScroll: false });
+  }
+  window.focusModePickerHeading = focusModePickerHeading;
+
+  // Keyboard support: Enter/Space on mode cards triggers switchMode (ds-3.5 AC #2)
+  if (modeCardsList) {
+    modeCardsList.addEventListener('keydown', function(e) {
+      var card = e.target.closest('.mode-card');
+      if (!card) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault(); // Prevent Space page scroll
+        var modeId = card.getAttribute('data-mode-id');
+        if (modeId) switchMode(modeId);
+      }
+    });
+  }
 
   function updateModeStatus(data) {
     var activeMode = null;
@@ -2593,14 +2743,13 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         }
       }
     }
-    // Batch DOM update — status line + card subtitles in one operation
     if (modeStatusName && activeMode) {
       modeStatusName.textContent = activeMode.name;
     }
     if (modeStatusReason) {
       modeStatusReason.textContent = data.state_reason || 'unknown';
     }
-    // Update mode cards (active state + subtitle)
+    // Update mode cards (active state + subtitle + aria-current + tabindex)
     if (modeCardsList) {
       var cards = modeCardsList.querySelectorAll('.mode-card');
       for (var j = 0; j < cards.length; j++) {
@@ -2608,14 +2757,104 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         var subtitle = cards[j].querySelector('.mode-card-subtitle');
         if (cardId === data.active) {
           cards[j].classList.add('active');
+          cards[j].setAttribute('aria-current', 'true');
+          cards[j].setAttribute('tabindex', '-1');
           if (subtitle) subtitle.textContent = data.state_reason || '';
         } else {
           cards[j].classList.remove('active');
+          cards[j].removeAttribute('aria-current');
+          cards[j].setAttribute('tabindex', '0');
           if (subtitle) subtitle.textContent = '';
         }
         cards[j].classList.remove('switching');
+        cards[j].classList.remove('disabled');
+        cards[j].removeAttribute('aria-busy');
+        cards[j].removeAttribute('aria-disabled');
       }
     }
+  }
+
+  /** Find a card DOM element by mode id */
+  function getModeCard(id) {
+    if (!modeCardsList) return null;
+    return modeCardsList.querySelector('.mode-card[data-mode-id="' + id + '"]');
+  }
+
+  /** Clear any existing scoped error alert from a card */
+  function clearCardError(card) {
+    if (!card) return;
+    var existing = card.querySelector('.mode-card-alert');
+    if (existing) existing.parentNode.removeChild(existing);
+  }
+
+  /** Show a scoped inline error on a card with auto-dismiss (AC #4) */
+  function showCardError(card, message) {
+    if (!card) return;
+    clearCardError(card);
+    var alert = document.createElement('div');
+    alert.className = 'mode-card-alert';
+    alert.setAttribute('role', 'alert');
+    alert.setAttribute('aria-live', 'polite');
+    alert.textContent = message;
+    card.appendChild(alert);
+
+    // Auto-dismiss after ERROR_DISMISS_MS or on next click/keydown in mode-picker
+    var dismissed = false;
+    function dismiss() {
+      if (dismissed) return;
+      dismissed = true;
+      clearTimeout(timer);
+      if (modePicker) modePicker.removeEventListener('click', dismiss);
+      if (modePicker) modePicker.removeEventListener('keydown', dismiss);
+      clearCardError(card);
+    }
+    var timer = setTimeout(dismiss, ERROR_DISMISS_MS);
+    if (modePicker) {
+      modePicker.addEventListener('click', dismiss, { once: true });
+      modePicker.addEventListener('keydown', dismiss, { once: true });
+    }
+  }
+
+  /** Clear switching/disabled states on all cards and restore interactivity */
+  function clearSwitchingStates() {
+    if (!modeCardsList) return;
+    var cards = modeCardsList.querySelectorAll('.mode-card');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].classList.remove('switching');
+      cards[i].classList.remove('disabled');
+      cards[i].removeAttribute('aria-busy');
+      cards[i].removeAttribute('aria-disabled');
+      // Restore tabindex: active card gets -1, idle gets 0
+      var isActive = cards[i].classList.contains('active');
+      cards[i].setAttribute('tabindex', isActive ? '-1' : '0');
+      var sub = cards[i].querySelector('.mode-card-subtitle');
+      if (sub && sub.textContent === 'Switching...') sub.textContent = '';
+    }
+  }
+
+  function buildSchematic(zoneLayout, modeName) {
+    var wrap = document.createElement('div');
+    wrap.className = 'mode-schematic';
+    wrap.setAttribute('aria-label', 'Schematic preview of zone layout for ' + modeName);
+    if (!zoneLayout || !zoneLayout.length) return wrap;
+    for (var i = 0; i < zoneLayout.length; i++) {
+      var z = zoneLayout[i];
+      if (!z.relW || !z.relH) continue;
+      var cell = document.createElement('div');
+      cell.className = 'mode-schematic-zone';
+      cell.setAttribute('aria-hidden', 'true');
+      var cs = Math.max(1, z.relX + 1);
+      var ce = Math.min(101, cs + z.relW);
+      var rs = Math.max(1, z.relY + 1);
+      var re = Math.min(101, rs + z.relH);
+      cell.style.gridColumn = cs + ' / ' + ce;
+      cell.style.gridRow = rs + ' / ' + re;
+      var label = z.label || '';
+      if (label.length > 8) label = label.substring(0, 7) + '\u2026';
+      cell.textContent = label;
+      wrap.appendChild(cell);
+    }
+    return wrap;
   }
 
   function renderModeCards(data) {
@@ -2623,17 +2862,37 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     modeCardsList.innerHTML = '';
     for (var i = 0; i < data.modes.length; i++) {
       var mode = data.modes[i];
+      var isActive = mode.id === data.active;
       var card = document.createElement('div');
-      card.className = 'mode-card' + (mode.id === data.active ? ' active' : '');
+      card.className = 'mode-card' + (isActive ? ' active' : '');
       card.setAttribute('data-mode-id', mode.id);
-      var nameEl = document.createElement('div');
+      card.setAttribute('role', 'button');
+      // Active card: tabindex="-1" (not in tab order as actionable); idle: tabindex="0"
+      card.setAttribute('tabindex', isActive ? '-1' : '0');
+      if (isActive) {
+        card.setAttribute('aria-current', 'true');
+      }
+      var headerRow = document.createElement('div');
+      headerRow.className = 'mode-card-header';
+      var nameEl = document.createElement('span');
       nameEl.className = 'mode-card-name';
       nameEl.textContent = mode.name;
-      card.appendChild(nameEl);
+      headerRow.appendChild(nameEl);
+      if (isActive) {
+        var dotWrap = document.createElement('span');
+        dotWrap.className = 'mode-active-indicator';
+        var dot = document.createElement('span');
+        dot.className = 'mode-active-dot';
+        dotWrap.appendChild(dot);
+        dotWrap.appendChild(document.createTextNode(' Active'));
+        headerRow.appendChild(dotWrap);
+      }
+      card.appendChild(headerRow);
       var subtitleEl = document.createElement('div');
       subtitleEl.className = 'mode-card-subtitle';
-      subtitleEl.textContent = (mode.id === data.active) ? (data.state_reason || '') : '';
+      subtitleEl.textContent = isActive ? (data.state_reason || '') : '';
       card.appendChild(subtitleEl);
+      card.appendChild(buildSchematic(mode.zone_layout, mode.name));
       card.addEventListener('click', (function(modeId) {
         return function() { switchMode(modeId); };
       })(mode.id));
@@ -2641,39 +2900,293 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     }
   }
 
+  /**
+   * switchMode — full orchestration (ds-3.4)
+   * 1. Track previousActiveId, apply switching + disabled states
+   * 2. POST /api/display/mode { mode: id }
+   * 3. Poll GET /api/display/modes until settled or timeout
+   * 4. Finalize UI: active/idle cards, focus management, error handling
+   */
   function switchMode(modeId) {
     if (modeSwitchInFlight) return;
     modeSwitchInFlight = true;
-    // Set switching state on the target card
-    if (modeCardsList) {
-      var cards = modeCardsList.querySelectorAll('.mode-card');
-      for (var i = 0; i < cards.length; i++) {
-        if (cards[i].getAttribute('data-mode-id') === modeId) {
-          cards[i].classList.add('switching');
-          var sub = cards[i].querySelector('.mode-card-subtitle');
-          if (sub) sub.textContent = 'Switching...';
-        }
+
+    // Track previous active mode before switch
+    var previousActiveId = null;
+    var cards = modeCardsList ? modeCardsList.querySelectorAll('.mode-card') : [];
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].classList.contains('active')) {
+        previousActiveId = cards[i].getAttribute('data-mode-id');
       }
-    }
-    FW.post('/api/display/mode', { mode_id: modeId }).then(function(res) {
-      modeSwitchInFlight = false;
-      if (!res.body || !res.body.ok) {
-        var errMsg = (res.body && res.body.error) ? res.body.error : 'Mode switch failed';
-        FW.showToast(errMsg, 'error');
-        loadDisplayModes(); // refresh to clear switching state
+      // Don't switch to the already-active mode
+      if (cards[i].getAttribute('data-mode-id') === modeId && cards[i].classList.contains('active')) {
+        modeSwitchInFlight = false;
         return;
       }
-      // Re-fetch full mode state for consistent update (AC #4, #8)
-      loadDisplayModes();
+    }
+
+    // Apply switching state to target, disabled to all others (AC #1, #2)
+    for (var j = 0; j < cards.length; j++) {
+      var cid = cards[j].getAttribute('data-mode-id');
+      if (cid === modeId) {
+        cards[j].classList.add('switching');
+        cards[j].classList.remove('active');
+        cards[j].setAttribute('aria-busy', 'true');
+        cards[j].setAttribute('tabindex', '-1');
+        var sub = cards[j].querySelector('.mode-card-subtitle');
+        if (sub) sub.textContent = 'Switching...';
+      } else {
+        cards[j].classList.add('disabled');
+        cards[j].classList.remove('active');
+        cards[j].setAttribute('aria-disabled', 'true');
+        cards[j].setAttribute('tabindex', '-1');
+      }
+    }
+
+    // POST mode switch request (AC #1)
+    FW.post('/api/display/mode', { mode: modeId }).then(function(res) {
+      // HTTP error from firmware (AC #8)
+      if (!res.body || !res.body.ok) {
+        modeSwitchInFlight = false;
+        clearSwitchingStates();
+        var errMsg = (res.body && res.body.error) ? res.body.error : 'Mode switch failed';
+        var targetCard = getModeCard(modeId);
+        showCardError(targetCard, errMsg);
+        // Reload to restore correct active state
+        loadDisplayModes();
+        return;
+      }
+
+      // Check response for immediate registry error
+      var respData = res.body.data || res.body;
+      if (respData.registry_error) {
+        modeSwitchInFlight = false;
+        clearSwitchingStates();
+        var heapMsg = (respData.registry_error.indexOf('HEAP') !== -1 || respData.registry_error.indexOf('heap') !== -1)
+          ? 'Not enough memory to activate this mode. Current mode restored.'
+          : respData.registry_error;
+        showCardError(getModeCard(modeId), heapMsg);
+        loadDisplayModes();
+        return;
+      }
+
+      // Check switch_state — if already idle and active matches target, finalize now
+      var switchState = respData.switch_state || 'idle';
+      if (switchState === 'idle' && respData.active === modeId) {
+        finalizeModeSwitch(modeId, previousActiveId);
+        return;
+      }
+
+      // Start polling GET /api/display/modes until settled (AC #7)
+      var pollStart = Date.now();
+      function pollSwitch() {
+        if (Date.now() - pollStart > SWITCH_POLL_TIMEOUT) {
+          // Timeout — treat as failure
+          modeSwitchInFlight = false;
+          clearSwitchingStates();
+          showCardError(getModeCard(modeId), 'Mode switch timed out. Current mode restored.');
+          loadDisplayModes();
+          return;
+        }
+        FW.get('/api/display/modes').then(function(pollRes) {
+          if (!pollRes.body || !pollRes.body.ok || !pollRes.body.data) {
+            // Poll failed — retry on next interval
+            setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+            return;
+          }
+          var d = pollRes.body.data;
+          var ss = d.switch_state || 'idle';
+
+          // Check for registry error during switch
+          if (d.registry_error) {
+            modeSwitchInFlight = false;
+            clearSwitchingStates();
+            var msg = (d.registry_error.indexOf('HEAP') !== -1 || d.registry_error.indexOf('heap') !== -1)
+              ? 'Not enough memory to activate this mode. Current mode restored.'
+              : d.registry_error;
+            showCardError(getModeCard(modeId), msg);
+            renderModeCards(d);
+            updateModeStatus(d);
+            return;
+          }
+
+          // Success: switch_state is idle AND active matches target
+          if (ss === 'idle' && d.active === modeId) {
+            renderModeCards(d);
+            updateModeStatus(d);
+            finalizeModeSwitch(modeId, previousActiveId);
+            return;
+          }
+
+          // switch_state idle but active doesn't match — failure
+          if (ss === 'idle' && d.active !== modeId) {
+            modeSwitchInFlight = false;
+            clearSwitchingStates();
+            showCardError(getModeCard(modeId), 'Mode switch failed. Current mode restored.');
+            renderModeCards(d);
+            updateModeStatus(d);
+            return;
+          }
+
+          // Still switching — poll again
+          setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+        }).catch(function() {
+          // Network error during poll — retry
+          setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+        });
+      }
+      setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+
     }).catch(function() {
+      // Network failure (AC #6) — clear states, reload, toast
       modeSwitchInFlight = false;
+      clearSwitchingStates();
       FW.showToast('Cannot reach device. Check connection.', 'error');
       loadDisplayModes();
     });
   }
 
+  /** Finalize a successful mode switch — update UI, move focus (AC #3, UX-DR6) */
+  function finalizeModeSwitch(newActiveId, previousActiveId) {
+    modeSwitchInFlight = false;
+    // Reload full card state to get correct active chrome
+    loadDisplayModes().then(function() {
+      // Focus management (UX-DR6): move focus to the previously-active (now idle) card
+      if (previousActiveId) {
+        var prevCard = getModeCard(previousActiveId);
+        if (prevCard && typeof prevCard.focus === 'function') {
+          prevCard.focus({ preventScroll: true });
+        }
+      }
+    });
+  }
+
+  // --- Upgrade Notification Banner (Story ds-3.6) ---
+  var upgradeBannerHost = document.getElementById('mode-upgrade-banner-host');
+  var upgradeBannerShown = false;
+  var lastModesData = null; // cache for banner Try action
+
+  /**
+   * dismissAndClearUpgrade — shared dismiss pipeline (AC #4)
+   * 1. localStorage.setItem("mode_notif_seen", "true")
+   * 2. POST /api/display/notification/dismiss
+   * 3. Remove banner from DOM
+   */
+  function dismissAndClearUpgrade() {
+    localStorage.setItem('mode_notif_seen', 'true');
+    FW.post('/api/display/notification/dismiss', {}).catch(function() {
+      // best-effort — localStorage already set, banner already gone
+    });
+    if (upgradeBannerHost) {
+      upgradeBannerHost.innerHTML = '';
+    }
+    upgradeBannerShown = false;
+  }
+
+  /**
+   * maybeShowModeUpgradeBanner(data) — show one-time upgrade banner (AC #1–#10)
+   * Called from loadDisplayModes success path after data validated.
+   */
+  function maybeShowModeUpgradeBanner(data) {
+    // AC #3: don't show if flag is false or already dismissed
+    if (!data.upgrade_notification) return;
+    if (localStorage.getItem('mode_notif_seen') === 'true') return;
+    // Only show once per page load
+    if (upgradeBannerShown) return;
+    if (!upgradeBannerHost) return;
+
+    upgradeBannerShown = true;
+    lastModesData = data;
+
+    // Build banner (AC #9, #10)
+    var banner = document.createElement('div');
+    banner.className = 'banner-info';
+    banner.setAttribute('role', 'region');
+    banner.setAttribute('aria-labelledby', 'mode-upgrade-banner-title');
+
+    var bannerContent = document.createElement('div');
+    bannerContent.className = 'banner-info-content';
+
+    var title = document.createElement('strong');
+    title.id = 'mode-upgrade-banner-title';
+    title.textContent = 'New display modes available';
+    bannerContent.appendChild(title);
+
+    var actions = document.createElement('div');
+    actions.className = 'banner-info-actions';
+
+    // Primary: "Try Live Flight Card" (AC #6)
+    var btnTry = document.createElement('button');
+    btnTry.type = 'button';
+    btnTry.className = 'apply-btn banner-info-btn-primary';
+    btnTry.textContent = 'Try Live Flight Card';
+    btnTry.addEventListener('click', function() {
+      // Check if live_flight is in data.modes (AC #7 — unregistered guard)
+      var modeAvailable = false;
+      if (lastModesData && lastModesData.modes) {
+        for (var i = 0; i < lastModesData.modes.length; i++) {
+          if (lastModesData.modes[i].id === 'live_flight') {
+            modeAvailable = true;
+            break;
+          }
+        }
+      }
+      if (!modeAvailable) {
+        // Mode not registered — dismiss + toast (AC #7)
+        dismissAndClearUpgrade();
+        FW.showToast('Mode not available', 'error');
+        return;
+      }
+      // Use the same code path as Mode Picker (AC #6)
+      dismissAndClearUpgrade();
+      FW.post('/api/display/mode', { mode: 'live_flight' }).then(function(res) {
+        if (!res.body || !res.body.ok) {
+          FW.showToast('Mode not available', 'error');
+          loadDisplayModes();
+          return;
+        }
+        loadDisplayModes();
+      }).catch(function() {
+        FW.showToast('Mode not available', 'error');
+        loadDisplayModes();
+      });
+    });
+    actions.appendChild(btnTry);
+
+    // "Browse Modes" (AC #2, #8)
+    var btnBrowse = document.createElement('button');
+    btnBrowse.type = 'button';
+    btnBrowse.className = 'link-btn';
+    btnBrowse.textContent = 'Browse Modes';
+    btnBrowse.addEventListener('click', function() {
+      var target = document.getElementById('mode-picker') || document.getElementById('mode-picker-heading');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      dismissAndClearUpgrade();
+    });
+    actions.appendChild(btnBrowse);
+
+    bannerContent.appendChild(actions);
+    banner.appendChild(bannerContent);
+
+    // Dismiss (X) button (AC #2, #5)
+    var btnDismiss = document.createElement('button');
+    btnDismiss.type = 'button';
+    btnDismiss.className = 'dismiss-btn';
+    btnDismiss.setAttribute('aria-label', 'Dismiss new display modes notification');
+    btnDismiss.innerHTML = '&times;';
+    btnDismiss.addEventListener('click', function() {
+      dismissAndClearUpgrade();
+      // AC #5: move focus to mode-picker-heading after dismiss
+      focusModePickerHeading();
+    });
+    banner.appendChild(btnDismiss);
+
+    upgradeBannerHost.innerHTML = '';
+    upgradeBannerHost.appendChild(banner);
+  }
+
   function loadDisplayModes() {
-    FW.get('/api/display/modes').then(function(res) {
+    return FW.get('/api/display/modes').then(function(res) {
       if (!res.body || !res.body.ok || !res.body.data) {
         FW.showToast('Failed to load display modes', 'error');
         return;
@@ -2681,6 +3194,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       var data = res.body.data;
       renderModeCards(data);
       updateModeStatus(data);
+      maybeShowModeUpgradeBanner(data);
     }).catch(function() {
       FW.showToast('Cannot reach device to load display modes. Check connection.', 'error');
     });
@@ -2982,6 +3496,63 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       window.location.href = '/api/settings/export';
     });
   }
+
+  // --- Night Mode status polling (Story fn-2.3) ---
+  var nmNtpBadge = document.getElementById('nm-ntp-badge');
+  var nmSchedStatus = document.getElementById('nm-sched-status');
+
+  function updateNmStatus() {
+    // Guard: abort silently if the Night Mode card is not present in this HTML build.
+    if (!nmNtpBadge || !nmSchedStatus) return;
+    // Use recursive setTimeout (not setInterval) so the next poll only fires
+    // AFTER the current request resolves — prevents concurrent in-flight
+    // requests piling up against the resource-constrained ESP32 web stack.
+    FW.get('/api/status').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) {
+        // Silently reset indicators; background poll should not toast on transient failures.
+        nmNtpBadge.textContent = 'NTP: --';
+        nmNtpBadge.className = 'nm-ntp-badge';
+        nmSchedStatus.textContent = '';
+        setTimeout(updateNmStatus, 10000);
+        return;
+      }
+      var s = res.body.data;
+
+      // NTP badge
+      if (s.ntp_synced) {
+        nmNtpBadge.textContent = 'NTP Synced';
+        nmNtpBadge.className = 'nm-ntp-badge nm-ntp-ok';
+      } else {
+        nmNtpBadge.textContent = 'NTP Not Synced';
+        nmNtpBadge.className = 'nm-ntp-badge nm-ntp-warn';
+      }
+
+      // Schedule status
+      if (!s.ntp_synced) {
+        nmSchedStatus.textContent = 'Schedule paused \u2014 waiting for NTP sync';
+        nmSchedStatus.className = 'nm-sched-status nm-inactive';
+      } else if (s.schedule_dimming) {
+        nmSchedStatus.textContent = 'Currently dimming';
+        nmSchedStatus.className = 'nm-sched-status nm-dimming';
+      } else if (s.schedule_active) {
+        nmSchedStatus.textContent = 'Schedule active (not in dim window)';
+        nmSchedStatus.className = 'nm-sched-status nm-active';
+      } else {
+        nmSchedStatus.textContent = 'Schedule inactive';
+        nmSchedStatus.className = 'nm-sched-status nm-inactive';
+      }
+
+      setTimeout(updateNmStatus, 10000);
+    }).catch(function() {
+      nmNtpBadge.textContent = 'NTP: --';
+      nmNtpBadge.className = 'nm-ntp-badge';
+      nmSchedStatus.textContent = '';
+      setTimeout(updateNmStatus, 10000);
+    });
+  }
+
+  // Kick off initial status poll; subsequent polls are scheduled recursively.
+  updateNmStatus();
 
   // --- Init ---
   var settingsPromise = loadSettings();

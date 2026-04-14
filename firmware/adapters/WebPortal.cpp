@@ -39,8 +39,12 @@ extern FlightStatsSnapshot getFlightStatsSnapshot();
 // Defined in main.cpp — NTP sync status accessor (Story fn-2.1)
 extern bool isNtpSynced();
 
+// Defined in main.cpp — Night mode scheduler dimming state (Story fn-2.2)
+extern bool isScheduleDimming();
+
 #include "core/LayoutEngine.h"
 #include "core/ModeOrchestrator.h"
+#include "core/ModeRegistry.h"
 
 namespace {
 struct PendingRequestBody {
@@ -294,7 +298,13 @@ void WebPortal::_registerRoutes() {
         _handleGetDisplayModes(request);
     });
 
-    // POST /api/display/mode (Story dl-1.5) — manual mode switch
+    // POST /api/display/mode (Story ds-3.1) — manual mode switch
+    // AC #5: accept "mode" with fallback to "mode_id" for backward compat
+    // AC #6: orchestrator-only path (Rule 24)
+    // AC #7: async response with switch_state — no bounded wait in async handler
+    //   Strategy: return switch_state: "requested" with client re-fetch (ds-3.4 UX).
+    //   Architecture D5 "synchronous" intent is not feasible in ESPAsyncWebServer body
+    //   handler because tick() runs on Core 0 display task. Explicit deviation documented.
     _server->on("/api/display/mode", HTTP_POST,
         [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
         nullptr,
@@ -304,46 +314,87 @@ void WebPortal::_registerRoutes() {
                 return;
             }
             if (index + len == total) {
-                // Parse the mode_id from request body (use `len` not `total`: data points to the
-                // current chunk only; passing `total` would read past the buffer on multi-chunk bodies)
                 JsonDocument reqDoc;
                 DeserializationError err = deserializeJson(reqDoc, data, len);
                 if (err) {
                     _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
                     return;
                 }
-                const char* modeId = reqDoc["mode_id"] | (const char*)nullptr;
+
+                // AC #5: prefer "mode", fall back to "mode_id" for one release
+                const char* modeId = reqDoc["mode"] | (const char*)nullptr;
                 if (!modeId) {
-                    _sendJsonError(request, 400, "Missing mode_id field", "MISSING_FIELD");
+                    modeId = reqDoc["mode_id"] | (const char*)nullptr;
+                }
+                if (!modeId) {
+                    _sendJsonError(request, 400, "Missing mode or mode_id field", "MISSING_FIELD");
                     return;
                 }
 
-                // Resolve mode name from ID (simple lookup)
+                // Resolve mode name from ModeRegistry (AC #8 — unknown mode → 400)
+                const ModeEntry* table = ModeRegistry::getModeTable();
+                const uint8_t count = ModeRegistry::getModeCount();
                 const char* modeName = nullptr;
-                if (strcmp(modeId, "classic_card") == 0) modeName = "Classic Card";
-                else if (strcmp(modeId, "live_flight") == 0) modeName = "Live Flight Card";
-                else if (strcmp(modeId, "clock") == 0) modeName = "Clock";
-                else {
+                for (uint8_t i = 0; i < count; i++) {
+                    if (strcmp(table[i].id, modeId) == 0) {
+                        modeName = table[i].displayName;
+                        break;
+                    }
+                }
+                if (!modeName) {
                     _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
                     return;
                 }
 
-                // Switch via orchestrator (Rule 24: always go through orchestrator)
+                // AC #6 / Rule 24: switch via orchestrator, not ModeRegistry directly
                 ModeOrchestrator::onManualSwitch(modeId, modeName);
 
+                // Build truthful response (AC #7, #9)
                 JsonDocument doc;
                 JsonObject root = doc.to<JsonObject>();
                 root["ok"] = true;
                 JsonObject respData = root["data"].to<JsonObject>();
                 respData["switching_to"] = modeId;
+                respData["active"] = ModeRegistry::getActiveModeId()
+                                       ? ModeRegistry::getActiveModeId() : "classic_card";
+
+                // Switch state (will be "idle" since tick() hasn't run yet)
+                SwitchState ss = ModeRegistry::getSwitchState();
+                switch (ss) {
+                    case SwitchState::REQUESTED: respData["switch_state"] = "requested"; break;
+                    case SwitchState::SWITCHING: respData["switch_state"] = "switching"; break;
+                    default:                     respData["switch_state"] = "idle";      break;
+                }
+
                 respData["orchestrator_state"] = ModeOrchestrator::getStateString();
                 respData["state_reason"] = ModeOrchestrator::getStateReason();
+
+                // Registry error if present (AC #9 — HEAP_INSUFFICIENT etc.)
+                const char* lastErr = ModeRegistry::getLastError();
+                if (lastErr != nullptr && lastErr[0] != '\0') {
+                    respData["registry_error"] = lastErr;
+                }
+
                 String output;
                 serializeJson(doc, output);
                 request->send(200, "application/json", output);
             }
         }
     );
+
+    // POST /api/display/notification/dismiss (Story ds-3.1, AC #10; ds-3.2, AC #4)
+    // Clears upgrade_notification NVS flag so GET returns false thereafter.
+    // Uses ConfigManager::setUpgNotif() to keep NVS writes centralized (AR7).
+    _server->on("/api/display/notification/dismiss", HTTP_POST, [](AsyncWebServerRequest* request) {
+        ConfigManager::setUpgNotif(false);
+
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
 
     // GET /api/logos — list uploaded logos
     _server->on("/api/logos", HTTP_GET, [this](AsyncWebServerRequest* request) {
@@ -782,9 +833,10 @@ void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
     FlightStatsSnapshot stats = getFlightStatsSnapshot();
     SystemStatus::toExtendedJson(data, stats);
 
-    // NTP and schedule status (Story fn-2.1)
+    // NTP and schedule status (Story fn-2.1, fn-2.2)
     data["ntp_synced"] = isNtpSynced();
     data["schedule_active"] = (ConfigManager::getSchedule().sched_enabled == 1) && isNtpSynced();
+    data["schedule_dimming"] = isScheduleDimming();
 
     // Rollback acknowledgment state (Story fn-1.6) — NVS-backed, not via ConfigManager
     Preferences prefs;
@@ -909,38 +961,69 @@ void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
 }
 
 void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
+    // Capacity: ~256 base + ~200 per mode (with zone_layout) — 3 modes ≈ 900 bytes
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
     root["ok"] = true;
     JsonObject data = root["data"].to<JsonObject>();
 
-    // Mode list (static for now; will grow with ModeRegistry in future stories)
+    // Build modes array from ModeRegistry (AC #1, #2, #4 — no heap allocation per request)
     JsonArray modes = data["modes"].to<JsonArray>();
+    const ModeEntry* table = ModeRegistry::getModeTable();
+    const uint8_t count = ModeRegistry::getModeCount();
 
-    const char* activeId = ModeOrchestrator::getActiveModeId();
+    // Active mode from ModeRegistry (truth source); fall back to "classic_card" if nullptr
+    const char* registryActiveId = ModeRegistry::getActiveModeId();
+    const char* activeId = registryActiveId ? registryActiveId : "classic_card";
 
-    // Classic Card mode
-    JsonObject mClassic = modes.add<JsonObject>();
-    mClassic["id"] = "classic_card";
-    mClassic["name"] = "Classic Card";
-    mClassic["active"] = (strcmp(activeId, "classic_card") == 0);
+    for (uint8_t i = 0; i < count; i++) {
+        const ModeEntry& entry = table[i];
+        JsonObject modeObj = modes.add<JsonObject>();
+        modeObj["id"] = entry.id;
+        modeObj["name"] = entry.displayName;
+        modeObj["active"] = (strcmp(activeId, entry.id) == 0);
 
-    // Live Flight Card mode
-    JsonObject mLive = modes.add<JsonObject>();
-    mLive["id"] = "live_flight";
-    mLive["name"] = "Live Flight Card";
-    mLive["active"] = (strcmp(activeId, "live_flight") == 0);
-
-    // Clock mode
-    JsonObject mClock = modes.add<JsonObject>();
-    mClock["id"] = "clock";
-    mClock["name"] = "Clock";
-    mClock["active"] = (strcmp(activeId, "clock") == 0);
+        // Zone layout from static descriptor (AC #2) — walks BSS/static data only
+        JsonArray zoneLayout = modeObj["zone_layout"].to<JsonArray>();
+        if (entry.zoneDescriptor != nullptr) {
+            if (entry.zoneDescriptor->description != nullptr) {
+                modeObj["description"] = entry.zoneDescriptor->description;
+            }
+            for (uint8_t z = 0; z < entry.zoneDescriptor->regionCount; z++) {
+                const ZoneRegion& region = entry.zoneDescriptor->regions[z];
+                JsonObject zoneObj = zoneLayout.add<JsonObject>();
+                zoneObj["label"] = region.label;
+                zoneObj["relX"] = region.relX;
+                zoneObj["relY"] = region.relY;
+                zoneObj["relW"] = region.relW;
+                zoneObj["relH"] = region.relH;
+            }
+        }
+    }
 
     data["active"] = activeId;
-    data["switch_state"] = "idle";
+
+    // Switch state from ModeRegistry (AC #1, replacing stub "idle")
+    SwitchState ss = ModeRegistry::getSwitchState();
+    switch (ss) {
+        case SwitchState::REQUESTED: data["switch_state"] = "requested"; break;
+        case SwitchState::SWITCHING: data["switch_state"] = "switching"; break;
+        default:                     data["switch_state"] = "idle";      break;
+    }
+
+    // Orchestrator transparency (AC #3 — retain dl-1.5 fields)
     data["orchestrator_state"] = ModeOrchestrator::getStateString();
     data["state_reason"] = ModeOrchestrator::getStateReason();
+
+    // Registry error if present (AC #9)
+    const char* lastErr = ModeRegistry::getLastError();
+    if (lastErr != nullptr && lastErr[0] != '\0') {
+        data["registry_error"] = lastErr;
+    }
+
+    // Upgrade notification NVS flag (AC #10; ds-3.2, AC #4)
+    // Uses ConfigManager::getUpgNotif() to keep NVS reads centralized (AR7).
+    data["upgrade_notification"] = ConfigManager::getUpgNotif();
 
     String output;
     serializeJson(doc, output);

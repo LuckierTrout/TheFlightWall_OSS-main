@@ -102,7 +102,7 @@ function getTimezoneConfig() {
 (function() {
   'use strict';
 
-  var TOTAL_STEPS = 5;
+  var TOTAL_STEPS = 6;
   var currentStep = 1;
 
   // In-memory wizard state using exact firmware config key names
@@ -115,34 +115,46 @@ function getTimezoneConfig() {
     center_lat: '',
     center_lon: '',
     radius_km: '',
+    timezone: '',
     tiles_x: '',
     tiles_y: '',
     tile_pixels: '',
-    display_pin: ''
+    display_pin: '',
+    origin_corner: '0',
+    scan_dir: '0',
+    zigzag: '0'
   };
 
   // Valid GPIO pins for display_pin (matches ConfigManager validation)
   var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 
-  // Keys that map to wizard form fields (12 keys)
+  // Keys that map to wizard form fields (16 keys)
   var WIZARD_KEYS = [
     'wifi_ssid', 'wifi_password',
     'os_client_id', 'os_client_sec', 'aeroapi_key',
-    'center_lat', 'center_lon', 'radius_km',
-    'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin'
+    'center_lat', 'center_lon', 'radius_km', 'timezone',
+    'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin',
+    'origin_corner', 'scan_dir', 'zigzag'
   ];
 
   // Non-wizard config keys preserved in POST payload
   var KNOWN_EXTRA_KEYS = [
     'brightness', 'text_color_r', 'text_color_g', 'text_color_b',
-    'origin_corner', 'scan_dir', 'zigzag',
     'zone_logo_pct', 'zone_split_pct', 'zone_layout',
     'fetch_interval', 'display_cycle',
-    'timezone', 'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
+    'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
   ];
 
   // Extra keys from import (not shown in wizard, but sent with POST)
   var importedExtras = {};
+
+  // Device color/brightness values read from /api/settings at startup.
+  // Used by runRgbTest() to restore originals even without a settings import.
+  var cachedDeviceColors = { brightness: null, text_color_r: null, text_color_g: null, text_color_b: null };
+
+  // IANA timezone value as set by auto-detect at init; captured so hydrateDefaults() can
+  // distinguish an untouched auto-detect result from a user-modified or imported selection.
+  var autoDetectedTimezone = '';
 
   // DOM references — Import zone
   var importZone = document.getElementById('settings-import-zone');
@@ -170,18 +182,35 @@ function getTimezoneConfig() {
   var centerLat = document.getElementById('center-lat');
   var centerLon = document.getElementById('center-lon');
   var radiusKm = document.getElementById('radius-km');
+  var wizardTimezone = document.getElementById('wizard-timezone');
   var locErr = document.getElementById('loc-err');
+
+  // Reverse map: POSIX string → first IANA name (alphabetically-first; used by hydration and import)
+  var POSIX_TO_IANA = {};
+  Object.keys(TZ_MAP).sort().forEach(function(iana) {
+    if (!POSIX_TO_IANA[TZ_MAP[iana]]) POSIX_TO_IANA[TZ_MAP[iana]] = iana;
+  });
 
   // DOM references — Step 4
   var tilesX = document.getElementById('tiles-x');
   var tilesY = document.getElementById('tiles-y');
   var tilePixels = document.getElementById('tile-pixels');
   var displayPin = document.getElementById('display-pin');
+  var originCorner = document.getElementById('origin-corner');
+  var scanDir = document.getElementById('scan-dir');
+  var zigzagSel = document.getElementById('zigzag');
   var hwErr = document.getElementById('hw-err');
   var resolutionText = document.getElementById('resolution-text');
 
   // DOM references — Step 5
   var reviewSections = document.getElementById('review-sections');
+
+  // DOM references — Step 6
+  var wizardCanvas = document.getElementById('wizard-position-preview');
+  var btnTestYes = document.getElementById('btn-test-yes');
+  var btnTestNo = document.getElementById('btn-test-no');
+  var wizardTestStatus = document.getElementById('wizard-test-status');
+  var wizardNav = document.querySelector('.wizard-nav');
 
   // --- Bootstrap: hydrate defaults from firmware ---
   function hydrateDefaults() {
@@ -196,6 +225,27 @@ function getTimezoneConfig() {
       if (!state.tiles_y && d.tiles_y !== undefined) state.tiles_y = String(d.tiles_y);
       if (!state.tile_pixels && d.tile_pixels !== undefined) state.tile_pixels = String(d.tile_pixels);
       if (!state.display_pin && d.display_pin !== undefined) state.display_pin = String(d.display_pin);
+      if (d.origin_corner !== undefined) state.origin_corner = String(d.origin_corner);
+      if (d.scan_dir !== undefined) state.scan_dir = String(d.scan_dir);
+      if (d.zigzag !== undefined) state.zigzag = String(d.zigzag);
+      // Reverse-lookup device timezone (POSIX → IANA) for dropdown display.
+      // Guard: skip when device returns factory default 'UTC0' — that value indicates the
+      // device has never been configured, so we preserve the browser auto-detect result.
+      // Guard: skip if user has already modified the timezone dropdown (state.timezone
+      // differs from the auto-detected initial value), preventing the async response from
+      // overwriting a user-changed or imported selection (race condition fix).
+      // Guard: fallback resolves unmapped browser IANA zones to 'UTC' (same as AC3 init path).
+      if (d.timezone && d.timezone !== 'UTC0' && state.timezone === autoDetectedTimezone) {
+        var tzDet = getTimezoneConfig();
+        state.timezone = POSIX_TO_IANA[d.timezone] || (TZ_MAP[tzDet.iana] ? tzDet.iana : 'UTC');
+        if (wizardTimezone) wizardTimezone.value = state.timezone;
+      }
+      // Cache actual device brightness/color so runRgbTest() can restore originals
+      // even when the user has not imported a settings file.
+      if (d.brightness !== undefined) cachedDeviceColors.brightness = d.brightness;
+      if (d.text_color_r !== undefined) cachedDeviceColors.text_color_r = d.text_color_r;
+      if (d.text_color_g !== undefined) cachedDeviceColors.text_color_g = d.text_color_g;
+      if (d.text_color_b !== undefined) cachedDeviceColors.text_color_b = d.text_color_b;
     }).catch(function() {
       // Settings endpoint unavailable — user will fill manually
     });
@@ -369,12 +419,16 @@ function getTimezoneConfig() {
       { title: 'Location', step: 3, items: [
         { label: 'Latitude', value: state.center_lat },
         { label: 'Longitude', value: state.center_lon },
-        { label: 'Radius', value: state.radius_km + ' km' }
+        { label: 'Radius', value: state.radius_km + ' km' },
+        { label: 'Timezone', value: state.timezone || 'UTC' }
       ]},
       { title: 'Hardware', step: 4, items: [
         { label: 'Display', value: state.tiles_x + ' x ' + state.tiles_y + ' tiles (' + (parseInt(state.tiles_x,10)*parseInt(state.tile_pixels,10)) + ' x ' + (parseInt(state.tiles_y,10)*parseInt(state.tile_pixels,10)) + ' px)' },
         { label: 'Pixels per tile', value: state.tile_pixels },
-        { label: 'Data pin', value: 'GPIO ' + state.display_pin }
+        { label: 'Data pin', value: 'GPIO ' + state.display_pin },
+        { label: 'Origin', value: ['Top-Left','Top-Right','Bottom-Left','Bottom-Right'][parseInt(state.origin_corner,10)] || 'Top-Left' },
+        { label: 'Scan', value: parseInt(state.scan_dir,10) === 1 ? 'Columns' : 'Rows' },
+        { label: 'Zigzag', value: parseInt(state.zigzag,10) === 1 ? 'Yes' : 'No' }
       ]}
     ];
 
@@ -421,12 +475,13 @@ function getTimezoneConfig() {
     }
     btnBack.style.visibility = n === 1 ? 'hidden' : 'visible';
 
-    if (n < TOTAL_STEPS) {
+    // Hide nav bar on Step 6 (has its own buttons), show for all others
+    if (n === 6) {
+      wizardNav.style.display = 'none';
+    } else {
+      wizardNav.style.display = '';
       btnNext.textContent = 'Next \u2192';
       btnNext.className = 'nav-btn nav-btn-primary';
-    } else {
-      btnNext.textContent = 'Save & Connect';
-      btnNext.className = 'nav-btn nav-btn-save';
     }
 
     // Rehydrate fields from state when entering a step
@@ -447,6 +502,7 @@ function getTimezoneConfig() {
       centerLat.value = state.center_lat;
       centerLon.value = state.center_lon;
       radiusKm.value = state.radius_km;
+      wizardTimezone.value = state.timezone || 'UTC';
       locErr.style.display = 'none';
       clearInputErrors([centerLat, centerLon, radiusKm]);
     }
@@ -455,12 +511,18 @@ function getTimezoneConfig() {
       tilesY.value = state.tiles_y;
       tilePixels.value = state.tile_pixels;
       displayPin.value = state.display_pin;
+      originCorner.value = state.origin_corner || '0';
+      scanDir.value = state.scan_dir || '0';
+      zigzagSel.value = state.zigzag || '0';
       hwErr.style.display = 'none';
       clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
       updateResolution();
     }
     if (n === 5) {
       buildReview();
+    }
+    if (n === 6) {
+      enterStep6();
     }
   }
 
@@ -476,11 +538,15 @@ function getTimezoneConfig() {
       state.center_lat = centerLat.value.trim();
       state.center_lon = centerLon.value.trim();
       state.radius_km = radiusKm.value.trim();
+      state.timezone = wizardTimezone.value;
     } else if (currentStep === 4) {
       state.tiles_x = tilesX.value.trim();
       state.tiles_y = tilesY.value.trim();
       state.tile_pixels = tilePixels.value.trim();
       state.display_pin = displayPin.value.trim();
+      state.origin_corner = originCorner.value;
+      state.scan_dir = scanDir.value;
+      state.zigzag = zigzagSel.value;
     }
   }
 
@@ -547,11 +613,13 @@ function getTimezoneConfig() {
       var tx = parseStrictPositiveInt(state.tiles_x);
       var ty = parseStrictPositiveInt(state.tiles_y);
       var tp = parseStrictPositiveInt(state.tile_pixels);
-      var dp = parseStrictPositiveInt(state.display_pin);
+      // display_pin allows 0 (GPIO 0 is in VALID_PINS); use inclusive int parse
+      var dpStr = state.display_pin.trim();
+      var dp = (/^\d+$/.test(dpStr)) ? parseInt(dpStr, 10) : NaN;
       if (tx === null) errs4.push(tilesX);
       if (ty === null) errs4.push(tilesY);
       if (tp === null) errs4.push(tilePixels);
-      if (dp === null || VALID_PINS.indexOf(dp) === -1) errs4.push(displayPin);
+      if (isNaN(dp) || VALID_PINS.indexOf(dp) === -1) errs4.push(displayPin);
       if (errs4.length > 0) {
         var msg = 'All fields must be positive integers.';
         if (errs4.length === 1 && errs4[0] === displayPin) {
@@ -578,12 +646,13 @@ function getTimezoneConfig() {
     inputs.forEach(function(el) { el.classList.remove('input-error'); });
   }
 
-  // --- Save & Connect (Step 5 final action) ---
+  // --- Save & Connect (called from Step 6 completion) ---
   function saveAndConnect() {
     var rebootRequested = false;
+    var rebootFailed = false;
 
+    // finishStep6() already set the status text — do not overwrite it here.
     btnNext.disabled = true;
-    btnNext.textContent = 'Saving...';
 
     var payload = {
       wifi_ssid: state.wifi_ssid,
@@ -594,10 +663,14 @@ function getTimezoneConfig() {
       center_lat: Number(state.center_lat),
       center_lon: Number(state.center_lon),
       radius_km: Number(state.radius_km),
+      timezone: TZ_MAP[state.timezone] || 'UTC0',
       tiles_x: Number(state.tiles_x),
       tiles_y: Number(state.tiles_y),
       tile_pixels: Number(state.tile_pixels),
-      display_pin: Number(state.display_pin)
+      display_pin: Number(state.display_pin),
+      origin_corner: Number(state.origin_corner),
+      scan_dir: Number(state.scan_dir),
+      zigzag: Number(state.zigzag)
     };
 
     // Merge imported extra keys (brightness, timing, schedule, etc.)
@@ -614,44 +687,63 @@ function getTimezoneConfig() {
       }
       // Settings saved — trigger reboot
       btnNext.textContent = 'Rebooting...';
+      if (currentStep === 6 && wizardTestStatus) wizardTestStatus.textContent = 'Rebooting...';
       rebootRequested = true;
       return FW.post('/api/reboot', {});
     }).then(function(res) {
       if (!res || !res.body || !res.body.ok) {
+        rebootFailed = true;
         throw new Error('Reboot failed: ' + ((res && res.body && res.body.error) || 'Unknown error'));
       }
+      // Reboot accepted — device is leaving AP mode (showHandoff includes AC5 ready message)
       showHandoff();
     }).catch(function(err) {
-      if (rebootRequested) {
+      if (rebootRequested && !rebootFailed) {
         // Network loss after requesting reboot is expected because the device is leaving AP mode.
         showHandoff();
         return;
       }
       btnNext.disabled = false;
       btnNext.textContent = 'Save & Connect';
+      // If we're on Step 6, restore its buttons so the user can retry
+      if (currentStep === 6) {
+        if (wizardTestStatus) {
+          wizardTestStatus.textContent = '';
+          wizardTestStatus.style.display = 'none';
+        }
+        btnTestYes.style.display = '';
+        btnTestYes.disabled = false;
+        btnTestNo.style.display = '';
+        btnTestNo.disabled = false;
+      }
       showSaveError(err && err.message ? err.message : 'Save failed: Network error');
     });
   }
 
   function showSaveError(msg) {
-    // Show error inline in the review section
     var errEl = document.getElementById('save-err');
     if (!errEl) {
       errEl = document.createElement('p');
       errEl.id = 'save-err';
       errEl.className = 'field-error';
-      reviewSections.parentNode.appendChild(errEl);
     }
     errEl.textContent = msg;
     errEl.style.display = '';
+    // Append to the active step container so the error is always visible
+    if (currentStep === 6) {
+      wizardTestStatus.parentNode.insertBefore(errEl, wizardTestStatus.nextSibling);
+    } else {
+      reviewSections.parentNode.appendChild(errEl);
+    }
   }
 
   function showHandoff() {
-    // Replace wizard content with handoff message
+    // Replace wizard content with handoff message (AC5: show ready message here so it persists)
     var wizard = document.querySelector('.wizard');
     wizard.innerHTML =
       '<div class="handoff">' +
         '<h1>Configuration Saved</h1>' +
+        '<p>Your FlightWall is ready! Fetching your first flights...</p>' +
         '<p>Your FlightWall is rebooting and connecting to <strong>' + escHtml(state.wifi_ssid) + '</strong>.</p>' +
         '<p>Look at the LED wall for progress.</p>' +
         '<p class="handoff-note">This page will no longer update because the device is leaving setup mode.</p>' +
@@ -664,9 +756,8 @@ function getTimezoneConfig() {
     saveCurrentStepState();
     if (currentStep < TOTAL_STEPS) {
       showStep(currentStep + 1);
-    } else {
-      saveAndConnect();
     }
+    // Step 6 has its own buttons — nav bar is hidden, so this branch is unreachable
   });
 
   btnBack.addEventListener('click', function() {
@@ -683,6 +774,227 @@ function getTimezoneConfig() {
   tilesX.addEventListener('input', updateResolution);
   tilesY.addEventListener('input', updateResolution);
   tilePixels.addEventListener('input', updateResolution);
+
+  // --- Step 6: Test Your Wall ---
+
+  function enterStep6() {
+    // Reset UI state
+    wizardTestStatus.style.display = 'none';
+    wizardTestStatus.textContent = '';
+    btnTestYes.disabled = false;
+    btnTestNo.disabled = false;
+    btnTestYes.style.display = '';
+    btnTestNo.style.display = '';
+
+    // Clear stale save error from a previous failed save attempt (re-entry case)
+    var oldErr = document.getElementById('save-err');
+    if (oldErr && oldErr.parentNode) oldErr.parentNode.removeChild(oldErr);
+
+    // Render canvas preview
+    renderPositionCanvas();
+
+    // Trigger positioning pattern on LEDs; return to Step 5 if it fails (AC1).
+    // Guard with currentStep === 6 to avoid yanking the user if they already navigated away
+    // before this async callback fires (race condition fix).
+    FW.post('/api/positioning/start', {}).then(function(res) {
+      if (!res.body.ok) {
+        FW.showToast('Could not start test pattern: ' + (res.body.error || 'Unknown error'), 'error');
+        if (currentStep === 6) showStep(5);
+      }
+    }).catch(function() {
+      FW.showToast('Could not start test pattern: Network error', 'error');
+      if (currentStep === 6) showStep(5);
+    });
+  }
+
+  // Render a canvas preview that faithfully matches NeoMatrixDisplay::renderPositioningPattern():
+  // - gridIdx = row * tilesX + col (visual scan order, no wiring remapping — NeoMatrix lib handles that)
+  // - tile fill: dim version of unique per-tile hue (hsl dim = low lightness)
+  // - tile border: bright version of same hue (matching firmware's bright/dim HSV pair)
+  // - red corner marker at top-left of EVERY tile (matches firmware — every tile has one)
+  // - centered white digit label (matches firmware 3×5 font digits)
+  function renderPositionCanvas() {
+    if (!wizardCanvas || !wizardCanvas.getContext) return;
+    var ctx = wizardCanvas.getContext('2d');
+
+    var tx = parseInt(state.tiles_x, 10) || 1;
+    var ty = parseInt(state.tiles_y, 10) || 1;
+    var totalTiles = tx * ty;
+
+    // Size canvas to fit container; cap height to prevent extreme aspect ratios
+    var container = wizardCanvas.parentElement;
+    var containerWidth = (container && container.clientWidth) || 300;
+    var aspect = tx / ty;
+    var MAX_CANVAS_HEIGHT = 400;
+    var drawWidth = Math.min(containerWidth, 480);
+    var drawHeight = Math.round(drawWidth / aspect);
+    if (drawHeight > MAX_CANVAS_HEIGHT) {
+      drawHeight = MAX_CANVAS_HEIGHT;
+      drawWidth = Math.round(drawHeight * aspect);
+      if (drawWidth > 480) drawWidth = 480;
+    }
+    if (drawHeight < 60) drawHeight = 60;
+
+    wizardCanvas.width = drawWidth;
+    wizardCanvas.height = drawHeight;
+
+    var cellW = drawWidth / tx;
+    var cellH = drawHeight / ty;
+
+    // Dark background
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, drawWidth, drawHeight);
+
+    var markerSize = Math.min(Math.max(3, cellW * 0.18), Math.max(3, cellH * 0.18), 8);
+    var fontSize = Math.max(9, Math.min(cellW, cellH) * 0.38);
+
+    for (var row = 0; row < ty; row++) {
+      for (var col = 0; col < tx; col++) {
+        // gridIdx: visual scan order — matches firmware (NeoMatrix lib handles physical wiring)
+        var gridIdx = row * tx + col;
+        var hue = Math.round(gridIdx * 360 / totalTiles);
+        var x = col * cellW;
+        var y = row * cellH;
+
+        // Tile fill — dim version of hue (matches firmware dim.setHSV(hue, 200, 40))
+        ctx.fillStyle = 'hsl(' + hue + ', 80%, 20%)';
+        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+        // Bright border — bright version of same hue (matches firmware bright.setHSV(hue, 255, 200))
+        ctx.strokeStyle = 'hsl(' + hue + ', 100%, 60%)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+        // Red corner marker at top-left of EVERY tile (matches firmware — every tile has one)
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(x + 2, y + 2, markerSize, markerSize);
+      }
+    }
+
+    // Centered white tile-index digits (matches firmware white 3×5 pixel font)
+    ctx.font = 'bold ' + Math.round(fontSize) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    for (var r = 0; r < ty; r++) {
+      for (var c = 0; c < tx; c++) {
+        var idx = r * tx + c;
+        ctx.fillText(String(idx), (c + 0.5) * cellW, (r + 0.5) * cellH);
+      }
+    }
+  }
+
+  function runRgbTest() {
+    // Resolve original values: importedExtras wins (if user imported), then cachedDeviceColors
+    // (read from /api/settings at startup), then safe fallbacks. This ensures we never
+    // silently reset a device that was configured without a settings import (AC4).
+    var origBrt = (importedExtras.brightness !== undefined) ? importedExtras.brightness :
+                  (cachedDeviceColors.brightness !== null) ? cachedDeviceColors.brightness : 40;
+    var origR   = (importedExtras.text_color_r !== undefined) ? importedExtras.text_color_r :
+                  (cachedDeviceColors.text_color_r !== null) ? cachedDeviceColors.text_color_r : 255;
+    var origG   = (importedExtras.text_color_g !== undefined) ? importedExtras.text_color_g :
+                  (cachedDeviceColors.text_color_g !== null) ? cachedDeviceColors.text_color_g : 255;
+    var origB   = (importedExtras.text_color_b !== undefined) ? importedExtras.text_color_b :
+                  (cachedDeviceColors.text_color_b !== null) ? cachedDeviceColors.text_color_b : 255;
+    var restorePayload = { brightness: origBrt, text_color_r: origR, text_color_g: origG, text_color_b: origB };
+
+    wizardTestStatus.textContent = 'Testing colors...';
+    wizardTestStatus.style.display = '';
+    btnTestYes.disabled = true;
+    btnTestNo.disabled = true;
+
+    var colors = [
+      { text_color_r: 255, text_color_g: 0, text_color_b: 0 },
+      { text_color_r: 0, text_color_g: 255, text_color_b: 0 },
+      { text_color_r: 0, text_color_g: 0, text_color_b: 255 }
+    ];
+
+    var step = 0;
+
+    function restoreAndFinish(warnMsg) {
+      // Always restore originals before calling finishStep6() to prevent the save POST
+      // from racing with an in-flight restore POST (race condition fix).
+      if (warnMsg) FW.showToast(warnMsg, 'warning');
+      FW.post('/api/settings', restorePayload).then(function(res) {
+        if (!res.body.ok) FW.showToast('Warning: could not restore original colors', 'warning');
+        finishStep6();
+      }).catch(function() {
+        FW.showToast('Warning: could not restore original colors', 'warning');
+        finishStep6();
+      });
+    }
+
+    function nextColor() {
+      if (step >= colors.length) {
+        restoreAndFinish(null);
+        return;
+      }
+
+      var payload = { brightness: 40 };
+      payload.text_color_r = colors[step].text_color_r;
+      payload.text_color_g = colors[step].text_color_g;
+      payload.text_color_b = colors[step].text_color_b;
+
+      FW.post('/api/settings', payload).then(function(res) {
+        if (!res.body.ok) {
+          FW.showToast('Color test failed: ' + (res.body.error || 'Unknown error'), 'error');
+          restoreAndFinish(null);
+          return;
+        }
+        step++;
+        setTimeout(nextColor, 1000);
+      }).catch(function() {
+        FW.showToast('Color test failed: Network error', 'error');
+        restoreAndFinish(null);
+      });
+    }
+
+    nextColor();
+  }
+
+  function finishStep6() {
+    // Show "Saving..." while the POST is in flight; saveAndConnect() updates to the
+    // "ready" message after a successful reboot response (AC5 sequencing fix).
+    wizardTestStatus.textContent = 'Saving...';
+    wizardTestStatus.style.display = '';
+    btnTestYes.style.display = 'none';
+    btnTestNo.style.display = 'none';
+
+    // Use existing saveAndConnect() which handles save + reboot + handoff
+    saveAndConnect();
+  }
+
+  // Step 6 event handlers
+  if (btnTestYes) {
+    btnTestYes.addEventListener('click', function() {
+      btnTestYes.disabled = true;
+      btnTestNo.disabled = true;
+      // Stop positioning pattern, then run RGB test
+      FW.post('/api/positioning/stop', {}).then(function(res) {
+        if (!res.body.ok) FW.showToast('Warning: could not stop test pattern', 'warning');
+        runRgbTest();
+      }).catch(function() {
+        FW.showToast('Warning: could not stop test pattern', 'warning');
+        runRgbTest();
+      });
+    });
+  }
+
+  if (btnTestNo) {
+    btnTestNo.addEventListener('click', function() {
+      // Debounce: prevent double-tap from firing concurrent stop POSTs
+      btnTestNo.disabled = true;
+      btnTestYes.disabled = true;
+      // Stop positioning pattern, then go back to Step 4
+      FW.post('/api/positioning/stop', {}).then(function(res) {
+        if (!res.body.ok) FW.showToast('Warning: could not stop test pattern', 'warning');
+        showStep(4);
+      }).catch(function() {
+        FW.showToast('Warning: could not stop test pattern', 'warning');
+        showStep(4);
+      });
+    });
+  }
 
   // --- Settings Import ---
   function processImportedSettings(text) {
@@ -704,6 +1016,7 @@ function getTimezoneConfig() {
       return;
     }
     var count = 0;
+    var tzImportFailed = false;
     var i, key, val;
     for (i = 0; i < WIZARD_KEYS.length; i++) {
       key = WIZARD_KEYS[i];
@@ -711,7 +1024,22 @@ function getTimezoneConfig() {
         val = parsed[key];
         // Skip null and non-primitive values to avoid "null" / "[object Object]" in state
         if (val !== null && typeof val !== 'object') {
-          state[key] = String(val);
+          // timezone: imported files store POSIX strings; reverse-lookup to IANA for the dropdown.
+          // AC6: if no reverse match exists, preserve current state.timezone rather than
+          // overwriting with the browser's timezone — the user's existing selection is retained.
+          if (key === 'timezone') {
+            if (val) {
+              var mapped = POSIX_TO_IANA[String(val)];
+              if (mapped) {
+                state.timezone = mapped;
+              } else {
+                // Unrecognized POSIX string — state.timezone unchanged (AC6 compliant).
+                tzImportFailed = true;
+              }
+            }
+          } else {
+            state[key] = String(val);
+          }
           count++;
         }
       }
@@ -730,7 +1058,11 @@ function getTimezoneConfig() {
       FW.showToast('No recognized settings found in file', 'warning');
       return;
     }
-    FW.showToast('Imported ' + count + ' settings', 'success');
+    if (tzImportFailed) {
+      FW.showToast('Imported ' + count + ' settings (timezone not recognized \u2014 kept current selection)', 'warning');
+    } else {
+      FW.showToast('Imported ' + count + ' settings', 'success');
+    }
     importStatus.textContent = count + ' settings imported';
     importStatus.style.display = '';
     showStep(currentStep);
@@ -781,6 +1113,26 @@ function getTimezoneConfig() {
   });
 
   // --- Init ---
+  // Populate timezone dropdown from TZ_MAP keys (sorted alphabetically)
+  var tzKeys = Object.keys(TZ_MAP).sort();
+  tzKeys.forEach(function(iana) {
+    var opt = document.createElement('option');
+    opt.value = iana;
+    opt.textContent = iana;
+    wizardTimezone.appendChild(opt);
+  });
+
+  // Auto-detect browser timezone; only set if state.timezone is empty.
+  // Guard against unmapped IANA zones — fall back to 'UTC' (AC3).
+  var detected = getTimezoneConfig();
+  if (!state.timezone) {
+    state.timezone = TZ_MAP[detected.iana] ? detected.iana : 'UTC';
+  }
+  // Snapshot the auto-detected value so hydrateDefaults() can tell if the user
+  // has manually changed the dropdown before the async /api/settings response returns.
+  autoDetectedTimezone = state.timezone;
+  wizardTimezone.value = state.timezone;
+
   hydrateDefaults();
   showStep(1);
   startScan();

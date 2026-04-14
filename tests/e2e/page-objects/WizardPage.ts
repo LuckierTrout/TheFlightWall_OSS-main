@@ -6,8 +6,9 @@
  *
  * Architecture Reference:
  * - Wizard served in AP mode (device acts as access point)
- * - Steps: WiFi → API Credentials → Location → Hardware → Review & Connect (5 steps)
- * - "Save & Connect" on Step 5 posts settings, triggers reboot, shows handoff message
+ * - Steps: WiFi (1) → API Keys (2) → Location (3) → Hardware (4) → Review (5) → Test Your Wall (6)
+ * - Step 6 triggers positioning pattern, confirms layout, runs RGB test, then saves & reboots
+ * - "Yes, it matches" on Step 6 completes the RGB test sequence, saves settings, triggers reboot
  */
 import { type Locator, expect } from '@playwright/test';
 import { BasePage } from './BasePage.js';
@@ -17,7 +18,8 @@ export type WizardStep =
   | 'api'
   | 'location'
   | 'hardware'
-  | 'review';
+  | 'review'
+  | 'test';
 
 export class WizardPage extends BasePage {
   // ============================================================================
@@ -41,12 +43,13 @@ export class WizardPage extends BasePage {
   }
 
   get nextButton(): Locator {
-    // Use ID — text changes from "Next →" (steps 1-4) to "Save & Connect" (step 5)
+    // Use ID — text is "Next →" for steps 1-5; nav bar hidden on step 6 (has its own buttons)
     return this.page.locator('#btn-next');
   }
 
   get backButton(): Locator {
-    return this.page.locator('button', { hasText: /back|previous/i });
+    // Use exact ID — avoids matching "No — take me back" on Step 6 which also contains "back"
+    return this.page.locator('#btn-back');
   }
 
   get skipButton(): Locator {
@@ -105,6 +108,10 @@ export class WizardPage extends BasePage {
     return this.page.locator('#radius-km, [name="radius_km"]');
   }
 
+  get timezoneSelect(): Locator {
+    return this.page.locator('#wizard-timezone');
+  }
+
   get useMyLocationButton(): Locator {
     return this.page.locator('button', { hasText: /my location|detect/i });
   }
@@ -135,16 +142,37 @@ export class WizardPage extends BasePage {
   }
 
   get previewCanvas(): Locator {
-    return this.page.locator('#preview-canvas, canvas');
+    // Use the wizard Step 6 canvas ID; the wizard has no other canvas element
+    return this.page.locator('#wizard-position-preview');
   }
 
   // ============================================================================
-  // Step 5: Review & Connect
+  // Step 5: Review
   // ============================================================================
 
-  /** "Configuration Saved" heading shown after Save & Connect triggers the reboot handoff. */
+  /** "Configuration Saved" heading shown after save + reboot handoff completes. */
   get completeMessage(): Locator {
     return this.page.locator('h1', { hasText: 'Configuration Saved' });
+  }
+
+  // ============================================================================
+  // Step 6: Test Your Wall
+  // ============================================================================
+
+  get testPositionCanvas(): Locator {
+    return this.page.locator('#wizard-position-preview');
+  }
+
+  get testYesButton(): Locator {
+    return this.page.locator('#btn-test-yes');
+  }
+
+  get testNoButton(): Locator {
+    return this.page.locator('#btn-test-no');
+  }
+
+  get testStatusText(): Locator {
+    return this.page.locator('#wizard-test-status');
   }
 
   // ============================================================================
@@ -198,14 +226,14 @@ export class WizardPage extends BasePage {
    * Get the current step number (1-based).
    */
   async getCurrentStep(): Promise<number> {
-    // Primary: parse the "#progress" indicator text ("Step N of 5")
+    // Primary: parse the "#progress" indicator text ("Step N of 6")
     const indicator = await this.stepIndicator.textContent();
     const match = indicator?.match(/step\s*(\d+)/i);
     if (match) {
       return parseInt(match[1], 10);
     }
-    // Fallback: check which #step-N section is visible (5 steps total)
-    for (let i = 1; i <= 5; i++) {
+    // Fallback: check which #step-N section is visible (6 steps total)
+    for (let i = 1; i <= 6; i++) {
       if (await this.page.locator(`#step-${i}`).isVisible()) return i;
     }
     return 0;
@@ -264,16 +292,28 @@ export class WizardPage extends BasePage {
   // ============================================================================
 
   /**
-   * Configure location manually.
+   * Select a timezone from the wizard-timezone dropdown.
+   * @param iana - IANA timezone name (e.g. "America/Los_Angeles")
+   */
+  async selectTimezone(iana: string): Promise<void> {
+    await this.timezoneSelect.selectOption(iana);
+  }
+
+  /**
+   * Configure location manually, with optional timezone selection.
    */
   async configureLocation(
     lat: number,
     lon: number,
-    radiusKm: number
+    radiusKm: number,
+    timezone?: string
   ): Promise<void> {
     await this.fillInput(this.centerLatInput, String(lat));
     await this.fillInput(this.centerLonInput, String(lon));
     await this.fillInput(this.radiusKmInput, String(radiusKm));
+    if (timezone !== undefined) {
+      await this.selectTimezone(timezone);
+    }
   }
 
   /**
@@ -318,18 +358,25 @@ export class WizardPage extends BasePage {
   }
 
   // ============================================================================
-  // Step 5: Review & Connect Actions
+  // Step 5: Review Actions
+  // ============================================================================
+
+  // Step 5 is now a pass-through review step — clicking Next advances to Step 6.
+
+  // ============================================================================
+  // Step 6: Test Your Wall Actions
   // ============================================================================
 
   /**
-   * On Step 5, click "Save & Connect" to post settings and trigger device reboot.
-   * The wizard replaces its content with a "Configuration Saved" handoff message.
+   * On Step 6, confirm the layout matches ("Yes, it matches") to run the RGB color
+   * test sequence and then save + reboot. Waits for the handoff message.
    */
   async completeWizard(): Promise<void> {
-    // Step 5 shows "Save & Connect" as the next-button label
-    await this.nextButton.click();
-    // Wait for the handoff message — device is now saving and rebooting
-    await expect(this.completeMessage).toBeVisible({ timeout: 10_000 });
+    // Step 6 shows the "Yes, it matches" primary button; nav bar is hidden.
+    await expect(this.testYesButton).toBeVisible({ timeout: 5_000 });
+    await this.testYesButton.click();
+    // Wait for the handoff message — RGB test → save → reboot sequence completes
+    await expect(this.completeMessage).toBeVisible({ timeout: 15_000 });
   }
 
   // ============================================================================
@@ -337,8 +384,9 @@ export class WizardPage extends BasePage {
   // ============================================================================
 
   /**
-   * Complete the entire 5-step wizard with provided configuration.
-   * Steps: WiFi (1) → API Keys (2) → Location (3) → Hardware (4) → Review & Connect (5).
+   * Complete the entire 6-step wizard with provided configuration.
+   * Steps: WiFi (1) → API Keys (2) → Location (3) → Hardware (4) → Review (5) → Test Your Wall (6).
+   * On Step 6, clicks "Yes, it matches" to trigger RGB test → save → reboot.
    */
   async completeSetup(config: {
     wifi: { ssid: string; password: string };
@@ -347,7 +395,7 @@ export class WizardPage extends BasePage {
       openSkyClientSecret: string;
       aeroApiKey: string;
     };
-    location: { lat: number; lon: number; radiusKm: number };
+    location: { lat: number; lon: number; radiusKm: number; timezone?: string };
     hardware: { tilesX: number; tilesY: number; tilePixels: number; displayPin?: number };
   }): Promise<void> {
     // Step 1: WiFi
@@ -366,7 +414,8 @@ export class WizardPage extends BasePage {
     await this.configureLocation(
       config.location.lat,
       config.location.lon,
-      config.location.radiusKm
+      config.location.radiusKm,
+      config.location.timezone
     );
     await this.goNext();
 
@@ -381,7 +430,10 @@ export class WizardPage extends BasePage {
     }
     await this.goNext();
 
-    // Step 5: Review & Connect — click "Save & Connect" to complete
+    // Step 5: Review — click Next to advance to Step 6
+    await this.goNext();
+
+    // Step 6: Test Your Wall — click "Yes, it matches" to complete
     await this.completeWizard();
   }
 

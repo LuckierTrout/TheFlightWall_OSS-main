@@ -135,7 +135,8 @@ static bool updateConfigValue(DisplayConfig& display,
     if (strcmp(key, "timezone") == 0) {
         if (!value.is<const char*>()) return false;  // Must be string type
         String tz = value.as<String>();
-        if (tz.length() > 40) return false;  // Max POSIX timezone length
+        if (tz.length() == 0) return false;          // Empty string is not a valid TZ
+        if (tz.length() > 40) return false;          // Max POSIX timezone length
         schedule.timezone = tz;
         return true;
     }
@@ -272,6 +273,7 @@ void ConfigManager::init() {
         ConfigLockGuard guard;
         _persistPending = false;
         _persistScheduledAt = 0;
+        _callbacks.clear();  // Prevent stale callbacks from prior init() calls (e.g., repeated test setUp)
         loadDefaults();
     }
 
@@ -391,11 +393,37 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("aeroapi_key"))    snapshot.network.aeroapi_key = prefs.getString("aeroapi_key", snapshot.network.aeroapi_key);
 
     // Schedule (Foundation release - night mode)
-    if (prefs.isKey("timezone"))        snapshot.schedule.timezone = prefs.getString("timezone", snapshot.schedule.timezone);
-    if (prefs.isKey("sched_enabled"))   snapshot.schedule.sched_enabled = prefs.getUChar("sched_enabled", snapshot.schedule.sched_enabled);
-    if (prefs.isKey("sched_dim_start")) snapshot.schedule.sched_dim_start = prefs.getUShort("sched_dim_start", snapshot.schedule.sched_dim_start);
-    if (prefs.isKey("sched_dim_end"))   snapshot.schedule.sched_dim_end = prefs.getUShort("sched_dim_end", snapshot.schedule.sched_dim_end);
-    if (prefs.isKey("sched_dim_brt"))   snapshot.schedule.sched_dim_brt = prefs.getUChar("sched_dim_brt", snapshot.schedule.sched_dim_brt);
+    // Validate timezone on NVS load using the same rules as applyJson: non-empty, max 40 chars.
+    // Guards against corrupted NVS data (manual writes or older firmware) reaching configTzTime().
+    if (prefs.isKey("timezone")) {
+        String tz = prefs.getString("timezone", snapshot.schedule.timezone);
+        if (tz.length() > 0 && tz.length() <= 40) snapshot.schedule.timezone = tz;
+        // else: keep the default "UTC0" — invalid NVS value is silently ignored
+    }
+    // Validate schedule numeric fields on NVS load using the same rules as applyJson.
+    // Guards against corrupted NVS data (e.g., manual tooling, flash wear) producing
+    // impossible window values that drive tickNightScheduler() every second (Story fn-2.2).
+    // anyCorrupted tracks whether any value was clamped so we can self-heal NVS on first loop tick.
+    bool anyCorrupted = false;
+    if (prefs.isKey("sched_enabled")) {
+        uint8_t v = prefs.getUChar("sched_enabled", snapshot.schedule.sched_enabled);
+        if (v > 1) { LOG_W("ConfigManager", "Corrupted sched_enabled in NVS — reset to 0"); v = 0; anyCorrupted = true; }
+        snapshot.schedule.sched_enabled = v;
+    }
+    if (prefs.isKey("sched_dim_start")) {
+        uint16_t v = prefs.getUShort("sched_dim_start", snapshot.schedule.sched_dim_start);
+        if (v > 1439) { LOG_W("ConfigManager", "Corrupted sched_dim_start in NVS — clamped to 1380"); v = 1380; anyCorrupted = true; }
+        snapshot.schedule.sched_dim_start = v;
+    }
+    if (prefs.isKey("sched_dim_end")) {
+        uint16_t v = prefs.getUShort("sched_dim_end", snapshot.schedule.sched_dim_end);
+        if (v > 1439) { LOG_W("ConfigManager", "Corrupted sched_dim_end in NVS — clamped to 420"); v = 420; anyCorrupted = true; }
+        snapshot.schedule.sched_dim_end = v;
+    }
+    if (prefs.isKey("sched_dim_brt")) {
+        // uint8_t (0-255) is always valid per applyJson rules; no additional clamping needed
+        snapshot.schedule.sched_dim_brt = prefs.getUChar("sched_dim_brt", snapshot.schedule.sched_dim_brt);
+    }
 
     prefs.end();
     {
@@ -407,6 +435,14 @@ void ConfigManager::loadFromNvs() {
         _network = snapshot.network;
         _schedule = snapshot.schedule;
     }
+
+    // Self-heal: if any schedule NVS value was clamped, schedule an immediate corrective persist
+    // so the warning does not repeat on every subsequent boot (values corrected in NVS).
+    if (anyCorrupted) {
+        schedulePersist(0);
+        LOG_W("ConfigManager", "Scheduling NVS self-heal persist for corrupted schedule fields");
+    }
+
     LOG_I("ConfigManager", "NVS values loaded");
 }
 
@@ -647,6 +683,123 @@ void ConfigManager::fireCallbacks() {
     for (auto& cb : callbacks) {
         cb();
     }
+}
+
+// Display mode NVS persistence (Story ds-1.3, AC #8)
+// Key "disp_mode" (9 chars) — within NVS 15-char limit
+String ConfigManager::getDisplayMode() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return "classic_card";
+    }
+    String mode = prefs.getString("disp_mode", "classic_card");
+    prefs.end();
+    if (mode.length() == 0) {
+        return "classic_card";
+    }
+    return mode;
+}
+
+bool ConfigManager::hasDisplayMode() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return false;
+    }
+    bool exists = prefs.isKey("disp_mode");
+    prefs.end();
+    return exists;
+}
+
+void ConfigManager::setDisplayMode(const char* modeId) {
+    if (modeId == nullptr || strlen(modeId) == 0) return;
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) {
+        LOG_E("ConfigManager", "Failed to open NVS for display mode write");
+        return;
+    }
+    prefs.putString("disp_mode", modeId);
+    prefs.end();
+    LOG_I("ConfigManager", "Display mode persisted");
+}
+
+// Upgrade notification NVS persistence (Story ds-3.2, AC #4)
+void ConfigManager::setUpgNotif(bool enabled) {
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) {
+        LOG_E("ConfigManager", "Failed to open NVS for upg_notif write");
+        return;
+    }
+    prefs.putUChar("upg_notif", enabled ? 1 : 0);
+    prefs.end();
+}
+
+bool ConfigManager::getUpgNotif() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return false;
+    }
+    bool val = prefs.getUChar("upg_notif", 0) == 1;
+    prefs.end();
+    return val;
+}
+
+// Per-mode NVS settings (Story dl-1.1, AC #3/#6)
+// Key format: m_{abbrev}_{key} — composed key must be ≤15 chars (NVS limit).
+// Read path: never writes to NVS (AC #3 — no accidental key creation on first read).
+// Write path: validates range for known mode/key combos, persists immediately.
+
+int32_t ConfigManager::getModeSetting(const char* abbrev, const char* key, int32_t defaultValue) {
+    if (abbrev == nullptr || key == nullptr) return defaultValue;
+
+    // Build composed NVS key: m_{abbrev}_{key}
+    char nvsKey[16];
+    int len = snprintf(nvsKey, sizeof(nvsKey), "m_%s_%s", abbrev, key);
+    if (len < 0 || len >= (int)sizeof(nvsKey)) {
+        LOG_E("ConfigManager", "Mode setting key too long");
+        return defaultValue;
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return defaultValue;
+    }
+    if (!prefs.isKey(nvsKey)) {
+        prefs.end();
+        return defaultValue;
+    }
+    int32_t val = prefs.getInt(nvsKey, defaultValue);
+    prefs.end();
+    return val;
+}
+
+bool ConfigManager::setModeSetting(const char* abbrev, const char* key, int32_t value) {
+    if (abbrev == nullptr || key == nullptr) return false;
+
+    // Build composed NVS key: m_{abbrev}_{key}
+    char nvsKey[16];
+    int len = snprintf(nvsKey, sizeof(nvsKey), "m_%s_%s", abbrev, key);
+    if (len < 0 || len >= (int)sizeof(nvsKey)) {
+        LOG_E("ConfigManager", "Mode setting key too long");
+        return false;
+    }
+
+    // Validate known mode/key ranges
+    if (strcmp(abbrev, "clock") == 0 && strcmp(key, "format") == 0) {
+        if (value < 0 || value > 1) return false;  // Only 0 (24h) or 1 (12h)
+    }
+    if (strcmp(abbrev, "depbd") == 0 && strcmp(key, "rows") == 0) {
+        if (value < 1 || value > 4) return false;  // Clamp 1-4 (AC #1)
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) {
+        LOG_E("ConfigManager", "Failed to open NVS for mode setting write");
+        return false;
+    }
+    prefs.putInt(nvsKey, value);
+    prefs.end();
+    LOG_I("ConfigManager", "Mode setting persisted");
+    return true;
 }
 
 // Compile-time URL accessors — these never change at runtime

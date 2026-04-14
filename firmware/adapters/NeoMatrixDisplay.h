@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <vector>
 #include "interfaces/BaseDisplay.h"
+#include "interfaces/DisplayMode.h"
 #include "core/ConfigManager.h"
 #include "core/LayoutEngine.h"
 
@@ -23,6 +24,11 @@ public:
     void updateBrightness(uint8_t brightness);
     void renderFlight(const std::vector<FlightInfo> &flights, size_t index);
     bool reconfigureFromConfig();
+
+    // Display pipeline API (Story ds-1.5, Architecture D3)
+    RenderContext buildRenderContext() const;
+    void show();
+    void displayFallbackCard(const std::vector<FlightInfo> &flights);
 
     // Calibration mode (Story 4.2)
     void setCalibrationMode(bool enabled);
@@ -58,9 +64,7 @@ private:
     // Positioning mode — independent from calibration
     volatile bool _positioningMode = false;
 
-    void drawTextLine(int16_t x, int16_t y, const String &text, uint16_t color);
     String makeFlightLine(const FlightInfo &f);
-    String truncateToColumns(const String &text, int maxColumns);
     void displaySingleFlightCard(const FlightInfo &f);
     void displayLoadingScreen();
     bool rebuildMatrix(const HardwareConfig &hw, const DisplayConfig &disp);
@@ -71,7 +75,4 @@ private:
     void renderLogoZone(const FlightInfo &f, const Rect &zone);
     void renderFlightZone(const FlightInfo &f, const Rect &zone);
     void renderTelemetryZone(const FlightInfo &f, const Rect &zone);
-    void drawBitmapRGB565(int16_t x, int16_t y, uint16_t w, uint16_t h,
-                          const uint16_t *bitmap, uint16_t zoneW, uint16_t zoneH);
-    String formatTelemetryValue(double value, const char* suffix, int decimals = 0);
 };

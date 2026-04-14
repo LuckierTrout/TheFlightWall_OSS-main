@@ -11,8 +11,11 @@
   <header class="dash-header">
     <h1>FlightWall</h1>
     <p class="dash-ip" id="device-ip"></p>
-    <nav><a href="/health.html">System Health</a></nav>
+    <nav><a href="/health.html">System Health</a> <a href="#mode-picker">Display Modes</a></nav>
   </header>
+
+  <!-- Upgrade notification banner host (ds-3.6) — populated by JS -->
+  <div id="mode-upgrade-banner-host"></div>
 
   <main class="dash-cards">
     <!-- Display Settings Card -->
@@ -43,9 +46,9 @@
       <div class="color-preview" id="color-preview"></div>
     </section>
 
-    <!-- Mode Picker Card (Story dl-1.5) -->
-    <section class="card" id="mode-picker-card">
-      <h2>Display Mode</h2>
+    <!-- Mode Picker (Story ds-3.3) -->
+    <section class="card" id="mode-picker">
+      <h2 id="mode-picker-heading" tabindex="-1">Display Mode</h2>
       <div class="mode-status-line" id="modeStatusLine">
         Active: <span class="mode-status-name" id="modeStatusName">&mdash;</span>
         (<span class="mode-status-reason" id="modeStatusReason">loading</span>)
@@ -255,6 +258,38 @@
         <p id="ota-reboot-text"></p>
       </div>
       <p class="helper-copy">Before migrating, download your settings backup from <a href="#system-card">System</a> below.</p>
+    </section>
+
+    <!-- Night Mode Card (Story fn-2.3) -->
+    <section class="card" id="nightmode-card">
+      <h2>Night Mode</h2>
+
+      <div class="nm-status" id="nm-status" aria-live="polite">
+        <span class="nm-ntp-badge" id="nm-ntp-badge">NTP: --</span>
+        <span class="nm-sched-status" id="nm-sched-status"></span>
+      </div>
+
+      <label class="nm-toggle-label">
+        <input type="checkbox" id="nm-enabled">
+        <span>Enable Schedule</span>
+      </label>
+
+      <div class="nm-fields" id="nm-fields">
+        <label for="nm-dim-start">Dim Start</label>
+        <input type="time" id="nm-dim-start" value="23:00">
+
+        <label for="nm-dim-end">Dim End</label>
+        <input type="time" id="nm-dim-end" value="07:00">
+
+        <label for="nm-dim-brt">Dim Brightness</label>
+        <div class="range-row">
+          <input type="range" id="nm-dim-brt" min="0" max="255" value="10">
+          <span class="range-val" id="nm-dim-brt-val">10</span>
+        </div>
+
+        <label for="nm-timezone">Timezone</label>
+        <select id="nm-timezone" class="cal-select"></select>
+      </div>
     </section>
 
     <!-- System / Danger Zone Card -->

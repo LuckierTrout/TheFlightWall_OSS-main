@@ -1,0 +1,57 @@
+cli_args:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+- --debug
+cli_args_masked:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+- --debug
+current_phase: null
+ended_at: '2026-04-13T17:48:01.642056Z'
+epic: fn-2
+phase_events:
+- duration_ms: null
+  epic: fn-2
+  error_type: null
+  event_type: started
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  status: null
+  story: fn-2.3
+  termination_metadata: null
+  timestamp: '2026-04-13T17:39:29.318472Z'
+- duration_ms: 512252
+  epic: fn-2
+  error_type: 'Insufficient validations: 1/2 required. Check provider configuration
+    and network connectivity.'
+  event_type: completed
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  status: error
+  story: fn-2.3
+  termination_metadata: null
+  timestamp: '2026-04-13T17:48:01.570771Z'
+phases:
+- duration_ms: 512252
+  ended_at: '2026-04-13T17:48:01.570771Z'
+  error_type: 'Insufficient validations: 1/2 required. Check provider configuration
+    and network connectivity.'
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  provider_count: 5
+  started_at: '2026-04-13T17:39:29.318472Z'
+  status: error
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 0eff9991
+started_at: '2026-04-13T17:39:29.305465Z'
+status: completed
+story: fn-2.3

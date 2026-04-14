@@ -1,0 +1,139 @@
+cli_args:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+cli_args_masked:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+current_phase:
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  started_at: '2026-04-14T01:05:19.847651Z'
+ended_at: null
+epic: ds-1
+phase_events:
+- duration_ms: null
+  epic: ds-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  status: null
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T00:40:51.001132Z'
+- duration_ms: 865865
+  epic: ds-1
+  error_type: null
+  event_type: completed
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  status: success
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T00:55:16.866394Z'
+- duration_ms: null
+  epic: ds-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: VALIDATE_STORY_SYNTHESIS
+  provider: claude
+  status: null
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T00:55:16.882206Z'
+- duration_ms: 239750
+  epic: ds-1
+  error_type: null
+  event_type: completed
+  model: opus
+  phase: VALIDATE_STORY_SYNTHESIS
+  provider: claude
+  status: success
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T00:59:16.632311Z'
+- duration_ms: null
+  epic: ds-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  status: null
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T00:59:16.647000Z'
+- duration_ms: 363182
+  epic: ds-1
+  error_type: null
+  event_type: completed
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  status: success
+  story: ds-1.1
+  termination_metadata:
+    termination_info:
+      max_file:
+      - /Users/christianlee/App-Development/TheFlightWall_OSS-main/_bmad-output/implementation-artifacts/stories/ds-1-1-heap-baseline-measurement-and-core-abstractions.md
+      - 7
+      rate_triggered: false
+      terminated: false
+      terminated_reason: null
+      total_calls: 26
+    termination_reason: null
+  timestamp: '2026-04-14T01:05:19.829454Z'
+- duration_ms: null
+  epic: ds-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  status: null
+  story: ds-1.1
+  termination_metadata: null
+  timestamp: '2026-04-14T01:05:19.847651Z'
+phases:
+- duration_ms: 865865
+  ended_at: '2026-04-14T00:55:16.866394Z'
+  error_type: null
+  model: opus
+  phase: VALIDATE_STORY
+  provider: claude
+  provider_count: 5
+  started_at: '2026-04-14T00:40:51.001132Z'
+  status: success
+- duration_ms: 239750
+  ended_at: '2026-04-14T00:59:16.632311Z'
+  error_type: null
+  model: opus
+  phase: VALIDATE_STORY_SYNTHESIS
+  provider: claude
+  provider_count: 1
+  started_at: '2026-04-14T00:55:16.882206Z'
+  status: success
+- duration_ms: 363182
+  ended_at: '2026-04-14T01:05:19.829454Z'
+  error_type: null
+  model: opus
+  phase: DEV_STORY
+  provider: claude
+  provider_count: 1
+  started_at: '2026-04-14T00:59:16.647000Z'
+  status: success
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 4f28557a
+started_at: '2026-04-14T00:40:50.991172Z'
+status: running
+story: ds-1.1

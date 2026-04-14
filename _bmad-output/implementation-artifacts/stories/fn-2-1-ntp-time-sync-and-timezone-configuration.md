@@ -1,6 +1,6 @@
 # Story fn-2.1: NTP Time Sync & Timezone Configuration
 
-Status: Ready for Review
+Status: Done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -321,15 +321,25 @@ All 7 tasks and all subtasks completed. All 6 acceptance criteria satisfied:
 1. **AC #1 (WiFi → NTP):** `configTzTime()` called in `WiFiManager::_onConnected()` with POSIX TZ from `ConfigManager::getSchedule().timezone` and servers `pool.ntp.org`, `time.nist.gov`.
 2. **AC #2 (NTP success):** `onNtpSync` callback registered via `sntp_set_time_sync_notification_cb()`, sets `g_ntpSynced = true` and `SystemStatus::set(NTP, OK, "Clock synced")`.
 3. **AC #3 (NTP failure):** `g_ntpSynced` defaults to `false`, initial status set to WARNING. LWIP auto-retries (~1hr). No crash path — callback is fire-and-forget.
-4. **AC #4 (Timezone hot-reload):** `configTzTime()` called in `ConfigManager::onChange` lambda on every config change. Does NOT reset `g_ntpSynced`.
+4. **AC #4 (Timezone hot-reload):** `configTzTime()` called in `ConfigManager::onChange` lambda only when timezone value changes (guarded by `s_lastAppliedTz` cache). Does NOT reset `g_ntpSynced`.
 5. **AC #5 (TZ_MAP):** ~75 IANA-to-POSIX entries added to both `dashboard.js` and `wizard.js`. `getTimezoneConfig()` returns `{ iana, posix }` using `Intl.DateTimeFormat().resolvedOptions().timeZone`.
 6. **AC #6 (API status):** `ntp_synced` and `schedule_active` fields added to `GET /api/status` response.
 
-**Tests added:** 4 new Unity tests in `test_config_manager/test_main.cpp`:
+**Code Review Synthesis fixes applied (2026-04-13):**
+- `onNtpSync()`: Added `sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED` guard — callback can fire on reset/intermediate SNTP events; now only sets `g_ntpSynced=true` on COMPLETED status.
+- `onChange` lambda: Guarded `configTzTime()` with `static String s_lastAppliedTz` cache — prevents SNTP from restarting on unrelated config writes (brightness, fetch_interval, etc.).
+
+**Code Review Synthesis fixes applied (2026-04-13) — Round 2 (3 validators):**
+- `main.cpp` onChange: Moved `s_lastAppliedTz` OUTSIDE the lambda and seeded it with `ConfigManager::getSchedule().timezone` before `onChange` registration. Previously it was a static inside the lambda initialised to `""`, causing `configTzTime()` to fire on the very first unrelated config write (e.g., brightness). Lambda now captures by reference `[&s_lastAppliedTz]`.
+- `ConfigManager.cpp` timezone validation: Added `if (tz.length() == 0) return false;` guard — empty string was previously accepted and would reach `configTzTime("")` on WiFi connect / hot-reload.
+- `test_config_manager/test_main.cpp`: Added empty-timezone rejection test case inside `test_apply_json_schedule_validation`.
+
+**Tests added:** 5 new Unity tests in `test_config_manager/test_main.cpp` (4 original + 1 added in Round 3):
 - `test_ntp_status_transitions` — WARNING→OK state transitions
 - `test_schedule_timezone_default` — default "UTC0" verification
 - `test_timezone_is_hot_reload_key` — all 5 schedule keys are not reboot-required
-- `test_ntp_status_in_json_output` — NTP subsystem in JSON with both states
+- `test_ntp_status_in_json_output` — NTP subsystem via `toExtendedJson()` matching production code path (updated Round 3 to use `obj["subsystems"]["ntp"]`)
+- `test_nvs_invalid_timezone_ignored` — NVS-loaded empty timezone is rejected; default "UTC0" preserved (added Round 3)
 
 ### Change Log
 
@@ -344,4 +354,39 @@ All 7 tasks and all subtasks completed. All 6 acceptance criteria satisfied:
 - `firmware/data-src/wizard.js` (modified — added TZ_MAP object with ~75 entries and getTimezoneConfig() function)
 - `firmware/data/dashboard.js.gz` (regenerated)
 - `firmware/data/wizard.js.gz` (regenerated)
-- `firmware/test/test_config_manager/test_main.cpp` (modified — added 4 NTP tests)
+- `firmware/core/ConfigManager.cpp` (modified — NVS timezone load now validates length > 0 && <= 40; Round 2: empty-string guard in applyJson; Round 3: same guard applied to loadFromNvs path)
+- `firmware/test/test_config_manager/test_main.cpp` (modified — 4 NTP tests in Round 1+2; Round 3: updated test_ntp_status_in_json_output to use toExtendedJson(), added test_nvs_invalid_timezone_ignored)
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-13
+- **Reviewer:** AI Code Review Synthesis (2 validators)
+- **Evidence Score:** Validator A: 2.7 (APPROVED) / Validator B: 4.6 (MAJOR REWORK) → Synthesized: APPROVED WITH RESERVATIONS
+- **Issues Found:** 7 verified (2 fixed, 5 deferred/dismissed)
+- **Issues Fixed:** 2
+- **Action Items Created:** 3
+
+#### Review Follow-ups (AI)
+- [ ] [AI-Review] MEDIUM: Deduplicate TZ_MAP — move shared map to `common.js` so dashboard.js and wizard.js share a single source of truth (`firmware/data-src/dashboard.js`, `firmware/data-src/wizard.js`) — defer to fn-2.3 when timezone dropdown UI is built
+- [ ] [AI-Review] LOW: `schedule_active` field semantics — rename to `schedule_enabled` or compute real in-window state when Night Mode scheduler (fn-2.2) is implemented (`firmware/adapters/WebPortal.cpp:787`)
+- [ ] [AI-Review] LOW: `getTimezoneConfig()` silent UTC fallback — return `{ iana, posix: null }` for unmapped zones so fn-2.3 UI can surface an "unsupported timezone" warning instead of silently using UTC (`firmware/data-src/dashboard.js:101`, `firmware/data-src/wizard.js`)
+
+### Review: 2026-04-13 (Round 2 — 3 validators)
+- **Reviewer:** AI Code Review Synthesis (3 validators)
+- **Evidence Score:** Validator A: (no score — output truncated) / Validator B: 5.1 (MAJOR REWORK) / Validator C: 4.5 (MAJOR REWORK) → Synthesized: APPROVED WITH RESERVATIONS
+- **Issues Found:** 2 new verified bugs fixed; 6 re-raised items confirmed dismissed/deferred
+- **Issues Fixed:** 2
+- **Action Items Created:** 0 new (existing 3 follow-ups remain)
+
+#### Review Follow-ups (AI) — Round 2
+*(No new action items — all remaining issues already tracked above or confirmed as accepted design risks.)*
+
+### Review: 2026-04-13 (Round 3 — 3 validators)
+- **Reviewer:** AI Code Review Synthesis (3 validators)
+- **Evidence Score:** Validator A: 4.0 (MAJOR REWORK) / Validator B: 4.1 (MAJOR REWORK) / Validator C: (output truncated) → Synthesized: APPROVED WITH RESERVATIONS
+- **Issues Found:** 2 new verified (both fixed); 8 re-raised items confirmed dismissed/deferred
+- **Issues Fixed:** 2
+- **Action Items Created:** 0 new (existing 3 follow-ups remain)
+
+#### Review Follow-ups (AI) — Round 3
+*(No new action items — 2 new verified issues were both fixed inline; all remaining open items already tracked in Round 1 follow-ups above.)*

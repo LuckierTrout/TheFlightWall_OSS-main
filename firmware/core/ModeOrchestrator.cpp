@@ -1,4 +1,5 @@
 #include "core/ModeOrchestrator.h"
+#include "core/ModeRegistry.h"
 #include "utils/Log.h"
 #include <cstring>
 
@@ -56,6 +57,10 @@ const char* ModeOrchestrator::getActiveModeName() {
     return _activeModeName;
 }
 
+const char* ModeOrchestrator::getManualModeId() {
+    return _manualModeId;
+}
+
 void ModeOrchestrator::onManualSwitch(const char* modeId, const char* modeName) {
     _state = OrchestratorState::MANUAL;
     strncpy(_activeModeId, modeId, sizeof(_activeModeId) - 1);
@@ -67,6 +72,12 @@ void ModeOrchestrator::onManualSwitch(const char* modeId, const char* modeName) 
     _manualModeId[sizeof(_manualModeId) - 1] = '\0';
     strncpy(_manualModeName, modeName, sizeof(_manualModeName) - 1);
     _manualModeName[sizeof(_manualModeName) - 1] = '\0';
+    // Story dl-1.3, AC #1: drive ModeRegistry so LED mode actually changes.
+    // AC #5: if requestSwitch fails (unknown mode / heap guard), leave
+    // _activeModeId aligned with what the registry reports after tick.
+    if (!ModeRegistry::requestSwitch(modeId)) {
+        LOG_W("ModeOrch", "Manual switch: requestSwitch failed for mode");
+    }
     LOG_I("ModeOrch", "Manual switch");
 }
 
@@ -77,6 +88,12 @@ void ModeOrchestrator::onIdleFallback() {
     _activeModeId[sizeof(_activeModeId) - 1] = '\0';
     strncpy(_activeModeName, "Clock", sizeof(_activeModeName) - 1);
     _activeModeName[sizeof(_activeModeName) - 1] = '\0';
+    // Story dl-1.2, AC #1: drive ModeRegistry into clock mode.
+    // AC #6: safe if clock is already active — requestSwitch is idempotent
+    // (ModeRegistry::tick skips switch when requested == active index).
+    if (!ModeRegistry::requestSwitch("clock")) {
+        LOG_W("ModeOrch", "Failed to request clock mode via registry");
+    }
     LOG_I("ModeOrch", "Idle fallback activated (zero flights)");
 }
 
@@ -88,6 +105,13 @@ void ModeOrchestrator::onFlightsRestored() {
     _activeModeId[sizeof(_activeModeId) - 1] = '\0';
     strncpy(_activeModeName, _manualModeName, sizeof(_activeModeName) - 1);
     _activeModeName[sizeof(_activeModeName) - 1] = '\0';
+    // Story dl-1.2, AC #2: restore owner's saved manual mode via registry.
+    // If requestSwitch fails (e.g. mode unregistered), log warning and keep
+    // orchestrator state consistent — leave in MANUAL but registry_error
+    // will surface on next GET (reconciliation documented here).
+    if (!ModeRegistry::requestSwitch(_manualModeId)) {
+        LOG_W("ModeOrch", "Failed to restore manual mode via registry");
+    }
     LOG_I("ModeOrch", "Flights restored, back to MANUAL");
 }
 

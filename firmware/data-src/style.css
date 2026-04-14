@@ -264,6 +264,7 @@ body{
   .toast{transition:none;transform:none}
   .toast-visible{opacity:1}
   .toast-exit{opacity:0;transition:opacity 0.15s ease}
+  .mode-card.switching{animation:none;border-color:var(--primary);border-left-color:var(--primary)}
 }
 
 /* Settings import zone (wizard) */
@@ -506,7 +507,7 @@ body{
 }
 .logo-list-cancel-btn:hover{border-color:var(--text-muted)}
 
-/* Mode Picker (Story dl-1.5) */
+/* Mode Picker (Story ds-3.3) */
 .mode-status-line{
   font-size:0.9rem;padding:8px 0;margin-bottom:12px;
   border-bottom:1px solid var(--border);
@@ -517,14 +518,92 @@ body{
 .mode-cards-list{display:flex;flex-direction:column;gap:8px}
 .mode-card{
   padding:12px;background:var(--bg);
-  border:1px solid var(--border);border-radius:var(--radius);
+  border:1px solid var(--border);border-left:4px solid var(--border);
+  border-radius:var(--radius);
   cursor:pointer;transition:border-color 0.15s;
 }
-.mode-card:hover{border-color:var(--primary)}
-.mode-card.active{border-color:var(--primary);background:rgba(88,166,255,0.08)}
+.mode-card:hover{border-color:var(--primary);border-left-color:var(--primary)}
+.mode-card.active{
+  border-color:var(--primary);border-left:4px solid var(--primary);
+  background:rgba(88,166,255,0.08);
+}
+.mode-card-header{display:flex;justify-content:space-between;align-items:center}
 .mode-card-name{font-size:0.9375rem;font-weight:500}
 .mode-card-subtitle{font-size:0.75rem;color:var(--text-muted);margin-top:2px}
-.mode-card.switching{opacity:0.6;pointer-events:none}
+.mode-active-indicator{font-size:0.75rem;color:var(--success);font-weight:600;display:flex;align-items:center;gap:4px}
+.mode-active-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--success);
+}
+.mode-card.switching{
+  opacity:0.7;
+  border-color:var(--primary);border-left-color:var(--primary);
+  animation:mode-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mode-pulse{
+  0%,100%{border-color:var(--primary);border-left-color:var(--primary)}
+  50%{border-color:var(--primary-hover);border-left-color:var(--primary-hover)}
+}
+.mode-card.disabled{opacity:0.5;pointer-events:none}
+.mode-card-alert{
+  font-size:0.8125rem;color:var(--error);margin-top:6px;
+  padding:6px 8px;border-radius:4px;
+  background:rgba(248,81,73,0.1);
+}
+
+/* Mode schematic grid (ds-3.3 AC #3) */
+.mode-schematic{
+  height:80px;margin-top:8px;
+  display:grid;
+  grid-template-columns:repeat(100,minmax(0,1fr));
+  grid-template-rows:repeat(100,minmax(0,1fr));
+  gap:1px;border-radius:4px;overflow:hidden;
+  background:var(--border);
+}
+.mode-schematic-zone{
+  background:var(--surface);
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.625rem;color:var(--text-muted);
+  overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  padding:0 2px;
+}
+
+/* Night Mode card (Story fn-2.3) */
+.nm-status{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.nm-ntp-badge{
+  font-size:0.75rem;font-weight:600;padding:2px 8px;
+  border-radius:var(--radius);background:var(--border);color:var(--text-muted);
+}
+.nm-ntp-ok{background:var(--success);color:var(--bg)}
+.nm-ntp-warn{background:#d29922;color:var(--bg)}
+.nm-sched-status{font-size:0.8125rem;color:var(--text-muted)}
+.nm-dimming{color:var(--primary);font-weight:600}
+.nm-active{color:var(--success)}
+.nm-inactive{color:var(--text-muted)}
+
+.nm-toggle-label{
+  display:flex;align-items:center;gap:8px;
+  font-size:0.875rem;color:var(--text);
+  cursor:pointer;margin-bottom:12px;
+}
+.nm-toggle-label input[type="checkbox"]{
+  width:18px;height:18px;accent-color:var(--primary);cursor:pointer;
+}
+
+.nm-fields{transition:opacity 0.2s}
+.nm-fields-disabled{opacity:0.5;pointer-events:none}
+.nm-fields input[type="time"]{
+  width:100%;padding:8px;font-size:1rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;
+}
+.nm-fields input[type="time"]:focus{border-color:var(--primary)}
+/* Cursor-only rules for disabled inputs — opacity is handled by the .nm-fields-disabled
+   container to avoid CSS opacity multiplication (container 0.5 × element 0.5 = 0.25). */
+.nm-fields input[type="time"]:disabled{cursor:default}
+.nm-fields select:disabled{cursor:default}
+.nm-fields input[type="range"]:disabled{cursor:default}
 
 /* Danger zone / System card (Story 2.5) */
 .card-danger{border-color:var(--error)}
@@ -586,6 +665,30 @@ body{
   border-radius:var(--radius);
 }
 .banner-warning .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
+/* Upgrade notification banner (Story ds-3.6) */
+.banner-info{
+  background:rgba(88,166,255,0.08);border-left:4px solid var(--primary);
+  padding:12px 16px;border-radius:var(--radius);
+  display:flex;justify-content:space-between;align-items:flex-start;
+  margin-bottom:12px;font-size:0.875rem;
+}
+.banner-info-content{flex:1;min-width:0}
+.banner-info-content strong{display:block;margin-bottom:8px}
+.banner-info-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.banner-info .banner-info-btn-primary{
+  width:auto;display:inline-block;padding:8px 16px;
+  font-size:0.875rem;margin-top:0;min-height:36px;
+}
+.banner-info .link-btn{padding:4px 0;font-size:0.875rem}
+.banner-info .dismiss-btn{
+  background:none;border:none;color:var(--text);cursor:pointer;
+  font-size:1.25rem;min-width:44px;min-height:44px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius);flex-shrink:0;
+}
+.banner-info .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
 .ota-file-info .apply-btn{min-height:44px;margin-top:0;width:auto}
 .btn-ota-cancel{width:auto;padding:10px 16px;margin-top:0;min-height:44px}
 .btn-secondary{
@@ -596,3 +699,34 @@ body{
   transition:border-color 0.15s,background 0.15s;
 }
 .btn-secondary:hover{border-color:var(--text-muted);background:rgba(255,255,255,0.03)}
+
+/* Wizard Step 6: Test Your Wall */
+.wizard-test-canvas{margin:var(--gap) 0}
+.wizard-test-canvas canvas{
+  display:block;width:100%;max-height:70vh;object-fit:contain;
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg);
+}
+.wizard-test-question{
+  font-size:1rem;font-weight:600;text-align:center;
+  margin:var(--gap) 0 12px;
+}
+.wizard-test-actions{
+  display:flex;flex-direction:column;gap:8px;
+}
+.wizard-test-actions .nav-btn{
+  width:100%;min-height:44px;text-align:center;
+}
+.wizard-test-status{
+  text-align:center;font-size:1rem;font-weight:500;
+  color:var(--primary);margin-top:var(--gap);
+}
+
+/* Mode Picker responsive layout (ds-3.5) */
+@media (max-width:599px){
+  .mode-cards-list{display:flex;flex-direction:column;gap:8px}
+  .mode-card{min-height:44px}
+}
+@media (min-width:1024px){
+  .mode-cards-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+}

@@ -48,7 +48,7 @@ providers:
 
   multi:
     - provider: gemini
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
     - provider: codex
       model: gpt-5.4
     - provider: kimi
@@ -87,19 +87,17 @@ phase_models:
 
   validate_story:
     - provider: gemini
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
     - provider: opencode
       model: zai-coding-plan/glm-4.7
   code_review:
-    - provider: gemini
-      model: gemini-2.5-flash
     - provider: codex
       model: gpt-5.4
     - provider: kimi
       model: kimi-code/kimi-for-coding
       thinking: true
-    - provider: opencode
-      model: zai-coding-plan/glm-4.7
+    - provider: gemini
+      model: gemini-3-flash-preview
 
 compiler:
   source_context:
@@ -153,18 +151,7 @@ benchmarking:
 
 parallel_delay: 2.0
 
-loop:
-  epic_setup: []
-  story:
-    - create_story
-    - validate_story
-    - validate_story_synthesis
-    - dev_story
-    - code_review
-    - code_review_synthesis
-  epic_teardown: []
-  code_review_rework: true
-  max_rework_attempts: 2
+loop: review_remediate
 
 testarch:
   enabled: false

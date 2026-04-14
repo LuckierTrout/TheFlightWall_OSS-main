@@ -54,6 +54,7 @@ interface DeviceState {
     center_lat: number;
     center_lon: number;
     radius_km: number;
+    timezone: string;
     wifi_ssid: string;
     logo_width_pct: number;
     flight_height_pct: number;
@@ -94,6 +95,7 @@ const state: DeviceState = {
     center_lat: 37.7749,
     center_lon: -122.4194,
     radius_km: 10,
+    timezone: 'UTC0',
     wifi_ssid: 'MockNetwork',
     logo_width_pct: 0,
     flight_height_pct: 0,
@@ -277,6 +279,8 @@ async function handleApiRoute(
       return;
     }
 
+    // Reboot-required keys per ConfigManager (architecture.md + MEMORY.md).
+    // tiles_x / tiles_y / tile_pixels are hot-reload, NOT reboot-required.
     const rebootKeys = [
       'wifi_ssid',
       'wifi_password',
@@ -284,9 +288,6 @@ async function handleApiRoute(
       'os_client_sec',
       'aeroapi_key',
       'display_pin',
-      'tiles_x',
-      'tiles_y',
-      'tile_pixels',
     ];
 
     const applied: string[] = [];
@@ -345,6 +346,18 @@ async function handleApiRoute(
         logo_count: state.logos.length,
       },
     });
+    return;
+  }
+
+  // POST /api/positioning/start — starts LED tile positioning pattern (Step 6)
+  if (pathname === '/api/positioning/start' && method === 'POST') {
+    sendJson(res, { ok: true, message: 'Positioning pattern started' });
+    return;
+  }
+
+  // POST /api/positioning/stop — stops LED tile positioning pattern (Step 6)
+  if (pathname === '/api/positioning/stop' && method === 'POST') {
+    sendJson(res, { ok: true, message: 'Positioning pattern stopped' });
     return;
   }
 
@@ -413,6 +426,8 @@ API Endpoints:
   GET  /api/layout       - Current display layout
   GET  /api/wifi/scan    - WiFi network scan
   GET  /api/logos        - Uploaded logos list
+  POST /api/positioning/start - Start LED tile positioning pattern
+  POST /api/positioning/stop  - Stop LED tile positioning pattern
   POST /api/reboot       - Trigger device reboot
   POST /api/reset        - Factory reset
 

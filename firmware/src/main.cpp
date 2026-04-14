@@ -17,6 +17,7 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "esp_task_wdt.h"
+#include "esp_system.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_sntp.h"
@@ -32,6 +33,11 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "core/LayoutEngine.h"
 #include "core/LogoManager.h"
 #include "core/ModeOrchestrator.h"
+#include "core/ModeRegistry.h"
+#include "modes/ClassicCardMode.h"
+#include "modes/LiveFlightCardMode.h"
+#include "modes/ClockMode.h"
+#include "modes/DeparturesBoardMode.h"
 
 // Firmware version defined in platformio.ini build_flags
 #ifndef FW_VERSION
@@ -39,6 +45,27 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #endif
 
 #ifndef PIO_UNIT_TESTING
+
+// --- Mode table (Story ds-1.3, AC #2) ---
+// Static factory functions and memory requirement wrappers for ModeRegistry.
+// Adding a future mode = new modes/*.h/.cpp + one ModeEntry line here (AR5).
+
+static DisplayMode* classicCardFactory() { return new ClassicCardMode(); }
+static DisplayMode* liveFlightCardFactory() { return new LiveFlightCardMode(); }
+static DisplayMode* clockFactory() { return new ClockMode(); }
+static DisplayMode* departuresBoardFactory() { return new DeparturesBoardMode(); }
+static uint32_t classicCardMemReq() { return ClassicCardMode::MEMORY_REQUIREMENT; }
+static uint32_t liveFlightCardMemReq() { return LiveFlightCardMode::MEMORY_REQUIREMENT; }
+static uint32_t clockMemReq() { return ClockMode::MEMORY_REQUIREMENT; }
+static uint32_t departuresBoardMemReq() { return DeparturesBoardMode::MEMORY_REQUIREMENT; }
+
+static const ModeEntry MODE_TABLE[] = {
+    { "classic_card",      "Classic Card",       classicCardFactory,      classicCardMemReq,      0, &ClassicCardMode::_descriptor,         nullptr },
+    { "live_flight",       "Live Flight Card",   liveFlightCardFactory,   liveFlightCardMemReq,   1, &LiveFlightCardMode::_descriptor,      nullptr },
+    { "clock",             "Clock",              clockFactory,            clockMemReq,            2, &ClockMode::_descriptor,               &CLOCK_SCHEMA },
+    { "departures_board",  "Departures Board",   departuresBoardFactory,  departuresBoardMemReq,  3, &DeparturesBoardMode::_descriptor,     &DEPBD_SCHEMA },
+};
+static constexpr uint8_t MODE_COUNT = sizeof(MODE_TABLE) / sizeof(MODE_TABLE[0]);
 
 // --- Shared data structures (Task 1) ---
 
@@ -66,11 +93,32 @@ static std::atomic<bool> g_configChanged(false);
 // Rule #30: cross-core atomics live in main.cpp only
 static std::atomic<bool> g_ntpSynced(false);
 
+// Flight count for orchestrator idle fallback (Story dl-1.2, AC #3)
+// Rule #30: cross-core atomics live in main.cpp only
+// Updated after each fetch; read by periodic orchestrator tick in loop().
+static std::atomic<uint8_t> g_flightCount(0);
+
+// Night mode scheduler state (Story fn-2.2)
+// Rule #30: cross-core atomics live in main.cpp only
+static unsigned long g_lastSchedCheckMs = 0;
+static std::atomic<bool> g_schedDimming(false);    // true when scheduler is actively overriding brightness
+static std::atomic<bool> g_scheduleChanged(false); // dedicated flag for schedule state transitions (Core 1→Core 0)
+static bool g_lastNtpSynced = false;               // for NTP state transition logging (Core 1 only — no atomic needed)
+static constexpr unsigned long SCHED_CHECK_INTERVAL_MS = 1000;
+static_assert(SCHED_CHECK_INTERVAL_MS <= 2000,
+    "SCHED_CHECK_INTERVAL_MS must be <=2s to meet 1-second display response NFR");
+
 // Public accessor for WebPortal and other modules (declared extern in consumers)
 bool isNtpSynced() { return g_ntpSynced.load(); }
+bool isScheduleDimming() { return g_schedDimming.load(); }
 
-// SNTP sync notification callback — fires on LWIP task (Core 1) when time syncs
+// SNTP sync notification callback — fires on LWIP task (Core 1) when time syncs.
+// Guard: only flag success when sync is actually COMPLETED; the callback can also
+// fire on intermediate or reset events (e.g., SNTP_SYNC_STATUS_RESET).
 static void onNtpSync(struct timeval* tv) {
+    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+        return;  // Ignore reset or in-progress SNTP events
+    }
     g_ntpSynced.store(true);
     SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Clock synced");
     LOG_I("NTP", "Time synchronized");
@@ -115,6 +163,11 @@ static AsyncWebServer g_webServer(80);
 static WebPortal g_webPortal;
 
 static bool g_forcedApSetup = false;  // Set if boot button held during startup
+
+// --- Watchdog recovery detection (Story dl-1.4, AC #1) ---
+// Set true when esp_reset_reason() indicates a watchdog reset.
+// Policy: after WDT reboot, always force "clock" mode (simplest safe default).
+static bool g_wdtRecoveryBoot = false;
 
 // GPIO 0 is the "BOOT" button on most ESP32 devkits.
 // Holding it low during boot forces AP setup mode.
@@ -206,6 +259,7 @@ static void showInitialWiFiMessage()
             g_display.displayMessage(String("WiFi Failed"));
             break;
     }
+    g_display.show();  // Setup-time: commit message before display task processes frames
 }
 
 static void queueWiFiStateMessage(WiFiState state)
@@ -294,19 +348,30 @@ void displayTask(void *pvParameters)
     HardwareConfig localHw = ConfigManager::getHardware();
     TimingConfig localTiming = ConfigManager::getTiming();
 
-    // Flight cycling state (owned by display task)
-    size_t currentFlightIndex = 0;
-    unsigned long lastCycleMs = millis();
+    // Cached RenderContext for mode system (Story ds-1.5, AC #3)
+    // Rebuilt on config/schedule changes or first frame
+    static RenderContext cachedCtx = {};
+    bool ctxInitialized = false;
+
     bool statusMessageVisible = false;
     unsigned long statusMessageUntilMs = 0;
+
+    // Empty flight vector for frames when queue has no data (AC #6)
+    static std::vector<FlightInfo> emptyFlights;
 
     // Subscribe to task watchdog
     esp_task_wdt_add(NULL);
 
     for (;;)
     {
-        // Check for config changes (atomic flag from Core 1)
-        if (g_configChanged.exchange(false))
+        // Check for config changes OR schedule state transitions (Story fn-2.2)
+        // g_configChanged: fired by ConfigManager onChange (any setting change)
+        // g_scheduleChanged: fired by tickNightScheduler() on dim window enter/exit
+        // IMPORTANT: evaluate BOTH atomics unconditionally before the `if` to avoid the
+        // C++ short-circuit `||` leaving g_scheduleChanged stale when g_configChanged is also true.
+        bool _cfgChg  = g_configChanged.exchange(false);
+        bool _schedChg = g_scheduleChanged.exchange(false);
+        if (_cfgChg || _schedChg)
         {
             DisplayConfig newDisp = ConfigManager::getDisplay();
             HardwareConfig newHw = ConfigManager::getHardware();
@@ -337,7 +402,27 @@ void displayTask(void *pvParameters)
             localDisp = newDisp;
             localTiming = newTiming;
             g_display.updateBrightness(localDisp.brightness);
+
+            // Apply scheduler brightness override if active (Story fn-2.2)
+            // g_schedDimming is std::atomic<bool> — .load() for cross-core safety.
+            // This also handles AC #6: any manual brightness API change triggers g_configChanged,
+            // causing this handler to run and immediately re-apply the dim override if still in window.
+            if (g_schedDimming.load()) {
+                ScheduleConfig sched = ConfigManager::getSchedule();
+                g_display.updateBrightness(sched.sched_dim_brt);
+            }
+
+            // Rebuild cached RenderContext after config/schedule updates (AC #3)
+            cachedCtx = g_display.buildRenderContext();
+            ctxInitialized = true;
+
             LOG_I("DisplayTask", "Config change detected, display settings updated");
+        }
+
+        // Build RenderContext on first frame if not yet initialized (AC #3)
+        if (!ctxInitialized) {
+            cachedCtx = g_display.buildRenderContext();
+            ctxInitialized = true;
         }
 
         // Calibration mode (Story 4.2): render test pattern instead of flights
@@ -346,6 +431,7 @@ void displayTask(void *pvParameters)
         {
             statusMessageVisible = false;
             g_display.renderCalibrationPattern();
+            g_display.show();
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
@@ -356,6 +442,7 @@ void displayTask(void *pvParameters)
         {
             statusMessageVisible = false;
             g_display.renderPositioningPattern();
+            g_display.show();
             esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
@@ -370,6 +457,7 @@ void displayTask(void *pvParameters)
                 ? 0
                 : millis() + statusMessage.durationMs;
             g_display.displayMessage(String(statusMessage.text));
+            g_display.show();
         }
 
         if (statusMessageVisible)
@@ -384,37 +472,23 @@ void displayTask(void *pvParameters)
             statusMessageVisible = false;
         }
 
-        // Read latest flight data from queue (peek, don't remove)
+        // Flight pipeline: ModeRegistry::tick draws via active mode (Story ds-1.5, AC #2/#3/#5/#6)
         FlightDisplayData *ptr = nullptr;
+        const std::vector<FlightInfo>* flightsPtr = &emptyFlights;
+
         if (g_flightQueue != nullptr && xQueuePeek(g_flightQueue, &ptr, 0) == pdTRUE && ptr != nullptr)
         {
-            const auto &flights = ptr->flights;
-
-            if (!flights.empty())
-            {
-                const unsigned long now = millis();
-                const unsigned long cycleMs = localTiming.display_cycle * 1000UL;
-
-                if (flights.size() > 1)
-                {
-                    if (now - lastCycleMs >= cycleMs)
-                    {
-                        lastCycleMs = now;
-                        currentFlightIndex = (currentFlightIndex + 1) % flights.size();
-                    }
-                }
-                else
-                {
-                    currentFlightIndex = 0;
-                }
-
-                g_display.renderFlight(flights, currentFlightIndex % flights.size());
-            }
-            else
-            {
-                g_display.showLoading();
-            }
+            flightsPtr = &(ptr->flights);
         }
+
+        // Mode system renders; fallback if no active mode (AC #5)
+        ModeRegistry::tick(cachedCtx, *flightsPtr);
+        if (ModeRegistry::getActiveMode() == nullptr) {
+            g_display.displayFallbackCard(*flightsPtr);
+        }
+
+        // Single frame commit (FR35 — one show() per frame)
+        g_display.show();
 
         // Log stack high watermark at verbose level for tuning
 #if LOG_LEVEL >= 3
@@ -589,6 +663,20 @@ void setup()
     // Must run before SystemStatus::init() — defers SystemStatus::set() to loop()
     detectRollback();
 
+    // Watchdog recovery detection (Story dl-1.4, AC #1)
+    // Read reset reason early; if watchdog-triggered, force clock mode at boot.
+    // Policy: always force "clock" after WDT for simplicity (AC #1 preferred approach).
+    {
+        esp_reset_reason_t reason = esp_reset_reason();
+        g_wdtRecoveryBoot = (reason == ESP_RST_TASK_WDT ||
+                             reason == ESP_RST_INT_WDT  ||
+                             reason == ESP_RST_WDT);
+        if (g_wdtRecoveryBoot) {
+            Serial.printf("[Main] WDT recovery boot detected (reason=%d) — will force clock mode\n",
+                          (int)reason);
+        }
+    }
+
     // Validate partition layout matches expectations (Story fn-1.1)
     validatePartitionLayout();
 
@@ -605,6 +693,11 @@ void setup()
     ConfigManager::init();
     SystemStatus::init();
     ModeOrchestrator::init();
+
+    // ModeRegistry init (Story ds-1.3, AC #2)
+    // Registers mode table; requestSwitch deferred until after g_display.initialize()
+    // so buildRenderContext() has a valid matrix on first tick (Story ds-1.5, AC #4).
+    ModeRegistry::init(MODE_TABLE, MODE_COUNT);
 
     // NTP: register SNTP sync callback BEFORE WiFiManager starts (Story fn-2.1)
     // Callback fires on LWIP task (Core 1) when NTP sync completes
@@ -624,7 +717,73 @@ void setup()
 
     // Display initialization before task creation (setup runs on Core 1)
     g_display.initialize();
+
+    // Upgrade notification (Story ds-3.2, AC #4): detect Foundation Release upgrade.
+    // If disp_mode key is absent, this is the first boot after firmware that includes
+    // mode persistence — set upg_notif=1 so GET /api/display/modes reports it.
+    // Coordinate with POST /api/display/notification/dismiss (clears flag) and ds-3.6 banner.
+    if (!ConfigManager::hasDisplayMode()) {
+        ConfigManager::setUpgNotif(true);
+        LOG_I("Main", "First boot with mode persistence — upgrade notification set");
+    }
+
+    // Boot mode restore (Story ds-1.5, AC #4; ds-3.2, AC #3; dl-1.3, AC #4; dl-1.4):
+    // Route through ModeOrchestrator::onManualSwitch (Rule 24).
+    //
+    // dl-1.4 policy: After WDT reboot, always force "clock" mode and persist to NVS.
+    // Normal boot: restore NVS-saved mode; fall back to "clock" if registered,
+    // else "classic_card" for unknown IDs (AC #3). Correct NVS to activated mode.
+    {
+        const ModeEntry* table = ModeRegistry::getModeTable();
+        uint8_t count = ModeRegistry::getModeCount();
+
+        // Helper lambda: look up mode display name from table
+        auto findModeName = [&](const char* modeId) -> const char* {
+            for (uint8_t i = 0; i < count; i++) {
+                if (strcmp(table[i].id, modeId) == 0) return table[i].displayName;
+            }
+            return nullptr;
+        };
+
+        if (g_wdtRecoveryBoot) {
+            // dl-1.4, AC #1: WDT recovery — force clock unconditionally
+            const char* clockName = findModeName("clock");
+            if (clockName) {
+                LOG_W("Main", "WDT recovery: forcing clock mode");
+                ModeOrchestrator::onManualSwitch("clock", clockName);
+                ConfigManager::setDisplayMode("clock");
+            } else {
+                // Clock not registered (shouldn't happen after dl-1.1) — use classic_card
+                LOG_W("Main", "WDT recovery: clock not registered, falling back to classic_card");
+                ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
+                ConfigManager::setDisplayMode("classic_card");
+            }
+        } else {
+            // Normal boot: restore saved mode with fallback chain
+            String savedMode = ConfigManager::getDisplayMode();
+            const char* bootModeName = findModeName(savedMode.c_str());
+
+            if (bootModeName) {
+                // AC #2: valid saved mode on normal boot — restore it
+                ModeOrchestrator::onManualSwitch(savedMode.c_str(), bootModeName);
+            } else {
+                // AC #3: unknown mode ID — try "clock", then "classic_card"
+                const char* clockName = findModeName("clock");
+                if (clockName) {
+                    LOG_W("Main", "Saved display mode invalid, correcting NVS to clock");
+                    ModeOrchestrator::onManualSwitch("clock", clockName);
+                    ConfigManager::setDisplayMode("clock");
+                } else {
+                    LOG_W("Main", "Saved display mode invalid, correcting NVS to classic_card");
+                    ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
+                    ConfigManager::setDisplayMode("classic_card");
+                }
+            }
+        }
+    }
+
     g_display.showLoading();
+    g_display.show();  // Setup-time: commit loading screen before display task starts
 
     // Create flight data queue (length 1, stores a pointer)
     g_flightQueue = xQueueCreate(1, sizeof(FlightDisplayData *));
@@ -642,18 +801,28 @@ void setup()
     }
 
     // Register config change callback (sets atomic flag for display task + recompute layout)
-    ConfigManager::onChange([]() {
+    // Seed TZ cache BEFORE registering onChange so the first unrelated config write
+    // (e.g., brightness) does not restart SNTP. The previous pattern initialised
+    // s_lastAppliedTz inside the lambda (default ""), which mismatched the default
+    // "UTC0", causing configTzTime() to fire unnecessarily on the very first write.
+    static String s_lastAppliedTz = ConfigManager::getSchedule().timezone;
+    ConfigManager::onChange([&s_lastAppliedTz]() {
         g_configChanged.store(true);
         g_layout = LayoutEngine::compute(ConfigManager::getHardware());
 
-        // Timezone hot-reload (Story fn-2.1): re-apply POSIX TZ on any config change.
-        // configTzTime() internally calls setenv("TZ",...) + tzset() + restarts SNTP.
+        // Timezone hot-reload (Story fn-2.1): re-apply POSIX TZ only when timezone
+        // actually changes. Calling configTzTime() on every config write (brightness,
+        // fetch_interval, etc.) would restart SNTP unnecessarily and discard in-flight
+        // NTP requests. Compare against cached value to guard the restart.
         // Does NOT reset g_ntpSynced — only the SNTP callback controls that flag.
         ScheduleConfig sched = ConfigManager::getSchedule();
-        configTzTime(sched.timezone.c_str(), "pool.ntp.org", "time.nist.gov");
+        if (sched.timezone != s_lastAppliedTz) {
+            s_lastAppliedTz = sched.timezone;
+            configTzTime(sched.timezone.c_str(), "pool.ntp.org", "time.nist.gov");
 #if LOG_LEVEL >= 2
-        Serial.println("[Main] Timezone hot-reloaded: " + sched.timezone);
+            Serial.println("[Main] Timezone hot-reloaded: " + sched.timezone);
 #endif
+        }
     });
     LOG_I("Main", "Config change callback registered");
 
@@ -761,6 +930,20 @@ void setup()
     {
         LOG_E("Main", "Failed to create FlightDataFetcher");
     }
+
+    // Enroll loop() task in TWDT for Core 1 stall detection (Story dl-1.4, AC #5).
+    // Default timeout 5s (meets NFR10). esp_task_wdt_reset() called at top of loop()
+    // and around blocking HTTP fetches to avoid false positives.
+    esp_task_wdt_add(NULL);
+    LOG_I("Main", "Loop task enrolled in TWDT (5s timeout)");
+
+    // Heap baseline measurement (Story ds-1.1, AR1)
+    // Logged after all Foundation init to establish the mode memory budget.
+#if LOG_LEVEL >= 2
+    Serial.printf("[HeapBaseline] Free heap after full init: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("[HeapBaseline] Max alloc block: %u bytes\n", ESP.getMaxAllocHeap());
+#endif
+
     LOG_I("Main", "Setup complete");
 }
 
@@ -842,12 +1025,97 @@ static bool tickStartupProgress()
     return false;
 }
 
+// Night mode brightness scheduler (Story fn-2.2, Architecture Decision F5)
+// Runs ~1/sec in Core 1 main loop. Non-blocking per Enforcement Rule #14.
+// Uses minutes-since-midnight comparison per Enforcement Rule #15.
+static void tickNightScheduler() {
+    const unsigned long now = millis();
+    if (now - g_lastSchedCheckMs < SCHED_CHECK_INTERVAL_MS) return;
+    g_lastSchedCheckMs = now;
+
+    ScheduleConfig sched = ConfigManager::getSchedule();
+    bool wasDimming = g_schedDimming.load();
+    bool ntpSynced  = g_ntpSynced.load();
+
+    // Log NTP state transitions (AC #4: log only on lost/regained, not every tick)
+    // Note: sched_enabled check happens below — log message stays neutral so it is
+    // accurate even when the schedule is disabled (sched_enabled == 0).
+    if (ntpSynced && !g_lastNtpSynced) {
+        LOG_I("Scheduler", "NTP synced — local time available");
+    } else if (!ntpSynced && g_lastNtpSynced) {
+        LOG_I("Scheduler", "NTP lost — schedule suspended");
+    }
+    g_lastNtpSynced = ntpSynced;
+
+    // Guard: NTP must be synced and schedule must be enabled
+    if (sched.sched_enabled != 1 || !ntpSynced) {
+        if (wasDimming) {
+            g_schedDimming.store(false);
+            g_scheduleChanged.store(true);
+            LOG_I("Scheduler", "Schedule inactive — brightness restored");
+        }
+        return;
+    }
+
+    // Get local time non-blocking (Rule #14: timeout=0)
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;  // Time not available yet — skip this cycle
+    }
+
+    // Convert to minutes since midnight (Rule #15)
+    uint16_t nowMinutes = (uint16_t)(timeinfo.tm_hour * 60 + timeinfo.tm_min);
+    uint16_t dimStart = sched.sched_dim_start;
+    uint16_t dimEnd = sched.sched_dim_end;
+
+    // Determine if current time is within the dim window
+    bool inDimWindow;
+    if (dimStart <= dimEnd) {
+        inDimWindow = (nowMinutes >= dimStart && nowMinutes < dimEnd);
+    } else {
+        inDimWindow = (nowMinutes >= dimStart || nowMinutes < dimEnd);
+    }
+
+    // Signal only on state transitions — not every tick.
+    // AC #6 re-override is handled by display task's config-change handler:
+    // it checks g_schedDimming after g_configChanged or g_scheduleChanged.
+    if (inDimWindow && !wasDimming) {
+        g_schedDimming.store(true);
+        g_scheduleChanged.store(true);
+        LOG_I("Scheduler", "Entering dim window — brightness override active");
+    } else if (!inDimWindow && wasDimming) {
+        g_schedDimming.store(false);
+        g_scheduleChanged.store(true);
+        LOG_I("Scheduler", "Exiting dim window — brightness restored");
+    }
+}
+
 // --- loop() (Task 4) ---
 
 void loop()
 {
+    // Reset loop task watchdog each iteration (Story dl-1.4, AC #5).
+    // Enrolled in setup() via esp_task_wdt_add(NULL) on the loopTask.
+    // Default TWDT timeout is 5s (CONFIG_ESP_TASK_WDT_TIMEOUT_S=5), meets NFR10 (≤10s).
+    esp_task_wdt_reset();
+
     ConfigManager::tick();
     g_wifiManager.tick();
+
+    // Night mode brightness scheduler (Story fn-2.2)
+    tickNightScheduler();
+
+    // Periodic orchestrator tick for idle fallback (Story dl-1.2, AC #4)
+    // Runs ~1/sec independent of fetch interval so boot + zero flights transitions
+    // within ~1s, not only on the next 10+ minute fetch.
+    {
+        static unsigned long s_lastOrchMs = 0;
+        const unsigned long nowOrch = millis();
+        if (nowOrch - s_lastOrchMs >= 1000) {
+            s_lastOrchMs = nowOrch;
+            ModeOrchestrator::tick(g_flightCount.load());
+        }
+    }
 
     // OTA self-check: mark firmware valid once WiFi connects or timeout expires (Story fn-1.4)
     if (!g_otaSelfCheckDone) {
@@ -925,7 +1193,10 @@ void loop()
 
         std::vector<StateVector> states;
         std::vector<FlightInfo> flights;
+        // Reset WDT before potentially long HTTP fetch (Story dl-1.4, AC #5)
+        esp_task_wdt_reset();
         size_t enriched = g_fetcher->fetchFlights(states, flights);
+        esp_task_wdt_reset();  // Reset after fetch completes
 
         // Update flight stats snapshot for /api/status (Story 2.4)
         g_statsFetchesSinceBoot.fetch_add(1);
@@ -933,9 +1204,6 @@ void loop()
         g_statsStateVectors.store(static_cast<uint16_t>(states.size()));
         g_statsEnrichedFlights.store(static_cast<uint16_t>(enriched));
         // g_statsLogosMatched stays 0 until Epic 3
-
-        // Tick orchestrator for idle fallback logic (Story dl-1.5)
-        ModeOrchestrator::tick(static_cast<uint8_t>(flights.size() > 255 ? 255 : flights.size()));
 
 #if LOG_LEVEL >= 2
         Serial.println("[Main] Fetch: " + String((int)states.size()) + " state vectors, " + String((int)enriched) + " enriched flights");
@@ -961,6 +1229,11 @@ void loop()
             xQueueOverwrite(g_flightQueue, &ptr);
         }
         g_writeBuf ^= 1; // swap buffer for next write
+
+        // Update flight count for orchestrator idle fallback (Story dl-1.2, AC #3)
+        // Stored immediately after queue publish — tied to the same snapshot
+        // the display task consumes, avoiding drift.
+        g_flightCount.store(static_cast<uint8_t>(flights.size() > 255 ? 255 : flights.size()));
 
         // Complete startup progress after first fetch
         if (!g_firstFetchDone &&

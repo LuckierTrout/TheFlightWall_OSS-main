@@ -369,6 +369,12 @@ void test_apply_json_schedule_validation() {
     ApplyResult result4 = ConfigManager::applyJson(doc4.as<JsonObject>());
     TEST_ASSERT_EQUAL(0, result4.applied.size());
 
+    // Test empty timezone string is rejected (would reach configTzTime("") otherwise)
+    JsonDocument doc4b;
+    doc4b["timezone"] = "";
+    ApplyResult result4b = ConfigManager::applyJson(doc4b.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result4b.applied.size());
+
     // Test sched_dim_brt > 255 is rejected
     JsonDocument doc5;
     doc5["sched_dim_brt"] = 256;
@@ -520,26 +526,161 @@ void test_timezone_is_hot_reload_key() {
 }
 
 void test_ntp_status_in_json_output() {
-    // AC #6: /api/status includes NTP subsystem in JSON
+    // AC #6: /api/status includes NTP subsystem in JSON.
+    // Uses toExtendedJson() to match the production code path in
+    // WebPortal::_handleGetStatus() — NTP data lives at data["subsystems"]["ntp"].
     SystemStatus::init();
     SystemStatus::set(Subsystem::NTP, StatusLevel::WARNING, "Clock not set");
 
+    FlightStatsSnapshot dummy = {};
     JsonDocument doc;
     JsonObject obj = doc.to<JsonObject>();
-    SystemStatus::toJson(obj);
+    SystemStatus::toExtendedJson(obj, dummy);
 
-    TEST_ASSERT_TRUE(obj["ntp"].is<JsonObject>());
-    TEST_ASSERT_TRUE(obj["ntp"]["level"] == "warning");
-    TEST_ASSERT_TRUE(obj["ntp"]["message"] == "Clock not set");
+    TEST_ASSERT_TRUE(obj["subsystems"]["ntp"].is<JsonObject>());
+    TEST_ASSERT_TRUE(obj["subsystems"]["ntp"]["level"] == "warning");
+    TEST_ASSERT_TRUE(obj["subsystems"]["ntp"]["message"] == "Clock not set");
 
     // Transition to OK
     SystemStatus::set(Subsystem::NTP, StatusLevel::OK, "Clock synced");
     JsonDocument doc2;
     JsonObject obj2 = doc2.to<JsonObject>();
-    SystemStatus::toJson(obj2);
+    SystemStatus::toExtendedJson(obj2, dummy);
 
-    TEST_ASSERT_TRUE(obj2["ntp"]["level"] == "ok");
-    TEST_ASSERT_TRUE(obj2["ntp"]["message"] == "Clock synced");
+    TEST_ASSERT_TRUE(obj2["subsystems"]["ntp"]["level"] == "ok");
+    TEST_ASSERT_TRUE(obj2["subsystems"]["ntp"]["message"] == "Clock synced");
+}
+
+void test_nvs_invalid_timezone_ignored() {
+    // Regression guard: NVS-loaded empty timezone must not override the "UTC0" default.
+    // Protects against corrupted NVS data (manual writes, older firmware) reaching
+    // configTzTime("") — mirrors the empty-string guard already in applyJson().
+    Preferences prefs;
+    prefs.begin("flightwall", false);
+    prefs.clear();
+    prefs.putString("timezone", "");  // Write invalid empty timezone to NVS
+    prefs.end();
+
+    ConfigManager::init();
+    ScheduleConfig s = ConfigManager::getSchedule();
+    TEST_ASSERT_TRUE(s.timezone == "UTC0");  // Default must be preserved
+}
+
+// --- Night mode scheduler logic tests (Story fn-2.2) ---
+
+// Helper: replicates the dim-window check from tickNightScheduler() in main.cpp.
+// Extracted here so unit tests validate the exact same arithmetic the scheduler uses.
+static bool isInDimWindow(uint16_t nowMinutes, uint16_t dimStart, uint16_t dimEnd) {
+    if (dimStart <= dimEnd) {
+        return (nowMinutes >= dimStart && nowMinutes < dimEnd);
+    } else {
+        return (nowMinutes >= dimStart || nowMinutes < dimEnd);
+    }
+}
+
+void test_schedule_dim_window_same_day() {
+    // dimStart=480 (08:00), dimEnd=1020 (17:00)
+    TEST_ASSERT_TRUE(isInDimWindow(720, 480, 1020));   // 12:00 → IN window
+    TEST_ASSERT_FALSE(isInDimWindow(1200, 480, 1020));  // 20:00 → NOT in window
+    TEST_ASSERT_FALSE(isInDimWindow(300, 480, 1020));   // 05:00 → NOT in window
+}
+
+void test_schedule_dim_window_crosses_midnight() {
+    // dimStart=1380 (23:00), dimEnd=420 (07:00)
+    TEST_ASSERT_TRUE(isInDimWindow(120, 1380, 420));   // 02:00 → IN window (after midnight)
+    TEST_ASSERT_TRUE(isInDimWindow(1400, 1380, 420));  // 23:20 → IN window (before midnight)
+    TEST_ASSERT_FALSE(isInDimWindow(720, 1380, 420));  // 12:00 → NOT in window
+}
+
+void test_schedule_dim_window_edge_cases() {
+    // dimStart == dimEnd (zero-length window) → never in window
+    TEST_ASSERT_FALSE(isInDimWindow(600, 600, 600));
+
+    // Exactly at dimStart → IN window (inclusive start)
+    TEST_ASSERT_TRUE(isInDimWindow(480, 480, 1020));
+
+    // Exactly at dimEnd → NOT in window (exclusive end)
+    TEST_ASSERT_FALSE(isInDimWindow(1020, 480, 1020));
+
+    // Midnight-crossing: exactly at dimStart → IN
+    TEST_ASSERT_TRUE(isInDimWindow(1380, 1380, 420));
+
+    // Midnight-crossing: exactly at dimEnd → NOT in
+    TEST_ASSERT_FALSE(isInDimWindow(420, 1380, 420));
+
+    // Full day (0 to 1440 is invalid, but 0 to 0 = zero-length)
+    TEST_ASSERT_FALSE(isInDimWindow(500, 0, 0));
+}
+
+void test_schedule_defaults() {
+    // Verify all ScheduleConfig default values (not just sched_dim_brt)
+    clearNvs();
+    ConfigManager::init();
+    ScheduleConfig sched = ConfigManager::getSchedule();
+    TEST_ASSERT_EQUAL_UINT8(10, sched.sched_dim_brt);
+    TEST_ASSERT_EQUAL_UINT16(1380, sched.sched_dim_start);  // 23:00
+    TEST_ASSERT_EQUAL_UINT16(420, sched.sched_dim_end);     // 07:00
+    TEST_ASSERT_EQUAL_UINT8(0, sched.sched_enabled);        // disabled by default
+}
+
+// --- Per-mode NVS settings tests (Story dl-1.1, AC #3, #6) ---
+
+void test_get_mode_setting_missing_key_returns_default() {
+    // AC #3: getModeSetting with absent key returns default, no NVS write
+    clearNvs();
+    ConfigManager::init();
+    int32_t val = ConfigManager::getModeSetting("clock", "format", 0);
+    TEST_ASSERT_EQUAL_INT32(0, val);
+
+    // Verify key was NOT created in NVS (read-only path)
+    Preferences prefs;
+    prefs.begin("flightwall", true);
+    TEST_ASSERT_FALSE(prefs.isKey("m_clock_format"));
+    prefs.end();
+}
+
+void test_set_mode_setting_persists_and_reads_back() {
+    // AC #6: setModeSetting persists value, getModeSetting reads it back
+    clearNvs();
+    ConfigManager::init();
+    bool ok = ConfigManager::setModeSetting("clock", "format", 1);
+    TEST_ASSERT_TRUE(ok);
+
+    int32_t val = ConfigManager::getModeSetting("clock", "format", 0);
+    TEST_ASSERT_EQUAL_INT32(1, val);
+}
+
+void test_set_mode_setting_validates_clock_format_range() {
+    // Only 0 or 1 is valid for clock/format
+    clearNvs();
+    ConfigManager::init();
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 0));
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 1));
+    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", 2));
+    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", -1));
+}
+
+void test_mode_setting_key_length_within_nvs_limit() {
+    // m_clock_format = 13 chars, within 15-char NVS limit
+    clearNvs();
+    ConfigManager::init();
+    bool ok = ConfigManager::setModeSetting("clock", "format", 0);
+    TEST_ASSERT_TRUE(ok);
+
+    // Verify the composed key exists in NVS
+    Preferences prefs;
+    prefs.begin("flightwall", true);
+    TEST_ASSERT_TRUE(prefs.isKey("m_clock_format"));
+    prefs.end();
+}
+
+void test_mode_setting_key_too_long_rejected() {
+    // Keys that would exceed 15 chars must be rejected
+    clearNvs();
+    ConfigManager::init();
+    // "m_toolong_settingname" would exceed 15 chars
+    bool ok = ConfigManager::setModeSetting("toolong", "settingname", 0);
+    TEST_ASSERT_FALSE(ok);
 }
 
 void setup() {
@@ -594,6 +735,20 @@ void setup() {
     RUN_TEST(test_schedule_timezone_default);
     RUN_TEST(test_timezone_is_hot_reload_key);
     RUN_TEST(test_ntp_status_in_json_output);
+    RUN_TEST(test_nvs_invalid_timezone_ignored);
+
+    // Night mode scheduler logic tests (Story fn-2.2)
+    RUN_TEST(test_schedule_dim_window_same_day);
+    RUN_TEST(test_schedule_dim_window_crosses_midnight);
+    RUN_TEST(test_schedule_dim_window_edge_cases);
+    RUN_TEST(test_schedule_defaults);
+
+    // Per-mode NVS settings tests (Story dl-1.1)
+    RUN_TEST(test_get_mode_setting_missing_key_returns_default);
+    RUN_TEST(test_set_mode_setting_persists_and_reads_back);
+    RUN_TEST(test_set_mode_setting_validates_clock_format_range);
+    RUN_TEST(test_mode_setting_key_length_within_nvs_limit);
+    RUN_TEST(test_mode_setting_key_too_long_rejected);
 
     UNITY_END();
 }

@@ -37,6 +37,9 @@ public:
     /// Get the display name of the currently active mode
     static const char* getActiveModeName();
 
+    /// Get the saved manual mode ID (for restore after fallback)
+    static const char* getManualModeId();
+
     /// Called when user manually selects a mode via API
     static void onManualSwitch(const char* modeId, const char* modeName);
 

@@ -15,6 +15,7 @@ Outputs: Visual output to LED matrix using FastLED.
 #include <FastLED_NeoMatrix.h>
 #include <FastLED.h>
 #include "utils/Log.h"
+#include "utils/DisplayUtils.h"
 #include "core/ConfigManager.h"
 #include "core/LogoManager.h"
 
@@ -237,25 +238,6 @@ String NeoMatrixDisplay::makeFlightLine(const FlightInfo &f)
     return line;
 }
 
-void NeoMatrixDisplay::drawTextLine(int16_t x, int16_t y, const String &text, uint16_t color)
-{
-    _matrix->setCursor(x, y);
-    _matrix->setTextColor(color);
-    for (size_t i = 0; i < (size_t)text.length(); ++i)
-    {
-        _matrix->write(text[i]);
-    }
-}
-
-String NeoMatrixDisplay::truncateToColumns(const String &text, int maxColumns)
-{
-    if ((int)text.length() <= maxColumns)
-        return text;
-    if (maxColumns <= 3)
-        return text.substring(0, maxColumns);
-    return text.substring(0, maxColumns - 3) + String("...");
-}
-
 // --- Legacy full-screen card (kept for fallback if layout is invalid) ---
 
 void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
@@ -284,9 +266,9 @@ void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
 
     String line3 = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short : f.aircraft_code;
 
-    String line1 = truncateToColumns(airline, maxCols);
-    line2 = truncateToColumns(line2, maxCols);
-    line3 = truncateToColumns(line3, maxCols);
+    String line1 = DisplayUtils::truncateToColumns(airline, maxCols);
+    line2 = DisplayUtils::truncateToColumns(line2, maxCols);
+    line3 = DisplayUtils::truncateToColumns(line3, maxCols);
 
     const uint16_t textColor = _matrix->Color(disp.text_color_r,
                                               disp.text_color_g,
@@ -298,73 +280,21 @@ void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
     const int16_t startX = 1 + padding;                                      // left padding inside border
 
     int16_t y = topOffset;
-    drawTextLine(startX, y, line1, textColor);
+    DisplayUtils::drawTextLine(_matrix, startX, y, line1, textColor);
     y += charHeight + lineSpacing;
-    drawTextLine(startX, y, line2, textColor);
+    DisplayUtils::drawTextLine(_matrix, startX, y, line2, textColor);
     y += charHeight + lineSpacing;
-    drawTextLine(startX, y, line3, textColor);
+    DisplayUtils::drawTextLine(_matrix, startX, y, line3, textColor);
 }
 
 // --- Zone-based rendering (Story 3.3) ---
-
-String NeoMatrixDisplay::formatTelemetryValue(double value, const char* suffix, int decimals)
-{
-    if (isnan(value)) {
-        return String("--");
-    }
-    if (decimals == 0) {
-        return String((int)value) + suffix;
-    }
-    return String(value, decimals) + suffix;
-}
-
-void NeoMatrixDisplay::drawBitmapRGB565(int16_t x, int16_t y, uint16_t w, uint16_t h,
-                                         const uint16_t *bitmap, uint16_t zoneW, uint16_t zoneH)
-{
-    // Render RGB565 bitmap into the matrix, clipped to zone bounds.
-    // Bitmap is always 32x32 (LOGO_WIDTH x LOGO_HEIGHT).
-    // If zone is smaller, we center-crop. If larger, we center the bitmap.
-    int16_t offsetX = 0, offsetY = 0;
-    uint16_t drawW = w, drawH = h;
-
-    if (zoneW < w) {
-        offsetX = (w - zoneW) / 2; // crop from center
-        drawW = zoneW;
-    }
-    if (zoneH < h) {
-        offsetY = (h - zoneH) / 2;
-        drawH = zoneH;
-    }
-
-    int16_t destX = x;
-    int16_t destY = y;
-    if (zoneW > w) {
-        destX = x + (zoneW - w) / 2; // center in zone
-    }
-    if (zoneH > h) {
-        destY = y + (zoneH - h) / 2;
-    }
-
-    for (uint16_t row = 0; row < drawH; row++) {
-        for (uint16_t col = 0; col < drawW; col++) {
-            uint16_t pixel = bitmap[(row + offsetY) * w + (col + offsetX)];
-            if (pixel != 0) {
-                // Convert RGB565 to R, G, B components
-                uint8_t r = ((pixel >> 11) & 0x1F) << 3;
-                uint8_t g = ((pixel >> 5) & 0x3F) << 2;
-                uint8_t b = (pixel & 0x1F) << 3;
-                _matrix->drawPixel(destX + col, destY + row, _matrix->Color(r, g, b));
-            }
-        }
-    }
-}
 
 void NeoMatrixDisplay::renderLogoZone(const FlightInfo &f, const Rect &zone)
 {
     // Load logo by operator ICAO; fallback sprite if not found
     LogoManager::loadLogo(f.operator_icao, _logoBuffer);
-    drawBitmapRGB565(zone.x, zone.y, LOGO_WIDTH, LOGO_HEIGHT,
-                     _logoBuffer, zone.w, zone.h);
+    DisplayUtils::drawBitmapRGB565(_matrix, zone.x, zone.y, LOGO_WIDTH, LOGO_HEIGHT,
+                                   _logoBuffer, zone.w, zone.h);
 }
 
 void NeoMatrixDisplay::renderFlightZone(const FlightInfo &f, const Rect &zone)
@@ -400,10 +330,10 @@ void NeoMatrixDisplay::renderFlightZone(const FlightInfo &f, const Rect &zone)
         if (compactLine.length() == 0) {
             compactLine = aircraft;
         }
-        line1 = truncateToColumns(compactLine, maxCols);
+        line1 = DisplayUtils::truncateToColumns(compactLine, maxCols);
     } else if (linesAvailable == 2) {
         // Full 32px layouts cannot fit three 8px rows, so compress type into row two.
-        line1 = truncateToColumns(airline, maxCols);
+        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
         String detailLine = route;
         if (aircraft.length() > 0) {
             if (detailLine.length() > 0) {
@@ -411,12 +341,12 @@ void NeoMatrixDisplay::renderFlightZone(const FlightInfo &f, const Rect &zone)
             }
             detailLine += aircraft;
         }
-        line2 = truncateToColumns(detailLine, maxCols);
+        line2 = DisplayUtils::truncateToColumns(detailLine, maxCols);
         linesToDraw = line2.length() > 0 ? 2 : 1;
     } else {
-        line1 = truncateToColumns(airline, maxCols);
-        line2 = truncateToColumns(route, maxCols);
-        line3 = truncateToColumns(aircraft, maxCols);
+        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
+        line2 = DisplayUtils::truncateToColumns(route, maxCols);
+        line3 = DisplayUtils::truncateToColumns(aircraft, maxCols);
         linesToDraw = line3.length() > 0 ? 3 : (line2.length() > 0 ? 2 : 1);
     }
 
@@ -424,14 +354,14 @@ void NeoMatrixDisplay::renderFlightZone(const FlightInfo &f, const Rect &zone)
     int totalTextH = linesToDraw * charHeight;
     y = zone.y + (zone.h - totalTextH) / 2;
 
-    drawTextLine(zone.x, y, line1, textColor);
+    DisplayUtils::drawTextLine(_matrix, zone.x, y, line1, textColor);
     if (linesToDraw >= 2 && line2.length() > 0) {
         y += charHeight;
-        drawTextLine(zone.x, y, line2, textColor);
+        DisplayUtils::drawTextLine(_matrix, zone.x, y, line2, textColor);
     }
     if (linesToDraw >= 3 && line3.length() > 0) {
         y += charHeight;
-        drawTextLine(zone.x, y, line3, textColor);
+        DisplayUtils::drawTextLine(_matrix, zone.x, y, line3, textColor);
     }
 }
 
@@ -457,30 +387,30 @@ void NeoMatrixDisplay::renderTelemetryZone(const FlightInfo &f, const Rect &zone
 
     if (linesAvailable >= 2) {
         // Two-line format: altitude + speed on line 1, track + vrate on line 2
-        String alt = formatTelemetryValue(f.altitude_kft, "kft", 1);
-        String spd = formatTelemetryValue(f.speed_mph, "mph");
-        telLine1 = truncateToColumns(alt + " " + spd, maxCols);
+        String alt = DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1);
+        String spd = DisplayUtils::formatTelemetryValue(f.speed_mph, "mph");
+        telLine1 = DisplayUtils::truncateToColumns(alt + " " + spd, maxCols);
 
-        String trk = formatTelemetryValue(f.track_deg, "d");
-        String vr = formatTelemetryValue(f.vertical_rate_fps, "fps");
-        telLine2 = truncateToColumns(trk + " " + vr, maxCols);
+        String trk = DisplayUtils::formatTelemetryValue(f.track_deg, "d");
+        String vr = DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "fps");
+        telLine2 = DisplayUtils::truncateToColumns(trk + " " + vr, maxCols);
     } else {
         // Compact mode condenses all four values into one row with abbreviated labels.
-        String alt = String("A") + formatTelemetryValue(f.altitude_kft, "k", 0);
-        String spd = String("S") + formatTelemetryValue(f.speed_mph, "", 0);
-        String trk = String("T") + formatTelemetryValue(f.track_deg, "", 0);
-        String vr = String("V") + formatTelemetryValue(f.vertical_rate_fps, "", 0);
-        telLine1 = truncateToColumns(alt + " " + spd + " " + trk + " " + vr, maxCols);
+        String alt = String("A") + DisplayUtils::formatTelemetryValue(f.altitude_kft, "k", 0);
+        String spd = String("S") + DisplayUtils::formatTelemetryValue(f.speed_mph, "", 0);
+        String trk = String("T") + DisplayUtils::formatTelemetryValue(f.track_deg, "", 0);
+        String vr = String("V") + DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "", 0);
+        telLine1 = DisplayUtils::truncateToColumns(alt + " " + spd + " " + trk + " " + vr, maxCols);
     }
 
     int linesToDraw = (linesAvailable >= 2 && telLine2.length() > 0) ? 2 : 1;
     int totalTextH = linesToDraw * charHeight;
     int16_t y = zone.y + (zone.h - totalTextH) / 2;
 
-    drawTextLine(zone.x, y, telLine1, textColor);
+    DisplayUtils::drawTextLine(_matrix, zone.x, y, telLine1, textColor);
     if (linesToDraw >= 2) {
         y += charHeight;
-        drawTextLine(zone.x, y, telLine2, textColor);
+        DisplayUtils::drawTextLine(_matrix, zone.x, y, telLine2, textColor);
     }
 }
 
@@ -495,43 +425,9 @@ void NeoMatrixDisplay::renderZoneFlight(const FlightInfo &f)
 
 void NeoMatrixDisplay::displayFlights(const std::vector<FlightInfo> &flights)
 {
-    if (_matrix == nullptr)
-        return;
-
-    _matrix->fillScreen(0);
-
-    if (!flights.empty())
-    {
-        const unsigned long now = millis();
-        const unsigned long intervalMs = ConfigManager::getTiming().display_cycle * 1000UL;
-
-        if (flights.size() > 1)
-        {
-            if (now - _lastCycleMs >= intervalMs)
-            {
-                _lastCycleMs = now;
-                _currentFlightIndex = (_currentFlightIndex + 1) % flights.size();
-            }
-        }
-        else
-        {
-            _currentFlightIndex = 0;
-        }
-
-        const size_t index = _currentFlightIndex % flights.size();
-
-        if (_layout.valid) {
-            renderZoneFlight(flights[index]);
-        } else {
-            displaySingleFlightCard(flights[index]);
-        }
-    }
-    else
-    {
-        displayLoadingScreen();
-    }
-
-    FastLED.show();
+    // AC #7: delegate to displayFallbackCard + show() for compatibility
+    displayFallbackCard(flights);
+    show();
 }
 
 void NeoMatrixDisplay::displayLoadingScreen()
@@ -556,9 +452,7 @@ void NeoMatrixDisplay::displayLoadingScreen()
     const uint16_t textColor = _matrix->Color(disp.text_color_r,
                                               disp.text_color_g,
                                               disp.text_color_b);
-    drawTextLine(x, y, loadingText, textColor);
-
-    FastLED.show();
+    DisplayUtils::drawTextLine(_matrix, x, y, loadingText, textColor);
 }
 
 void NeoMatrixDisplay::displayMessage(const String &message)
@@ -579,12 +473,11 @@ void NeoMatrixDisplay::displayMessage(const String &message)
     // Simple single-line message; truncate if needed
     const int innerWidth = _matrixWidth;
     const int maxCols = innerWidth / charWidth;
-    String line = truncateToColumns(message, maxCols);
+    String line = DisplayUtils::truncateToColumns(message, maxCols);
 
     const int16_t x = 0;
     const int16_t y = (_matrixHeight - charHeight) / 2;
-    drawTextLine(x, y, line, textColor);
-    FastLED.show();
+    DisplayUtils::drawTextLine(_matrix, x, y, line, textColor);
 }
 
 void NeoMatrixDisplay::showLoading()
@@ -673,8 +566,6 @@ void NeoMatrixDisplay::renderCalibrationPattern()
     _matrix->drawPixel(w - 1, h - 1, _matrix->Color(0, 255, 255));
     if (w > 1) _matrix->drawPixel(w - 2, h - 1, _matrix->Color(0, 255, 255));
     if (h > 1) _matrix->drawPixel(w - 1, h - 2, _matrix->Color(0, 255, 255));
-
-    FastLED.show();
 }
 
 // --- Positioning mode (independent from calibration) ---
@@ -776,7 +667,6 @@ void NeoMatrixDisplay::renderPositioningPattern()
         }
     }
 
-    FastLED.show();
 }
 
 void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size_t index)
@@ -798,6 +688,55 @@ void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size
     {
         displayLoadingScreen();
     }
+}
 
+// --- Display pipeline API (Story ds-1.5, Architecture D3) ---
+
+RenderContext NeoMatrixDisplay::buildRenderContext() const
+{
+    RenderContext ctx = {};
+    ctx.matrix = _matrix;
+    ctx.layout = _layout;
+    ctx.logoBuffer = const_cast<uint16_t*>(_logoBuffer);
+
+    DisplayConfig disp = ConfigManager::getDisplay();
+    if (_matrix != nullptr) {
+        ctx.textColor = _matrix->Color(disp.text_color_r,
+                                       disp.text_color_g,
+                                       disp.text_color_b);
+    } else {
+        ctx.textColor = 0;
+    }
+    ctx.brightness = disp.brightness;
+
+    TimingConfig timing = ConfigManager::getTiming();
+    ctx.displayCycleMs = timing.display_cycle * 1000;
+
+    return ctx;
+}
+
+void NeoMatrixDisplay::show()
+{
     FastLED.show();
+}
+
+void NeoMatrixDisplay::displayFallbackCard(const std::vector<FlightInfo> &flights)
+{
+    if (_matrix == nullptr)
+        return;
+
+    _matrix->fillScreen(0);
+
+    if (!flights.empty())
+    {
+        if (_layout.valid) {
+            renderZoneFlight(flights[0]);
+        } else {
+            displaySingleFlightCard(flights[0]);
+        }
+    }
+    else
+    {
+        displayLoadingScreen();
+    }
 }
