@@ -104,9 +104,9 @@ void DisplayUtils::drawBitmapRGB565(FastLED_NeoMatrix* matrix, int16_t x, int16_
     // Guard: null bitmap is a caller error — skip silently rather than hard-fault.
     if (bitmap == nullptr) return;
 
-    // Render RGB565 bitmap into the matrix, clipped to zone bounds.
-    // Bitmap is always 32x32 (LOGO_WIDTH x LOGO_HEIGHT).
-    // If zone is smaller, we center-crop. If larger, we center the bitmap.
+    // Render an RGB565 bitmap (w×h pixels) into the matrix, clipped to zone bounds.
+    // Bitmap dimensions are caller-specified (e.g. 16×16 for LogoWidget V1 stub).
+    // If zone is smaller than the bitmap, we center-crop. If larger, we center the bitmap.
     int16_t offsetX = 0, offsetY = 0;
     uint16_t drawW = w, drawH = h;
 

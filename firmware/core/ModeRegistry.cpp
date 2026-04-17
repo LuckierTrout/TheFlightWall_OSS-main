@@ -88,6 +88,33 @@ bool ModeRegistry::requestSwitch(const char* modeId) {
     return true;
 }
 
+bool ModeRegistry::requestForceReload(const char* modeId) {
+    uint8_t idx = findIndex(modeId);
+    if (idx == MODE_INDEX_NONE) {
+        _lastErrorCode.store("UNKNOWN_MODE");
+        _errorUpdating.store(true);
+        snprintf(_lastError, sizeof(_lastError), "Unknown mode: %.40s",
+                 modeId ? modeId : "(null)");
+        _errorUpdating.store(false);
+        LOG_W("ModeRegistry", "Force-reload request rejected — unknown mode");
+        return false;
+    }
+
+    // Bypass the same-mode idempotency guard in tick() by clearing
+    // _activeModeIndex BEFORE storing the request. tick() on Core 0 reads
+    // _activeModeIndex AFTER consuming _requestedIndex, so a race where Core 0
+    // observes MODE_INDEX_NONE → idx is benign: it triggers executeSwitch()
+    // exactly as intended. The atomic stores provide the required visibility.
+    _activeModeIndex.store(MODE_INDEX_NONE);
+    _requestedIndex.store(idx);
+    _switchState.store(SwitchState::REQUESTED);
+    LOG_I("ModeRegistry", "Force-reload requested");
+#if LOG_LEVEL >= 2
+    Serial.printf("[ModeRegistry] Force-reload target: %s (index %d)\n", modeId, (int)idx);
+#endif
+    return true;
+}
+
 void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
                                  const std::vector<FlightInfo>& flights) {
     _switchState.store(SwitchState::SWITCHING);

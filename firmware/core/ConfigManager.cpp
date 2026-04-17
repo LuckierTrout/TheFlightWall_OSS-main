@@ -744,6 +744,36 @@ bool ConfigManager::getUpgNotif() {
     return val;
 }
 
+// Active layout id NVS persistence (Story le-1.1, AC #5)
+// Key "layout_active" (13 chars) — within NVS 15-char limit.
+// Empty string is a valid "unset" indicator so callers can distinguish
+// "never configured" from "explicitly empty".
+String ConfigManager::getLayoutActiveId() {
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return String();
+    }
+    String val = prefs.getString("layout_active", "");
+    prefs.end();
+    return val;
+}
+
+bool ConfigManager::setLayoutActiveId(const char* id) {
+    if (id == nullptr) return false;
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) {
+        LOG_E("ConfigManager", "Failed to open NVS for layout_active write");
+        return false;
+    }
+    size_t written = prefs.putString("layout_active", id);
+    prefs.end();
+    if (written != strlen(id)) return false;
+    // Notify listeners (display task, etc.) so g_configChanged is set and
+    // the LE-1.3 AC #7 re-init hook fires when the active layout changes.
+    fireCallbacks();
+    return true;
+}
+
 // Per-mode NVS settings (Story dl-1.1, AC #3/#6)
 // Key format: m_{abbrev}_{key} — composed key must be ≤15 chars (NVS limit).
 // Read path: never writes to NVS (AC #3 — no accidental key creation on first read).

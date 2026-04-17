@@ -5,9 +5,8 @@
 #include "models/FlightInfo.h"
 #include "core/LayoutEngine.h"
 
-// Heap baseline after Foundation boot — measured on hardware:
-// Free heap: ~XXX,XXX bytes / Max alloc: ~YY,YYY bytes
-// (Update with actual values from serial monitor after flashing — Task 1.3)
+// Heap baseline after Foundation boot — measured on hardware after flashing.
+// Update these values from serial monitor output (Task 1.3 — not yet measured).
 
 // --- Rendering Context (passed to modes each frame) ---
 struct RenderContext {
@@ -17,6 +16,7 @@ struct RenderContext {
     uint8_t brightness;              // read-only — managed by night mode scheduler
     uint16_t* logoBuffer;            // shared 2KB buffer from NeoMatrixDisplay
     uint32_t displayCycleMs;         // cycle interval for modes that rotate flights (ms; uint32 avoids overflow for display_cycle > 65s)
+    const FlightInfo* currentFlight = nullptr; // LE-1.8: pointer to flight being displayed; nullptr when no active flight
 };
 
 // --- Zone Descriptor (static metadata for Mode Picker UI wireframes) ---

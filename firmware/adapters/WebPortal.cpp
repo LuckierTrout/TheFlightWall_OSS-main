@@ -44,6 +44,7 @@ extern bool isNtpSynced();
 extern bool isScheduleDimming();
 
 #include "core/LayoutEngine.h"
+#include "core/LayoutStore.h"
 #include "core/ModeOrchestrator.h"
 #include "core/ModeRegistry.h"
 
@@ -780,6 +781,108 @@ void WebPortal::_registerRoutes() {
         request->send(response);
     });
 
+    // ─── Layout CRUD (LE-1.4) ───
+    // Register specific paths before wildcards. POST /api/layouts/*/activate
+    // is a distinct path from POST /api/layouts (exact) and POST /api/layouts/*
+    // would overlap with activate — but ESPAsyncWebServer matches the longer
+    // activate path first. Register activate ahead of the generic PUT/DELETE
+    // wildcards for safety.
+    _server->on("/api/layouts", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLayouts(request);
+    });
+
+    _server->on("/api/layouts", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (data == nullptr || total == 0) {
+                clearPendingBody(request);
+                _sendJsonError(request, 400, "Empty body", "EMPTY_PAYLOAD");
+                return;
+            }
+            if (total > LAYOUT_STORE_MAX_BYTES) {
+                clearPendingBody(request);
+                _sendJsonError(request, 413, "Layout too large", "LAYOUT_TOO_LARGE");
+                return;
+            }
+            if (index == 0) {
+                clearPendingBody(request);
+                g_pendingBodies.push_back({request, String()});
+                g_pendingBodies.back().body.reserve(total);
+                request->onDisconnect([request]() { clearPendingBody(request); });
+            }
+            PendingRequestBody* pending = findPendingBody(request);
+            if (pending == nullptr) {
+                _sendJsonError(request, 400, "Incomplete body", "INCOMPLETE_BODY");
+                return;
+            }
+            pending->body.concat(reinterpret_cast<const char*>(data), len);
+            if (index + len == total) {
+                _handlePostLayout(
+                    request,
+                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
+                    pending->body.length()
+                );
+                clearPendingBody(request);
+            }
+        }
+    );
+
+    // Register activate BEFORE generic wildcards so longer/more specific
+    // path matches first on the mathieucarbou fork.
+    _server->on("/api/layouts/*/activate", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostLayoutActivate(request);
+    });
+
+    _server->on("/api/layouts/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetLayoutById(request);
+    });
+
+    _server->on("/api/layouts/*", HTTP_PUT,
+        [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (data == nullptr || total == 0) {
+                clearPendingBody(request);
+                _sendJsonError(request, 400, "Empty body", "EMPTY_PAYLOAD");
+                return;
+            }
+            if (total > LAYOUT_STORE_MAX_BYTES) {
+                clearPendingBody(request);
+                _sendJsonError(request, 413, "Layout too large", "LAYOUT_TOO_LARGE");
+                return;
+            }
+            if (index == 0) {
+                clearPendingBody(request);
+                g_pendingBodies.push_back({request, String()});
+                g_pendingBodies.back().body.reserve(total);
+                request->onDisconnect([request]() { clearPendingBody(request); });
+            }
+            PendingRequestBody* pending = findPendingBody(request);
+            if (pending == nullptr) {
+                _sendJsonError(request, 400, "Incomplete body", "INCOMPLETE_BODY");
+                return;
+            }
+            pending->body.concat(reinterpret_cast<const char*>(data), len);
+            if (index + len == total) {
+                _handlePutLayout(
+                    request,
+                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
+                    pending->body.length()
+                );
+                clearPendingBody(request);
+            }
+        }
+    );
+
+    _server->on("/api/layouts/*", HTTP_DELETE, [this](AsyncWebServerRequest* request) {
+        _handleDeleteLayout(request);
+    });
+
+    _server->on("/api/widgets/types", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetWidgetTypes(request);
+    });
+
     // Shared static assets (gzipped on LittleFS)
     _server->on("/style.css", HTTP_GET, [](AsyncWebServerRequest* request) {
         _serveGzAsset(request, "/style.css.gz", "text/css");
@@ -798,6 +901,16 @@ void WebPortal::_registerRoutes() {
     });
     _server->on("/health.js", HTTP_GET, [](AsyncWebServerRequest* request) {
         _serveGzAsset(request, "/health.js.gz", "application/javascript");
+    });
+    // Layout Editor assets (LE-1.6)
+    _server->on("/editor.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/editor.html.gz", "text/html");
+    });
+    _server->on("/editor.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/editor.js.gz", "application/javascript");
+    });
+    _server->on("/editor.css", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/editor.css.gz", "text/css");
     });
 }
 
@@ -1676,4 +1789,407 @@ void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, con
     String output;
     serializeJson(doc, output);
     request->send(httpCode, "application/json", output);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Layout CRUD + activation (Story LE-1.4)
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Shared helpers for layout handlers — keep path parsing consistent.
+
+// Extract a layout id segment from a URL of the form /api/layouts/<id>
+// (or /api/layouts/<id>/activate when activateSegment = true).
+// Strips any query string. Returns empty String on failure.
+String extractLayoutIdFromUrl(const String& url, bool activateSegment) {
+    if (activateSegment) {
+        const char* prefix = "/api/layouts/";
+        const char* suffix = "/activate";
+        size_t prefixLen = strlen(prefix);
+        size_t suffixLen = strlen(suffix);
+        if (!url.startsWith(prefix) || !url.endsWith(suffix)) {
+            return String();
+        }
+        if (url.length() < prefixLen + suffixLen + 1) return String();
+        return url.substring(prefixLen, url.length() - suffixLen);
+    }
+    // Simple "/api/layouts/<id>" path: take everything after the final '/'.
+    int lastSlash = url.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == (int)(url.length() - 1)) return String();
+    String id = url.substring(lastSlash + 1);
+    int queryStart = id.indexOf('?');
+    if (queryStart >= 0) id = id.substring(0, queryStart);
+    return id;
+}
+
+} // namespace
+
+void WebPortal::_handleGetLayouts(AsyncWebServerRequest* request) {
+    std::vector<LayoutEntry> entries;
+    if (!LayoutStore::list(entries)) {
+        _sendJsonError(request, 500, "Layout storage unavailable", "STORAGE_UNAVAILABLE");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+    data["active_id"] = LayoutStore::getActiveId();
+    JsonArray arr = data["layouts"].to<JsonArray>();
+    for (const auto& e : entries) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["id"] = e.id;
+        obj["name"] = e.name;
+        obj["bytes"] = e.sizeBytes;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetLayoutById(AsyncWebServerRequest* request) {
+    String id = extractLayoutIdFromUrl(request->url(), false);
+    if (id.length() == 0) {
+        _sendJsonError(request, 400, "Missing layout id", "MISSING_ID");
+        return;
+    }
+    if (!LayoutStore::isSafeLayoutId(id.c_str())) {
+        _sendJsonError(request, 400, "Invalid layout id", "INVALID_ID");
+        return;
+    }
+    String body;
+    if (!LayoutStore::load(id.c_str(), body)) {
+        _sendJsonError(request, 404, "Layout not found", "LAYOUT_NOT_FOUND");
+        return;
+    }
+    // Parse body so it's embedded as a JSON object (not a double-encoded
+    // string) under data.
+    JsonDocument doc;
+    JsonDocument layoutDoc;
+    DeserializationError err = deserializeJson(layoutDoc, body);
+    if (err) {
+        _sendJsonError(request, 500, "Stored layout is corrupt", "LAYOUT_CORRUPT");
+        return;
+    }
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    root["data"] = layoutDoc.as<JsonVariant>();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostLayout(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, data, len);
+    if (err) {
+        _sendJsonError(request, 400, "Invalid JSON", "LAYOUT_INVALID");
+        return;
+    }
+    if (!doc.is<JsonObject>()) {
+        _sendJsonError(request, 400, "Expected JSON object", "LAYOUT_INVALID");
+        return;
+    }
+    const char* id = doc["id"] | (const char*)nullptr;
+    if (id == nullptr || *id == '\0') {
+        _sendJsonError(request, 400, "Missing id in layout body", "LAYOUT_INVALID");
+        return;
+    }
+    if (!LayoutStore::isSafeLayoutId(id)) {
+        _sendJsonError(request, 400, "Invalid layout id", "LAYOUT_INVALID");
+        return;
+    }
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+
+    LayoutStoreError result = LayoutStore::save(id, jsonStr.c_str());
+    switch (result) {
+        case LayoutStoreError::OK: {
+            JsonDocument respDoc;
+            JsonObject root = respDoc.to<JsonObject>();
+            root["ok"] = true;
+            JsonObject respData = root["data"].to<JsonObject>();
+            respData["id"] = id;
+            respData["bytes"] = jsonStr.length();
+            String output;
+            serializeJson(respDoc, output);
+            request->send(200, "application/json", output);
+            return;
+        }
+        case LayoutStoreError::TOO_LARGE:
+            _sendJsonError(request, 413, "Layout too large", "LAYOUT_TOO_LARGE");
+            return;
+        case LayoutStoreError::INVALID_SCHEMA:
+            _sendJsonError(request, 400, "Layout schema invalid", "LAYOUT_INVALID");
+            return;
+        case LayoutStoreError::FS_FULL:
+            _sendJsonError(request, 507, "Filesystem full", "FS_FULL");
+            return;
+        case LayoutStoreError::IO_ERROR:
+        default:
+            _sendJsonError(request, 500, "Layout IO error", "IO_ERROR");
+            return;
+    }
+}
+
+void WebPortal::_handlePutLayout(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    String id = extractLayoutIdFromUrl(request->url(), false);
+    if (id.length() == 0) {
+        _sendJsonError(request, 400, "Missing layout id", "MISSING_ID");
+        return;
+    }
+    if (!LayoutStore::isSafeLayoutId(id.c_str())) {
+        _sendJsonError(request, 400, "Invalid layout id", "INVALID_ID");
+        return;
+    }
+    // Must exist already — PUT is overwrite-only. Caller should use POST to
+    // create. Check via load() (fills a default on miss; use return value).
+    String existing;
+    if (!LayoutStore::load(id.c_str(), existing)) {
+        _sendJsonError(request, 404, "Layout not found", "LAYOUT_NOT_FOUND");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, data, len);
+    if (err) {
+        _sendJsonError(request, 400, "Invalid JSON", "LAYOUT_INVALID");
+        return;
+    }
+    if (!doc.is<JsonObject>()) {
+        _sendJsonError(request, 400, "Expected JSON object", "LAYOUT_INVALID");
+        return;
+    }
+    const char* docId = doc["id"] | (const char*)nullptr;
+    if (docId == nullptr) {
+        _sendJsonError(request, 400, "Missing id field in layout body", "LAYOUT_INVALID");
+        return;
+    }
+    if (strcmp(docId, id.c_str()) != 0) {
+        _sendJsonError(request, 400, "Body id does not match URL id", "LAYOUT_INVALID");
+        return;
+    }
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+
+    LayoutStoreError result = LayoutStore::save(id.c_str(), jsonStr.c_str());
+    switch (result) {
+        case LayoutStoreError::OK: {
+            JsonDocument respDoc;
+            JsonObject root = respDoc.to<JsonObject>();
+            root["ok"] = true;
+            JsonObject respData = root["data"].to<JsonObject>();
+            respData["id"] = id;
+            respData["bytes"] = jsonStr.length();
+            String output;
+            serializeJson(respDoc, output);
+            request->send(200, "application/json", output);
+            return;
+        }
+        case LayoutStoreError::TOO_LARGE:
+            _sendJsonError(request, 413, "Layout too large", "LAYOUT_TOO_LARGE");
+            return;
+        case LayoutStoreError::INVALID_SCHEMA:
+            _sendJsonError(request, 400, "Layout schema invalid", "LAYOUT_INVALID");
+            return;
+        case LayoutStoreError::FS_FULL:
+            _sendJsonError(request, 507, "Filesystem full", "FS_FULL");
+            return;
+        case LayoutStoreError::IO_ERROR:
+        default:
+            _sendJsonError(request, 500, "Layout IO error", "IO_ERROR");
+            return;
+    }
+}
+
+void WebPortal::_handleDeleteLayout(AsyncWebServerRequest* request) {
+    String id = extractLayoutIdFromUrl(request->url(), false);
+    if (id.length() == 0) {
+        _sendJsonError(request, 400, "Missing layout id", "MISSING_ID");
+        return;
+    }
+    if (!LayoutStore::isSafeLayoutId(id.c_str())) {
+        _sendJsonError(request, 400, "Invalid layout id", "INVALID_ID");
+        return;
+    }
+    String activeId = LayoutStore::getActiveId();
+    if (activeId == id) {
+        _sendJsonError(request, 409, "Cannot delete active layout", "LAYOUT_ACTIVE");
+        return;
+    }
+    if (!LayoutStore::remove(id.c_str())) {
+        _sendJsonError(request, 404, "Layout not found", "LAYOUT_NOT_FOUND");
+        return;
+    }
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostLayoutActivate(AsyncWebServerRequest* request) {
+    String id = extractLayoutIdFromUrl(request->url(), true);
+    if (id.length() == 0) {
+        _sendJsonError(request, 400, "Invalid activate path", "INVALID_PATH");
+        return;
+    }
+    if (!LayoutStore::isSafeLayoutId(id.c_str())) {
+        _sendJsonError(request, 400, "Invalid layout id", "INVALID_ID");
+        return;
+    }
+    // Verify the layout actually exists — load() returns false on miss.
+    String tmp;
+    if (!LayoutStore::load(id.c_str(), tmp)) {
+        _sendJsonError(request, 404, "Layout not found", "LAYOUT_NOT_FOUND");
+        return;
+    }
+    if (!LayoutStore::setActiveId(id.c_str())) {
+        _sendJsonError(request, 500, "Failed to persist active layout id", "NVS_ERROR");
+        return;
+    }
+    // Rule #24: route mode switch through orchestrator. Never call
+    // ModeRegistry::requestSwitch directly from WebPortal.
+    ModeOrchestrator::onManualSwitch("custom_layout", "Custom Layout");
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+    data["active_id"] = id;
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
+    // ─────────────────────────────────────────────────────────────────────
+    // SYNC-RISK NOTE (LE-1.4 review follow-up):
+    // The widget type strings below ("text", "clock", "logo", "flight_field",
+    // "metric") and their field schemas are hard-coded here. The same type
+    // strings also live in:
+    //   • core/LayoutStore.cpp  — kAllowedWidgetTypes[] (save() validation)
+    //   • core/WidgetRegistry.cpp — WidgetRegistry::fromString() (render dispatch)
+    // All three lists MUST stay in lock-step. If a new widget type is added
+    // without updating this handler, the editor UI (LE-1.7) will have no
+    // way to surface it even though LayoutStore accepts it and the
+    // renderer draws it. Consolidate in LE-1.7 when the widget system
+    // stabilises (e.g. promote to a single WidgetType descriptor table
+    // consumed by all three call sites).
+    // ─────────────────────────────────────────────────────────────────────
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonArray data = root["data"].to<JsonArray>();
+
+    // Helper lambdas to tighten the repetitive build-up. JsonDocument is
+    // scoped to this function — no static allocations (AR rule).
+    auto addField = [](JsonArray& fields, const char* key, const char* kind,
+                       const char* defaultStr, int defaultInt, bool useInt,
+                       const char* const* options, size_t optCount) {
+        JsonObject f = fields.add<JsonObject>();
+        f["key"] = key;
+        f["kind"] = kind;
+        if (useInt) f["default"] = defaultInt;
+        else        f["default"] = defaultStr;
+        if (options != nullptr && optCount > 0) {
+            JsonArray arr = f["options"].to<JsonArray>();
+            for (size_t i = 0; i < optCount; ++i) arr.add(options[i]);
+        }
+    };
+
+    // ── text ─────────────────────────────────────────────────────────────
+    {
+        JsonObject obj = data.add<JsonObject>();
+        obj["type"] = "text";
+        obj["label"] = "Text";
+        JsonArray fields = obj["fields"].to<JsonArray>();
+        addField(fields, "content", "string", "", 0, false, nullptr, 0);
+        static const char* const alignOptions[] = { "left", "center", "right" };
+        addField(fields, "align", "select", "left", 0, false, alignOptions, 3);
+        addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
+        addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "w", "int", nullptr, 32, true, nullptr, 0);
+        addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+    }
+    // ── clock ────────────────────────────────────────────────────────────
+    {
+        JsonObject obj = data.add<JsonObject>();
+        obj["type"] = "clock";
+        obj["label"] = "Clock";
+        JsonArray fields = obj["fields"].to<JsonArray>();
+        static const char* const clockFmtOptions[] = { "12h", "24h" };
+        addField(fields, "content", "select", "24h", 0, false, clockFmtOptions, 2);
+        addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
+        addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
+        addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+    }
+    // ── logo ─────────────────────────────────────────────────────────────
+    {
+        JsonObject obj = data.add<JsonObject>();
+        obj["type"] = "logo";
+        obj["label"] = "Logo";
+        // LE-1.5: real RGB565 bitmap pipeline — upload via POST /api/logos,
+        // then set content to the ICAO/id (e.g. "UAL"). Falls back to
+        // PROGMEM airplane sprite when logo_id is not found on LittleFS.
+        JsonArray fields = obj["fields"].to<JsonArray>();
+        addField(fields, "content", "string", "", 0, false, nullptr, 0);
+        addField(fields, "color", "color", "#0000FF", 0, false, nullptr, 0);
+        addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "w", "int", nullptr, 16, true, nullptr, 0);
+        addField(fields, "h", "int", nullptr, 16, true, nullptr, 0);
+    }
+    // ── flight_field ─────────────────────────────────────────────────────
+    // LE-1.8 — wired through to FlightFieldWidget. `content` is now a
+    // dropdown of supported field keys; the renderer resolves them against
+    // RenderContext.currentFlight and falls back to "--" when missing.
+    {
+        JsonObject obj = data.add<JsonObject>();
+        obj["type"] = "flight_field";
+        obj["label"] = "Flight Field";
+        JsonArray fields = obj["fields"].to<JsonArray>();
+        static const char* const flightFieldOptions[] = {
+            "airline", "ident", "origin_icao", "dest_icao", "aircraft"
+        };
+        addField(fields, "content", "select", "airline", 0, false,
+                 flightFieldOptions, 5);
+        addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
+        addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
+        addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+    }
+    // ── metric ───────────────────────────────────────────────────────────
+    // LE-1.8 — wired through to MetricWidget. `content` is now a dropdown
+    // of supported telemetry keys. NAN values and unknown keys fall back
+    // to a "--" placeholder at render time.
+    {
+        JsonObject obj = data.add<JsonObject>();
+        obj["type"] = "metric";
+        obj["label"] = "Metric";
+        JsonArray fields = obj["fields"].to<JsonArray>();
+        static const char* const metricOptions[] = {
+            "alt", "speed", "track", "vsi"
+        };
+        addField(fields, "content", "select", "alt", 0, false,
+                 metricOptions, 4);
+        addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
+        addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
+        addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
+        addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+    }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
 }

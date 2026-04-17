@@ -1,0 +1,33 @@
+{
+  "id": "gf_c",
+  "name": "Golden C - Max Density",
+  "v": 1,
+  "canvas": {"w": 160, "h": 32},
+  "bg": "#000000",
+  "widgets": [
+    {"id":"c01","type":"text","x":0,"y":0,"w":40,"h":8,"color":"#FFFFFF","content":"AA"},
+    {"id":"c02","type":"text","x":40,"y":0,"w":40,"h":8,"color":"#FFFFFF","content":"BB"},
+    {"id":"c03","type":"text","x":80,"y":0,"w":40,"h":8,"color":"#FFFFFF","content":"CC"},
+    {"id":"c04","type":"text","x":120,"y":0,"w":40,"h":8,"color":"#FFFFFF","content":"DD"},
+    {"id":"c05","type":"text","x":0,"y":8,"w":40,"h":8,"color":"#FFFF00","content":"EE"},
+    {"id":"c06","type":"text","x":40,"y":8,"w":40,"h":8,"color":"#FFFF00","content":"FF"},
+    {"id":"c07","type":"flight_field","x":80,"y":8,"w":40,"h":8,"color":"#00FF00","content":"airline"},
+    {"id":"c08","type":"flight_field","x":120,"y":8,"w":40,"h":8,"color":"#00FF00","content":"ident"},
+    {"id":"c09","type":"flight_field","x":0,"y":16,"w":40,"h":8,"color":"#00FFFF","content":"origin_icao"},
+    {"id":"c10","type":"flight_field","x":40,"y":16,"w":40,"h":8,"color":"#00FFFF","content":"dest_icao"},
+    {"id":"c11","type":"flight_field","x":80,"y":16,"w":40,"h":8,"color":"#FF8800","content":"aircraft"},
+    {"id":"c12","type":"metric","x":120,"y":16,"w":40,"h":8,"color":"#FF8800","content":"alt"},
+    {"id":"c13","type":"metric","x":0,"y":24,"w":40,"h":8,"color":"#FF00FF","content":"speed"},
+    {"id":"c14","type":"metric","x":40,"y":24,"w":40,"h":8,"color":"#FF00FF","content":"track"},
+    {"id":"c15","type":"metric","x":80,"y":24,"w":40,"h":8,"color":"#FF00FF","content":"vsi"},
+    {"id":"c16","type":"clock","x":120,"y":24,"w":40,"h":8,"color":"#FFFFFF","content":"24h"},
+    {"id":"c17","type":"text","x":0,"y":0,"w":20,"h":8,"color":"#888888","content":"a"},
+    {"id":"c18","type":"text","x":20,"y":0,"w":20,"h":8,"color":"#888888","content":"b"},
+    {"id":"c19","type":"text","x":40,"y":0,"w":20,"h":8,"color":"#888888","content":"c"},
+    {"id":"c20","type":"text","x":60,"y":0,"w":20,"h":8,"color":"#888888","content":"d"},
+    {"id":"c21","type":"text","x":80,"y":0,"w":20,"h":8,"color":"#888888","content":"e"},
+    {"id":"c22","type":"text","x":100,"y":0,"w":20,"h":8,"color":"#888888","content":"f"},
+    {"id":"c23","type":"text","x":120,"y":0,"w":20,"h":8,"color":"#888888","content":"g"},
+    {"id":"c24","type":"text","x":140,"y":0,"w":20,"h":8,"color":"#888888","content":"h"}
+  ]
+}

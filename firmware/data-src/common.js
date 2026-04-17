@@ -44,6 +44,14 @@ var FW = (function() {
     return fetchJson(url, { method: 'DELETE' });
   }
 
+  function put(url, data) {
+    return fetchJson(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  }
+
   /* Toast notification system */
   var toastContainer = null;
 
@@ -76,5 +84,5 @@ var FW = (function() {
     }, 2500);
   }
 
-  return { get: get, post: post, del: del, showToast: showToast };
+  return { get: get, post: post, put: put, del: del, showToast: showToast };
 })();

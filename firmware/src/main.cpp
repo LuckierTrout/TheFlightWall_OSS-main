@@ -40,9 +40,7 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "modes/LiveFlightCardMode.h"
 #include "modes/ClockMode.h"
 #include "modes/DeparturesBoardMode.h"
-#ifdef LE_V0_SPIKE
 #include "modes/CustomLayoutMode.h"
-#endif
 
 // Firmware version defined in platformio.ini build_flags
 #ifndef FW_VERSION
@@ -72,19 +70,15 @@ static uint32_t classicCardMemReq() { return ClassicCardMode::MEMORY_REQUIREMENT
 static uint32_t liveFlightCardMemReq() { return LiveFlightCardMode::MEMORY_REQUIREMENT; }
 static uint32_t clockMemReq() { return ClockMode::MEMORY_REQUIREMENT; }
 static uint32_t departuresBoardMemReq() { return DeparturesBoardMode::MEMORY_REQUIREMENT; }
-#ifdef LE_V0_SPIKE
 static DisplayMode* customLayoutFactory() { return new CustomLayoutMode(); }
 static uint32_t customLayoutMemReq() { return CustomLayoutMode::MEMORY_REQUIREMENT; }
-#endif
 
 static const ModeEntry MODE_TABLE[] = {
     { "classic_card",      "Classic Card",       classicCardFactory,      classicCardMemReq,      0, &ClassicCardMode::_descriptor,         nullptr },
     { "live_flight",       "Live Flight Card",   liveFlightCardFactory,   liveFlightCardMemReq,   1, &LiveFlightCardMode::_descriptor,      nullptr },
     { "clock",             "Clock",              clockFactory,            clockMemReq,            2, &ClockMode::_descriptor,               &CLOCK_SCHEMA },
     { "departures_board",  "Departures Board",   departuresBoardFactory,  departuresBoardMemReq,  3, &DeparturesBoardMode::_descriptor,     &DEPBD_SCHEMA },
-#ifdef LE_V0_SPIKE
-    { "custom_layout",     "Custom Layout (V0)", customLayoutFactory,     customLayoutMemReq,     4, &CustomLayoutMode::_descriptor,        nullptr },
-#endif
+    { "custom_layout",     "Custom Layout",      customLayoutFactory,     customLayoutMemReq,     4, &CustomLayoutMode::_descriptor,        nullptr },
 };
 static constexpr uint8_t MODE_COUNT = sizeof(MODE_TABLE) / sizeof(MODE_TABLE[0]);
 
@@ -366,63 +360,6 @@ static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConf
 
 // --- Display task (Task 2) ---
 
-#ifdef LE_V0_METRICS
-// Layout-editor V0 feasibility spike instrumentation.
-// Compiled only when -DLE_V0_METRICS is set (via [env:esp32dev_le_baseline]
-// and [env:esp32dev_le_spike] in platformio.ini). Measures ModeRegistry::tick()
-// cost (which wraps the active mode's render()) and logs stats + heap every 10s.
-// See story le-0-1-layout-editor-v0-feasibility-spike.md.
-static constexpr size_t LE_V0_RING_SIZE = 128;
-static uint32_t s_leSamples[LE_V0_RING_SIZE];
-static size_t   s_leCount = 0;
-static size_t   s_leIdx = 0;
-static unsigned long s_leLastStatsMs = 0;
-
-static uint32_t s_leRecordCalls = 0;  // diagnostic: confirms record() is invoked
-static void le_v0_record(uint32_t us) {
-    s_leSamples[s_leIdx] = us;
-    s_leIdx = (s_leIdx + 1) % LE_V0_RING_SIZE;
-    if (s_leCount < LE_V0_RING_SIZE) s_leCount++;
-    s_leRecordCalls++;
-    // Fire an early sanity log so we know the instrumented path is being hit.
-    if (s_leRecordCalls == 1 || s_leRecordCalls == 20 || s_leRecordCalls == 100) {
-        Serial.printf("[LE-V0] record-hit #%u (first sample us=%u)\n",
-                      (unsigned)s_leRecordCalls, (unsigned)us);
-    }
-}
-
-static void le_v0_maybe_log(unsigned long nowMs) {
-    if (s_leLastStatsMs == 0) { s_leLastStatsMs = nowMs; return; }
-    // Shortened to 2s for spike debugging — produces data faster if the device
-    // reset-loops before the original 10s cadence can fire.
-    if (nowMs - s_leLastStatsMs < 2000UL) return;
-    s_leLastStatsMs = nowMs;
-    if (s_leCount == 0) return;
-
-    uint32_t tmp[LE_V0_RING_SIZE];
-    size_t n = s_leCount;
-    memcpy(tmp, s_leSamples, n * sizeof(uint32_t));
-    // Insertion sort (n<=128, fine at 0.1Hz log cadence).
-    for (size_t i = 1; i < n; ++i) {
-        uint32_t k = tmp[i];
-        size_t j = i;
-        while (j > 0 && tmp[j-1] > k) { tmp[j] = tmp[j-1]; --j; }
-        tmp[j] = k;
-    }
-    size_t p50 = n / 2;
-    size_t p95 = (n * 95) / 100; if (p95 >= n) p95 = n - 1;
-    uint64_t sum = 0; for (size_t i = 0; i < n; ++i) sum += tmp[i];
-    uint32_t mean = (uint32_t)(sum / n);
-    const char* modeId = ModeRegistry::getActiveModeId();
-    if (modeId == nullptr) modeId = "none";
-
-    Serial.printf("[LE-V0] mode=%s n=%u min=%uus mean=%uus p50=%uus p95=%uus max=%uus "
-                  "heap_free=%u heap_min=%u\n",
-                  modeId, (unsigned)n, tmp[0], mean, tmp[p50], tmp[p95], tmp[n-1],
-                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
-}
-#endif // LE_V0_METRICS
-
 void displayTask(void *pvParameters)
 {
     LOG_I("DisplayTask", "Display task started");
@@ -509,6 +446,21 @@ void displayTask(void *pvParameters)
             ctxInitialized = true;
 
             LOG_I("DisplayTask", "Config change detected, display settings updated");
+
+            // LE-1.3, AC #7: re-parse active layout when config changes and
+            // custom_layout is the active mode. We only react to real config
+            // changes (_cfgChg); schedule dim transitions do not affect the
+            // active layout id. requestForceReload() (not requestSwitch()) is
+            // used here because requestSwitch() to the same mode is a no-op in
+            // ModeRegistry::tick() — the same-mode idempotency guard would
+            // consume the request silently without executing teardown→init.
+            if (_cfgChg) {
+                const char* activeId = ModeRegistry::getActiveModeId();
+                if (activeId != nullptr && strcmp(activeId, "custom_layout") == 0) {
+                    LOG_I("CustomLayoutMode", "re-init from configChanged");
+                    ModeRegistry::requestForceReload("custom_layout");
+                }
+            }
         }
 
         // Build RenderContext on first frame if not yet initialized (AC #3)
@@ -539,15 +491,6 @@ void displayTask(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
-
-#ifdef LE_V0_METRICS
-        // V0 spike measurement hack: bypass persistent startup status messages
-        // so the mode render path (and instrumented ModeRegistry::tick) runs
-        // from the first frame. The device still receives status messages but
-        // they never persist across loop iterations in the spike build. This
-        // lets us measure render cost without waiting for network fetch.
-        statusMessageVisible = false;
-#endif
 
         DisplayStatusMessage statusMessage = {};
         if (g_displayMessageQueue != nullptr &&
@@ -605,14 +548,7 @@ void displayTask(void *pvParameters)
         }
 
         // Mode system renders; fallback if no active mode (AC #5)
-#ifdef LE_V0_METRICS
-        uint32_t _leT0 = micros();
-#endif
         ModeRegistry::tick(cachedCtx, *flightsPtr);
-#ifdef LE_V0_METRICS
-        le_v0_record(micros() - _leT0);
-        le_v0_maybe_log(millis());
-#endif
         if (ModeRegistry::getActiveMode() == nullptr) {
             g_display.displayFallbackCard(*flightsPtr);
         }
@@ -876,31 +812,6 @@ void setup()
             return nullptr;
         };
 
-#ifdef LE_V0_METRICS
-        // V0 spike: force a deterministic mode per build variant so baseline vs
-        // spike measurements compare apples-to-apples. Calls ModeRegistry::requestSwitch
-        // directly — bypasses ModeOrchestrator's same-mode guard (which would skip
-        // the registry activation when the orchestrator's initial _activeModeId
-        // already matches the target).
-        (void)findModeName;
-        #ifdef LE_V0_SPIKE
-            if (!ModeRegistry::requestSwitch("custom_layout")) {
-                Serial.println("[LE-V0] Boot override FAILED: custom_layout not registered");
-            } else {
-                ModeOrchestrator::onManualSwitch("custom_layout", "Custom Layout (V0)");
-                ConfigManager::setDisplayMode("custom_layout");
-                Serial.println("[LE-V0] Boot override: forced mode = custom_layout");
-            }
-        #else
-            if (!ModeRegistry::requestSwitch("classic_card")) {
-                Serial.println("[LE-V0] Boot override FAILED: classic_card not registered");
-            } else {
-                ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
-                ConfigManager::setDisplayMode("classic_card");
-                Serial.println("[LE-V0] Boot override: forced mode = classic_card");
-            }
-        #endif
-#else
         if (g_wdtRecoveryBoot) {
             // dl-1.4, AC #1: WDT recovery — force clock unconditionally
             const char* clockName = findModeName("clock");
@@ -929,7 +840,6 @@ void setup()
                 ConfigManager::setDisplayMode("classic_card");
             }
         }
-#endif
     }
 
     g_display.showLoading();

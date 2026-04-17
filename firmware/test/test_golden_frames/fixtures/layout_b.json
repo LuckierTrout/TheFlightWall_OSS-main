@@ -1,0 +1,17 @@
+{
+  "id": "gf_b",
+  "name": "Golden B - FlightField Heavy",
+  "v": 1,
+  "canvas": {"w": 160, "h": 32},
+  "bg": "#000000",
+  "widgets": [
+    {"id":"b1","type":"flight_field","x":0,"y":0,"w":60,"h":8,"color":"#FFFFFF","content":"airline"},
+    {"id":"b2","type":"flight_field","x":0,"y":8,"w":48,"h":8,"color":"#FFFFFF","content":"ident"},
+    {"id":"b3","type":"flight_field","x":0,"y":16,"w":36,"h":8,"color":"#00FF00","content":"origin_icao"},
+    {"id":"b4","type":"flight_field","x":40,"y":16,"w":36,"h":8,"color":"#00FF00","content":"dest_icao"},
+    {"id":"b5","type":"metric","x":64,"y":0,"w":36,"h":8,"color":"#FFFF00","content":"alt"},
+    {"id":"b6","type":"metric","x":64,"y":8,"w":48,"h":8,"color":"#FFFF00","content":"speed"},
+    {"id":"b7","type":"metric","x":64,"y":16,"w":36,"h":8,"color":"#FF8800","content":"track"},
+    {"id":"b8","type":"metric","x":64,"y":24,"w":48,"h":8,"color":"#FF8800","content":"vsi"}
+  ]
+}

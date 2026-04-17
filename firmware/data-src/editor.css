@@ -1,0 +1,202 @@
+/* FlightWall Layout Editor styles (LE-1.6) */
+
+.editor-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.editor-header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.editor-back {
+  color: #58a6ff;
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.editor-back:hover {
+  text-decoration: underline;
+}
+
+.editor-main {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-toolbox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  width: 120px;
+  background: #161b22;
+  border-right: 1px solid #30363d;
+  overflow-y: auto;
+}
+
+.toolbox-item {
+  padding: 8px 10px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.toolbox-item:hover {
+  background: #2d333b;
+}
+
+.toolbox-item.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.editor-canvas-wrap {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 12px;
+  overflow: auto;
+  background: #0d1117;
+}
+
+#editor-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  touch-action: none;
+  cursor: crosshair;
+  display: block;
+  background: #111;
+  border: 1px solid #30363d;
+}
+
+.editor-props {
+  width: 220px;
+  padding: 12px;
+  background: #161b22;
+  border-left: 1px solid #30363d;
+  overflow-y: auto;
+}
+
+.props-placeholder {
+  color: #8b949e;
+  font-style: italic;
+  margin: 0;
+}
+
+.editor-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-top: 1px solid #30363d;
+}
+
+.snap-control {
+  display: inline-flex;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.snap-btn {
+  padding: 6px 12px;
+  background: #21262d;
+  color: #c9d1d9;
+  border: none;
+  border-right: 1px solid #30363d;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.snap-btn:last-child {
+  border-right: none;
+}
+
+.snap-btn:hover {
+  background: #2d333b;
+}
+
+.snap-btn.active {
+  background: var(--accent, #58a6ff);
+  color: #000;
+}
+
+.editor-status {
+  color: #8b949e;
+  font-size: 0.85rem;
+}
+
+/* Mobile: stack toolbox horizontally above the canvas */
+@media (max-width: 720px) {
+  .editor-main {
+    flex-direction: column;
+  }
+  .editor-toolbox {
+    flex-direction: row;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid #30363d;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .toolbox-item {
+    flex: 0 0 auto;
+  }
+  .editor-props {
+    width: auto;
+    border-left: none;
+    border-top: 1px solid #30363d;
+  }
+  .layout-name-input {
+    width: 100px;
+  }
+}
+
+/* --- Property panel form --- */
+.props-form { display: flex; flex-direction: column; gap: 10px; }
+.props-field { display: flex; flex-direction: column; gap: 4px; }
+.props-label { font-size: 0.8rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.04em; }
+.props-input { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 5px 8px; font-size: 0.9rem; width: 100%; box-sizing: border-box; }
+.props-input:focus { outline: none; border-color: #58a6ff; }
+.props-color-input { height: 36px; padding: 2px; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; cursor: pointer; width: 100%; box-sizing: border-box; }
+.props-readout { }
+.props-readout-value { font-size: 0.85rem; color: #c9d1d9; font-variant-numeric: tabular-nums; }
+
+/* --- Align control (L/C/R segment) --- */
+.align-control { display: inline-flex; border: 1px solid #30363d; border-radius: 4px; overflow: hidden; width: 100%; }
+.align-btn { flex: 1; padding: 6px 0; background: #21262d; color: #c9d1d9; border: none; border-right: 1px solid #30363d; cursor: pointer; font-size: 0.9rem; }
+.align-btn:last-child { border-right: none; }
+.align-btn:hover { background: #2d333b; }
+.align-btn.active { background: var(--accent, #58a6ff); color: #000; }
+
+/* --- Layout name + save control bar additions --- */
+.layout-name-input { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #c9d1d9; padding: 6px 10px; font-size: 0.9rem; width: 140px; box-sizing: border-box; }
+.layout-name-input:focus { outline: none; border-color: #58a6ff; }
+.save-control { display: inline-flex; gap: 6px; }
+.save-btn { padding: 6px 12px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.save-btn:hover { background: #2d333b; }
+.save-btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+.save-btn-primary:hover { background: #2ea043; }

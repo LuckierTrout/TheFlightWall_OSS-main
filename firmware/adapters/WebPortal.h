@@ -47,6 +47,15 @@ private:
     void _handleGetSchedule(AsyncWebServerRequest* request);
     void _handlePostSchedule(AsyncWebServerRequest* request, uint8_t* data, size_t len);
 
+    // Layout CRUD + activation (LE-1.4)
+    void _handleGetLayouts(AsyncWebServerRequest* request);
+    void _handleGetLayoutById(AsyncWebServerRequest* request);
+    void _handlePostLayout(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void _handlePutLayout(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void _handleDeleteLayout(AsyncWebServerRequest* request);
+    void _handlePostLayoutActivate(AsyncWebServerRequest* request);
+    void _handleGetWidgetTypes(AsyncWebServerRequest* request);
+
     static void _serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType);
     void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);
 };

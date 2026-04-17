@@ -1,0 +1,24 @@
+{
+  "id": "gf_a",
+  "name": "Golden A - Text+Clock",
+  "v": 1,
+  "canvas": {"w": 160, "h": 32},
+  "bg": "#000000",
+  "widgets": [
+    {
+      "id": "w1",
+      "type": "text",
+      "x": 2, "y": 2, "w": 80, "h": 8,
+      "color": "#FFFFFF",
+      "content": "FLIGHTWALL",
+      "align": "left"
+    },
+    {
+      "id": "w2",
+      "type": "clock",
+      "x": 2, "y": 12, "w": 48, "h": 8,
+      "color": "#FFFF00",
+      "content": "24h"
+    }
+  ]
+}

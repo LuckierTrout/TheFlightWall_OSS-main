@@ -46,6 +46,15 @@ public:
     /// Returns false if modeId is unknown; sets _lastError.
     static bool requestSwitch(const char* modeId);
 
+    /// Force a full teardown → init cycle for the currently active mode (e.g.,
+    /// to reload a layout whose backing file changed without a mode change).
+    /// Unlike requestSwitch(), this bypasses the same-mode idempotency guard
+    /// in tick() by temporarily clearing _activeModeIndex so the request is
+    /// treated as a genuine switch. Safe to call from any core (atomic write).
+    /// Returns false if modeId is unknown or the registry is uninitialised.
+    /// LE-1.3 AC #7: used by displayTask when layout_active NVS key changes.
+    static bool requestForceReload(const char* modeId);
+
     /// Cooperative tick — processes pending switch on Core 0. Call from displayTask.
     static void tick(const RenderContext& ctx,
                      const std::vector<FlightInfo>& flights);

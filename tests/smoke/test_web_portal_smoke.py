@@ -217,6 +217,46 @@ class FlightWallSmokeTests(unittest.TestCase):
         for key in ("used", "total", "logo_count"):
             self.assertIn(key, payload["storage"])
 
+    # ── LE-1.6 Editor assets ──────────────────────────────────────────────
+
+    def test_editor_page_loads(self) -> None:
+        """LE-1.6 AC #1: /editor.html must be served gzip-encoded as text/html."""
+        response = self.client.request("GET", "/editor.html")
+        self.assert_status(response, 200)
+        self.assertIn("text/html", response.content_type)
+        self.assertEqual("gzip", response.encoding, msg="editor.html must be served with Content-Encoding: gzip")
+        html = response.text
+        self.assertIn("editor-canvas", html)
+        self.assertIn("editor-toolbox", html)
+
+    def test_editor_js_loads(self) -> None:
+        """LE-1.6 AC #1: /editor.js must be served gzip-encoded as application/javascript."""
+        response = self.client.request("GET", "/editor.js")
+        self.assert_status(response, 200)
+        self.assertIn("javascript", response.content_type)
+        self.assertEqual("gzip", response.encoding, msg="editor.js must be served with Content-Encoding: gzip")
+
+    def test_editor_css_loads(self) -> None:
+        """LE-1.6 AC #1: /editor.css must be served gzip-encoded as text/css."""
+        response = self.client.request("GET", "/editor.css")
+        self.assert_status(response, 200)
+        self.assertIn("css", response.content_type)
+        self.assertEqual("gzip", response.encoding, msg="editor.css must be served with Content-Encoding: gzip")
+
+    def test_get_widget_types_contract(self) -> None:
+        """LE-1.6 AC #3: /api/widgets/types must return a list of type entries with required shape."""
+        payload = self.assert_json_object(self.client.request("GET", "/api/widgets/types"))
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, list, msg="data must be a list of widget type entries")
+        self.assertGreater(len(data), 0, msg="at least one widget type must be present")
+        for entry in data:
+            self.assertIsInstance(entry, dict)
+            self.assertIn("type", entry, msg="each widget type entry must have a 'type' key")
+            self.assertIn("label", entry, msg="each widget type entry must have a 'label' key")
+            self.assertIn("fields", entry, msg="each widget type entry must have a 'fields' list")
+            self.assertIsInstance(entry["fields"], list)
+
     def test_get_status_includes_ota_fields(self) -> None:
         """Story dl-6.2, AC #3: GET /api/status must include ota_available and ota_version."""
         payload = self.assert_json_object(self.client.request("GET", "/api/status"))

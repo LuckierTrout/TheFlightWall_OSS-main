@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>FlightWall Editor</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/editor.css">
+</head>
+<body>
+  <div class="editor-layout">
+    <header class="editor-header">
+      <a href="/" class="editor-back">&larr; Dashboard</a>
+      <h1>Layout Editor</h1>
+    </header>
+    <div class="editor-main">
+      <div class="editor-toolbox" id="editor-toolbox">
+        <!-- populated by JS from /api/widgets/types -->
+      </div>
+      <div class="editor-canvas-wrap">
+        <canvas id="editor-canvas"></canvas>
+      </div>
+      <div class="editor-props" id="editor-props">
+        <p class="props-placeholder" id="props-placeholder">Select a widget</p>
+        <div class="props-form" id="props-form" style="display:none">
+          <div class="props-field" id="props-field-content">
+            <label class="props-label" for="prop-content">Content</label>
+            <input type="text" id="prop-content" class="props-input" autocomplete="off">
+            <select id="prop-content-select" class="props-input" style="display:none"></select>
+          </div>
+          <div class="props-field" id="props-field-color">
+            <label class="props-label" for="prop-color">Color</label>
+            <input type="color" id="prop-color" class="props-color-input" value="#ffffff">
+          </div>
+          <div class="props-field" id="props-field-align">
+            <label class="props-label">Align</label>
+            <div class="align-control" id="align-control">
+              <button type="button" class="align-btn" data-align="left">L</button>
+              <button type="button" class="align-btn" data-align="center">C</button>
+              <button type="button" class="align-btn" data-align="right">R</button>
+            </div>
+          </div>
+          <div class="props-field props-readout" id="props-field-pos">
+            <label class="props-label">Position</label>
+            <span id="prop-pos-readout" class="props-readout-value">&mdash;</span>
+          </div>
+          <div class="props-field props-readout" id="props-field-size">
+            <label class="props-label">Size</label>
+            <span id="prop-size-readout" class="props-readout-value">&mdash;</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="editor-controls">
+      <input type="text" id="layout-name" class="layout-name-input" placeholder="Layout name" maxlength="32" autocomplete="off">
+      <div class="save-control">
+        <button type="button" id="btn-save-new" class="save-btn">Save as New</button>
+        <button type="button" id="btn-save" class="save-btn">Save</button>
+        <button type="button" id="btn-activate" class="save-btn save-btn-primary">Save &amp; Activate</button>
+      </div>
+      <div class="snap-control" id="snap-control">
+        <button type="button" class="snap-btn" data-snap="8">Default</button>
+        <button type="button" class="snap-btn" data-snap="16">Tidy</button>
+        <button type="button" class="snap-btn" data-snap="1">Fine</button>
+      </div>
+      <span class="editor-status" id="editor-status"></span>
+    </div>
+  </div>
+  <script src="/common.js"></script>
+  <script src="/editor.js"></script>
+</body>
+</html>

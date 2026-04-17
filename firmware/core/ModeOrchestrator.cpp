@@ -114,11 +114,6 @@ void ModeOrchestrator::onManualSwitch(const char* modeId, const char* modeName) 
 }
 
 void ModeOrchestrator::onIdleFallback() {
-#ifdef LE_V0_METRICS
-    // V0 spike: the boot-mode override forces a specific mode for measurement.
-    // Suppress idle fallback so it doesn't switch us back to "clock".
-    return;
-#endif
     if (_state == OrchestratorState::IDLE_FALLBACK) return; // already in fallback
     // Story dl-1.2, AC #1: drive ModeRegistry into clock mode.
     // AC #6: safe if clock is already active — requestSwitch is idempotent

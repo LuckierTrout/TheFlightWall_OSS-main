@@ -17,6 +17,7 @@
 // sched_r0_start = 14 chars, sched_r0_end = 12, sched_r0_mode = 13,
 // sched_r0_ena = 12, sched_r_count = 13 — all within 15-char limit.
 // Prefix "sched_r" distinguishes from brightness schedule "sched_dim_*".
+// layout_active = layout_active (13 chars, within 15-char NVS limit)
 
 struct DisplayConfig {
     uint8_t brightness;
@@ -127,6 +128,13 @@ public:
     // Read-only path never writes to NVS; write path validates and persists immediately.
     static int32_t getModeSetting(const char* abbrev, const char* key, int32_t defaultValue);
     static bool setModeSetting(const char* abbrev, const char* key, int32_t value);
+
+    // Active layout NVS persistence (Story le-1.1, AC #5)
+    // NVS key: "layout_active" (13 chars, within 15-char limit)
+    // Empty string = no layout persisted; LayoutStore::load() falls back to
+    // the baked-in default layout JSON.
+    static String getLayoutActiveId();
+    static bool setLayoutActiveId(const char* id);
 
     // Compile-time URL accessors (remain in ConfigManager, not NVS)
     static const char* getOpenSkyTokenUrl();
