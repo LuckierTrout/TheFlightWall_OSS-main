@@ -16,7 +16,7 @@ struct RenderContext {
     uint16_t textColor;              // pre-computed from DisplayConfig RGB
     uint8_t brightness;              // read-only — managed by night mode scheduler
     uint16_t* logoBuffer;            // shared 2KB buffer from NeoMatrixDisplay
-    uint16_t displayCycleMs;         // cycle interval for modes that rotate flights
+    uint32_t displayCycleMs;         // cycle interval for modes that rotate flights (ms; uint32 avoids overflow for display_cycle > 65s)
 };
 
 // --- Zone Descriptor (static metadata for Mode Picker UI wireframes) ---

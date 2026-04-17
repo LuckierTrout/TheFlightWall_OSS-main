@@ -40,6 +40,12 @@ private:
     void _handleGetLogoFile(AsyncWebServerRequest* request);
 
     void _handleGetDisplayModes(AsyncWebServerRequest* request);
+    void _handlePostDisplayMode(AsyncWebServerRequest* request, uint8_t* data, size_t len);
+    void _handleGetOtaCheck(AsyncWebServerRequest* request);
+    void _handlePostOtaPull(AsyncWebServerRequest* request);
+    void _handleGetOtaStatus(AsyncWebServerRequest* request);
+    void _handleGetSchedule(AsyncWebServerRequest* request);
+    void _handlePostSchedule(AsyncWebServerRequest* request, uint8_t* data, size_t len);
 
     static void _serveGzAsset(AsyncWebServerRequest* request, const char* path, const char* contentType);
     void _sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code);

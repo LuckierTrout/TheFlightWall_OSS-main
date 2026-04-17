@@ -151,6 +151,7 @@ const char* SystemStatus::subsystemName(Subsystem sys) {
         case Subsystem::LITTLEFS: return "littlefs";
         case Subsystem::OTA:      return "ota";
         case Subsystem::NTP:      return "ntp";
+        case Subsystem::OTA_PULL: return "ota_pull";
         default:                  return "unknown";
     }
 }

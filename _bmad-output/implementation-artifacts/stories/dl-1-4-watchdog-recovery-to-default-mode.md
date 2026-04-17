@@ -96,6 +96,7 @@ After any watchdog reset (`ESP_RST_TASK_WDT`, `ESP_RST_INT_WDT`, `ESP_RST_WDT`),
 - Task 2: Confirmed TWDT timeout = 5s (meets NFR10). Enrolled loop() in TWDT via `esp_task_wdt_add(NULL)` in setup(). Added `esp_task_wdt_reset()` at top of loop() and around blocking HTTP fetch calls.
 - Task 3: WDT recovery path routes through `ModeOrchestrator::onManualSwitch("clock", "Clock")` + `ConfigManager::setDisplayMode("clock")` — fully compliant with Rule 24. Normal boot fallback chain also routes through orchestrator.
 - Task 4: Added 6 unit tests to test_mode_orchestrator covering WDT recovery policy, NVS persistence, normal boot restore, unknown mode fallback, orchestrator routing, and manual mode ID preservation. Tests use `simulateBootRestore()` helper that mirrors the exact main.cpp policy logic. Hardware-only verification noted for `esp_reset_reason()` itself (cannot stub IDF function in on-device tests).
+- 2026-04-16 (Code Review Synthesis): Fixed test isolation bug in `test_wdt_boot_uses_orchestrator_not_direct_registry` — test now properly calls `initOrchestratorWithRegistry()` at the start to ensure clean state, preventing dependency on previous test execution order.
 
 ### File List
 
@@ -121,3 +122,12 @@ Touches **`main.cpp`**, possibly **`platformio.ini` / `sdkconfig`**, **`ModeOrch
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-16
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 2.0 (Validator A), 2.0 (Validator B) → APPROVED
+- **Issues Found:** 1
+- **Issues Fixed:** 1
+- **Action Items Created:** 0

@@ -1,0 +1,61 @@
+cli_args:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+- --debug
+- --full-stream
+- --plain
+cli_args_masked:
+- run
+- -p
+- /Users/christianlee/App-Development/TheFlightWall_OSS-main
+- -n
+- -v
+- --debug
+- --full-stream
+- --plain
+current_phase: null
+ended_at: '2026-04-15T15:02:55.963316Z'
+epic: dl-1
+phase_events:
+- duration_ms: null
+  epic: dl-1
+  error_type: null
+  event_type: started
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  status: null
+  story: dl-1.2
+  termination_metadata: null
+  timestamp: '2026-04-15T15:01:09.607908Z'
+- duration_ms: 106283
+  epic: dl-1
+  error_type: 'Insufficient reviews: 0/2 required. Check provider configuration and
+    network connectivity.'
+  event_type: completed
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  status: error
+  story: dl-1.2
+  termination_metadata: null
+  timestamp: '2026-04-15T15:02:55.891238Z'
+phases:
+- duration_ms: 106283
+  ended_at: '2026-04-15T15:02:55.891238Z'
+  error_type: 'Insufficient reviews: 0/2 required. Check provider configuration and
+    network connectivity.'
+  model: opus
+  phase: CODE_REVIEW
+  provider: claude
+  provider_count: 5
+  started_at: '2026-04-15T15:01:09.607908Z'
+  status: error
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: eb704469
+started_at: '2026-04-15T15:01:09.596075Z'
+status: completed
+story: dl-1.2

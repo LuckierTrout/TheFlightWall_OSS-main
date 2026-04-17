@@ -1,6 +1,6 @@
 # Story ds-1.5: Display Pipeline Integration
 
-Status: review
+Status: Ready for Review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -58,6 +58,10 @@ So that the device boots, activates Classic Card mode, and renders identically t
   - [x] 4.2: Manual or automated smoke per NFR C2
   - [x] 4.3: `pio run`
 
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: `completeOTAAttempt()` calls `ModeRegistry::requestSwitch()` directly, bypassing `ModeOrchestrator::onManualSwitch()` (Architecture Rule 24) — called from Core 1 (OTAUpdater) (`firmware/core/ModeRegistry.cpp:471`, `firmware/core/OTAUpdater.cpp`)
+- [x] [AI-Review] MEDIUM: Status message visually lost when `reconfigureFromConfig()` → `rebuildMatrix()` → `clear()` fires during the `statusMessageVisible=true` window — framebuffer is erased but not redrawn (`firmware/src/main.cpp` display task, `firmware/adapters/NeoMatrixDisplay.cpp:clear`)
+
 ## Dev Notes
 
 ### Current display task reference (replace flight block)
@@ -112,16 +116,25 @@ Claude Opus 4.6
 - **Task 4**: FastLED.show audit passed — no mode code calls FastLED.show(). `pio run` succeeds. Setup-time `showLoading()` and `showInitialWiFiMessage()` now include explicit `g_display.show()` since `displayLoadingScreen` / `displayMessage` no longer commit frames.
 - **Pixel parity (AC #10)**: ClassicCardMode::render (ds-1.4) uses identical zone rendering logic as the legacy NeoMatrixDisplay paths. With classic_card active and identical inputs, LED output matches Foundation Release.
 - **Heap / stress (AC #11)**: No new heap allocations in hot path. `static emptyFlights` and `static cachedCtx` avoid per-frame allocation. Stress testing requires hardware — documented procedure: rapid `requestSwitch` calls between modes while flights are rendering.
+- **Synthesis fixes (2026-04-14)**: (1) Added `esp_task_wdt_reset()` inside `ModeRegistry::executeSwitch` crossfade loop — prevents WDT timeout during ~990ms transition now that fade runs on display task hot path. (2) Fixed stray `>` regression in `displaySingleFlightCard` fallback — mirrors ds-1.4 ClassicCardMode fix. (3) Removed dead `_currentFlightIndex`/`_lastCycleMs` class members (written in `rebuildMatrix` but never read after pipeline migration). (4) Fixed `tickStartupProgress` queue-spam: static `ipShown` flag prevents thousands of `snprintf`+`xQueueOverwrite` calls in the 2000–4000ms startup window. (5) Fixed `buildRenderContext()` brightness: added `_activeBrightness` member kept in sync by `updateBrightness()`, so scheduler dim override is reflected in `RenderContext`. (6) Removed dead code: `renderFlight()` and `makeFlightLine()` (no callers after pipeline migration). (7) Updated stale comment at startup-complete path. `pio run` confirms clean build at 81.2% flash usage.
+- **Review follow-up fixes (2026-04-14)**: (1) ✅ Resolved review finding [MEDIUM]: `completeOTAAttempt()` now routes through `ModeOrchestrator::onManualSwitch()` instead of calling `ModeRegistry::requestSwitch()` directly — compliant with Architecture Rule 24. Added `#include "core/ModeOrchestrator.h"` to ModeRegistry.cpp. (2) ✅ Resolved review finding [MEDIUM]: Status message now stored in `lastStatusText[64]` buffer in displayTask; after `reconfigureFromConfig()` → `rebuildMatrix()` → `clear()`, if `statusMessageVisible` is true, the message is redrawn and committed via `g_display.show()`. `pio run` confirms clean build at 81.3% flash usage.
+- **Round 3 synthesis fix (2026-04-14)**: ✅ Resolved review finding [MEDIUM]: Changed `RenderContext::displayCycleMs` from `uint16_t` to `uint32_t` — prevents silent overflow when `display_cycle > 65s` (e.g. 120s × 1000 = 120000ms would truncate to 54464ms under uint16_t). `MockRenderContext` in test fixtures updated for consistency. `pio run` confirms clean build at 81.1% flash usage.
 
 ### File List
 
-- `firmware/adapters/NeoMatrixDisplay.h` — Added `#include "interfaces/DisplayMode.h"`, declared `buildRenderContext()`, `show()`, `displayFallbackCard()`
-- `firmware/adapters/NeoMatrixDisplay.cpp` — Implemented new API methods, stripped `FastLED.show()` from 6 methods, delegated `displayFlights()` to `displayFallbackCard()` + `show()`
-- `firmware/src/main.cpp` — Rewired `displayTask` to use `ModeRegistry::tick` + cached `RenderContext` + single `show()` per frame; added boot `requestSwitch` after `initialize()`; added `show()` to setup-time display calls
+- `firmware/adapters/NeoMatrixDisplay.h` — Added `#include "interfaces/DisplayMode.h"`, declared `buildRenderContext()`, `show()`, `displayFallbackCard()`; removed dead `renderFlight()` and `makeFlightLine()` declarations; added `_activeBrightness` member; removed unused `_currentFlightIndex`/`_lastCycleMs` members (synthesis)
+- `firmware/adapters/NeoMatrixDisplay.cpp` — Implemented new API methods, stripped `FastLED.show()` from 6 methods, delegated `displayFlights()` to `displayFallbackCard()` + `show()`; fixed stray `>` in `displaySingleFlightCard` fallback; fixed `buildRenderContext` brightness to use `_activeBrightness`; removed dead `renderFlight()` and `makeFlightLine()` bodies (synthesis)
+- `firmware/src/main.cpp` — Rewired `displayTask` to use `ModeRegistry::tick` + cached `RenderContext` + single `show()` per frame; added boot `requestSwitch` after `initialize()`; added `show()` to setup-time display calls; fixed `tickStartupProgress` queue spam guard; updated stale comment (synthesis)
+- `firmware/core/ModeRegistry.cpp` — Added `esp_task_wdt_reset()` inside crossfade loop to prevent WDT timeout during ~990ms transition (synthesis); routed `completeOTAAttempt()` through `ModeOrchestrator::onManualSwitch()` per Rule 24 (review follow-up)
+- `firmware/interfaces/DisplayMode.h` — Changed `uint16_t displayCycleMs` to `uint32_t displayCycleMs` in `RenderContext` to prevent overflow for display_cycle > 65s (round 3 synthesis)
+- `firmware/test/fixtures/test_fixtures.h` — Changed `uint16_t displayCycleMs` to `uint32_t displayCycleMs` in `MockRenderContext` for consistency (round 3 synthesis)
 
 ## Change Log
 
 - 2026-04-13: Story ds-1.5 implemented — display pipeline integration complete. NeoMatrixDisplay now owns hardware + frame commit only; all flight rendering flows through ModeRegistry::tick via ClassicCardMode.
+- 2026-04-14: Addressed code review findings — 2 items resolved: (1) completeOTAAttempt Rule 24 compliance, (2) status message redraw after reconfigureFromConfig.
+- 2026-04-14: Second synthesis pass — 3 additional fixes: (1) displayFallbackCard now uses displaySingleFlightCard exclusively per AC #1/D3 (removed renderZoneFlight conditional branch); (2) Added g_display.show() in statusMessageVisible continue path to commit brightness changes from scheduler dim during persistent messages; (3) Fixed millis() 49-day overflow in status message duration check (now uses overflow-safe unsigned subtraction: statusMessageStartMs + statusMessageDurationMs). Build confirmed clean at 81.1% flash.
+- 2026-04-14: Round 3 synthesis pass — 1 fix: Changed RenderContext::displayCycleMs from uint16_t to uint32_t to prevent overflow for display_cycle > 65s. Build confirmed clean at 81.1% flash.
 
 ## Previous story intelligence
 
@@ -143,3 +156,38 @@ Claude Opus 4.6
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 4.2 (after false-positive dismissals) → CONDITIONAL PASS
+- **Issues Found:** 9 verified (2 High, 4 Medium, 3 Low)
+- **Issues Fixed:** 9 (7 original + 2 review follow-ups)
+- **Action Items Created:** 2 (all resolved)
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: `completeOTAAttempt()` calls `ModeRegistry::requestSwitch()` directly, bypassing `ModeOrchestrator::onManualSwitch()` (Architecture Rule 24) — called from Core 1 (OTAUpdater) (`firmware/core/ModeRegistry.cpp:471`, `firmware/core/OTAUpdater.cpp`)
+- [x] [AI-Review] MEDIUM: Status message visually lost when `reconfigureFromConfig()` → `rebuildMatrix()` → `clear()` fires during the `statusMessageVisible=true` window — framebuffer is erased but not redrawn (`firmware/src/main.cpp` display task, `firmware/adapters/NeoMatrixDisplay.cpp:clear`)
+
+### Review: 2026-04-14 (Round 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 2.5 (after false-positive dismissals) → PASS
+- **Issues Found:** 3 verified (0 Critical, 0 High, 2 Medium, 1 Low)
+- **Issues Fixed:** 3
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: `displayFallbackCard` uses `renderZoneFlight` conditionally, violating AC #1 ("reuse `displaySingleFlightCard` / `displayLoadingScreen` draw logic") and D3 (NeoMatrixDisplay owns hardware/frame-commit only) (`firmware/adapters/NeoMatrixDisplay.cpp`)
+- [x] [AI-Review] MEDIUM: Brightness changes from night scheduler not committed to LEDs during persistent status message — `continue` in `statusMessageVisible` path skips `g_display.show()` (`firmware/src/main.cpp` displayTask)
+- [x] [AI-Review] LOW: `millis()` overflow vulnerability in status message duration check — absolute deadline `millis() + durationMs` wraps at 49-day uptime; fixed with overflow-safe unsigned subtraction (`firmware/src/main.cpp` displayTask)
+
+### Review: 2026-04-14 (Round 3)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 1.0 (after false-positive dismissals) → PASS
+- **Issues Found:** 1 verified (0 Critical, 0 High, 1 Medium, 0 Low)
+- **Issues Fixed:** 1
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: `RenderContext::displayCycleMs` declared as `uint16_t` but `timing.display_cycle * 1000` overflows for display_cycle > 65s (e.g. 120s → 120000ms truncates to 54464ms) — changed to `uint32_t` (`firmware/interfaces/DisplayMode.h`, `firmware/test/fixtures/test_fixtures.h`)

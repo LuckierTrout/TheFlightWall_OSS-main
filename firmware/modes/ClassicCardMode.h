@@ -48,4 +48,10 @@ private:
 
 public:
     static const ModeZoneDescriptor _descriptor;
+
+#ifdef PIO_UNIT_TESTING
+    // Test-only accessors for cycling state verification (review item ds-1.4 #2)
+    size_t getCurrentFlightIndex() const { return _currentFlightIndex; }
+    unsigned long getLastCycleMs() const { return _lastCycleMs; }
+#endif
 };

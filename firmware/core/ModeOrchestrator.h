@@ -5,11 +5,13 @@ Responsibilities:
 - Track orchestrator state (MANUAL, IDLE_FALLBACK, SCHEDULED)
 - Provide state and reason strings for API/UI consumption
 - Manage transitions between states based on flight availability
+- Evaluate time-based mode schedule rules (Story dl-4.1)
 Architecture: Static class, called from Core 1 only (no atomics needed).
 References: architecture.md#DL2
 */
 
 #include <Arduino.h>
+#include "core/ConfigManager.h"
 
 enum class OrchestratorState : uint8_t {
     MANUAL = 0,
@@ -49,8 +51,16 @@ public:
     /// Called when flights return after idle fallback
     static void onFlightsRestored();
 
+    /// Get active schedule rule index (-1 = no active rule, 0–7 = active rule index)
+    static int8_t getActiveScheduleRuleIndex();
+
+    /// Invalidate schedule cache (call after mode schedule config changes)
+    static void invalidateScheduleCache();
+
     /// Tick function — evaluates state transitions (called from Core 1)
-    static void tick(uint8_t flightCount);
+    /// ntpSynced: whether NTP time is available
+    /// nowMinutes: current minutes since midnight (0–1439), only valid when ntpSynced
+    static void tick(uint8_t flightCount, bool ntpSynced = false, uint16_t nowMinutes = 0);
 
 private:
     static OrchestratorState _state;
@@ -58,4 +68,6 @@ private:
     static char _activeModeName[32];
     static char _manualModeId[32];    // remembers manual selection during fallback
     static char _manualModeName[32];
+    static int8_t _activeRuleIndex;   // -1 = no active rule, 0–7 = active rule index
+    static char _stateReasonBuf[64];  // buffer for dynamic state reason string
 };

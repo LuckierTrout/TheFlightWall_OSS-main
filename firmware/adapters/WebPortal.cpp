@@ -31,6 +31,7 @@ GET /api/status extended JSON (Story 2.4):
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
 #include "core/LogoManager.h"
+#include "core/OTAUpdater.h"
 #include "utils/Log.h"
 
 // Defined in main.cpp — provides thread-safe flight stats for the health page
@@ -133,6 +134,16 @@ PendingRequestBody* findPendingBody(AsyncWebServerRequest* request) {
     return nullptr;
 }
 
+// Shared SwitchState → string mapping used by GET and POST mode handlers.
+// Centralised here to avoid copy-paste drift between the two call sites.
+const char* switchStateToString(SwitchState ss) {
+    switch (ss) {
+        case SwitchState::REQUESTED: return "requested";
+        case SwitchState::SWITCHING: return "switching";
+        default:                     return "idle";
+    }
+}
+
 void clearPendingBody(AsyncWebServerRequest* request) {
     for (auto it = g_pendingBodies.begin(); it != g_pendingBodies.end(); ++it) {
         if (it->request == request) {
@@ -201,9 +212,10 @@ void WebPortal::_registerRoutes() {
 
             if (index == 0) {
                 clearPendingBody(request);
-                PendingRequestBody pending{request, String()};
-                pending.body.reserve(total);
-                g_pendingBodies.push_back(pending);
+                // push_back first, then reserve on the stored element — avoids capacity
+                // loss from the String copy constructor during push_back (synthesis ds-3.2 Pass 3).
+                g_pendingBodies.push_back({request, String()});
+                g_pendingBodies.back().body.reserve(total);
                 request->onDisconnect([request]() {
                     clearPendingBody(request);
                 });
@@ -215,9 +227,7 @@ void WebPortal::_registerRoutes() {
                 return;
             }
 
-            for (size_t i = 0; i < len; ++i) {
-                pending->body += static_cast<char>(data[i]);
-            }
+            pending->body.concat(reinterpret_cast<const char*>(data), len);
 
             if (index + len == total) {
                 _handlePostSettings(
@@ -313,74 +323,98 @@ void WebPortal::_registerRoutes() {
                 _sendJsonError(request, 400, "Empty request body", "EMPTY_PAYLOAD");
                 return;
             }
+            if (total > MAX_SETTINGS_BODY_BYTES) {
+                clearPendingBody(request);
+                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
+                return;
+            }
+            if (index == 0) {
+                clearPendingBody(request);
+                // push_back first, then reserve on the stored element — avoids capacity
+                // loss from the String copy constructor during push_back (synthesis ds-3.2 Pass 3).
+                g_pendingBodies.push_back({request, String()});
+                g_pendingBodies.back().body.reserve(total);
+                request->onDisconnect([request]() {
+                    clearPendingBody(request);
+                });
+            }
+            PendingRequestBody* pending = findPendingBody(request);
+            if (pending == nullptr) {
+                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
+                return;
+            }
+            pending->body.concat(reinterpret_cast<const char*>(data), len);
             if (index + len == total) {
-                JsonDocument reqDoc;
-                DeserializationError err = deserializeJson(reqDoc, data, len);
-                if (err) {
-                    _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
-                    return;
-                }
-
-                // AC #5: prefer "mode", fall back to "mode_id" for one release
-                const char* modeId = reqDoc["mode"] | (const char*)nullptr;
-                if (!modeId) {
-                    modeId = reqDoc["mode_id"] | (const char*)nullptr;
-                }
-                if (!modeId) {
-                    _sendJsonError(request, 400, "Missing mode or mode_id field", "MISSING_FIELD");
-                    return;
-                }
-
-                // Resolve mode name from ModeRegistry (AC #8 — unknown mode → 400)
-                const ModeEntry* table = ModeRegistry::getModeTable();
-                const uint8_t count = ModeRegistry::getModeCount();
-                const char* modeName = nullptr;
-                for (uint8_t i = 0; i < count; i++) {
-                    if (strcmp(table[i].id, modeId) == 0) {
-                        modeName = table[i].displayName;
-                        break;
-                    }
-                }
-                if (!modeName) {
-                    _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
-                    return;
-                }
-
-                // AC #6 / Rule 24: switch via orchestrator, not ModeRegistry directly
-                ModeOrchestrator::onManualSwitch(modeId, modeName);
-
-                // Build truthful response (AC #7, #9)
-                JsonDocument doc;
-                JsonObject root = doc.to<JsonObject>();
-                root["ok"] = true;
-                JsonObject respData = root["data"].to<JsonObject>();
-                respData["switching_to"] = modeId;
-                respData["active"] = ModeRegistry::getActiveModeId()
-                                       ? ModeRegistry::getActiveModeId() : "classic_card";
-
-                // Switch state (will be "idle" since tick() hasn't run yet)
-                SwitchState ss = ModeRegistry::getSwitchState();
-                switch (ss) {
-                    case SwitchState::REQUESTED: respData["switch_state"] = "requested"; break;
-                    case SwitchState::SWITCHING: respData["switch_state"] = "switching"; break;
-                    default:                     respData["switch_state"] = "idle";      break;
-                }
-
-                respData["orchestrator_state"] = ModeOrchestrator::getStateString();
-                respData["state_reason"] = ModeOrchestrator::getStateReason();
-
-                // Registry error if present (AC #9 — HEAP_INSUFFICIENT etc.)
-                const char* lastErr = ModeRegistry::getLastError();
-                if (lastErr != nullptr && lastErr[0] != '\0') {
-                    respData["registry_error"] = lastErr;
-                }
-
-                String output;
-                serializeJson(doc, output);
-                request->send(200, "application/json", output);
+                _handlePostDisplayMode(
+                    request,
+                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
+                    pending->body.length()
+                );
+                clearPendingBody(request);
             }
         }
     );
+
+    // GET /api/schedule (Story dl-4.2) — mode schedule rules
+    _server->on("/api/schedule", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetSchedule(request);
+    });
+
+    // POST /api/schedule (Story dl-4.2) — replace mode schedule rules
+    _server->on("/api/schedule", HTTP_POST,
+        [](AsyncWebServerRequest* request) { /* no-op: response in body handler */ },
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (total == 0 || data == nullptr) {
+                _sendJsonError(request, 400, "Empty request body", "EMPTY_PAYLOAD");
+                return;
+            }
+            if (total > MAX_SETTINGS_BODY_BYTES) {
+                clearPendingBody(request);
+                _sendJsonError(request, 413, "Request body too large", "BODY_TOO_LARGE");
+                return;
+            }
+            if (index == 0) {
+                clearPendingBody(request);
+                // push_back first, then reserve on the stored element — avoids capacity
+                // loss from the String copy constructor during push_back (synthesis ds-3.2 Pass 3).
+                g_pendingBodies.push_back({request, String()});
+                g_pendingBodies.back().body.reserve(total);
+                request->onDisconnect([request]() {
+                    clearPendingBody(request);
+                });
+            }
+            PendingRequestBody* pending = findPendingBody(request);
+            if (pending == nullptr) {
+                _sendJsonError(request, 400, "Incomplete request body", "INCOMPLETE_BODY");
+                return;
+            }
+            pending->body.concat(reinterpret_cast<const char*>(data), len);
+            if (index + len == total) {
+                _handlePostSchedule(
+                    request,
+                    reinterpret_cast<uint8_t*>(const_cast<char*>(pending->body.c_str())),
+                    pending->body.length()
+                );
+                clearPendingBody(request);
+            }
+        }
+    );
+
+    // GET /api/ota/check (Story dl-6.2) — check GitHub for firmware update
+    _server->on("/api/ota/check", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetOtaCheck(request);
+    });
+
+    // POST /api/ota/pull (Story dl-7.3, AC #1–#2) — start pull OTA download
+    _server->on("/api/ota/pull", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        _handlePostOtaPull(request);
+    });
+
+    // GET /api/ota/status (Story dl-7.3, AC #1, #3) — OTA state/progress polling
+    _server->on("/api/ota/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetOtaStatus(request);
+    });
 
     // POST /api/display/notification/dismiss (Story ds-3.1, AC #10; ds-3.2, AC #4)
     // Clears upgrade_notification NVS flag so GET returns false thereafter.
@@ -617,6 +651,19 @@ void WebPortal::_registerRoutes() {
                     return;
                 }
 
+                // Story dl-7.1, AC #9: tear down display mode before flash write
+                // so push and pull OTA share the same safe teardown path.
+                if (!ModeRegistry::prepareForOTA()) {
+                    // prepareForOTA failed — abort upload with clear error
+                    state.valid = false;
+                    state.error = "Could not prepare display for OTA";
+                    state.errorCode = "PREPARE_OTA_FAILED";
+                    SystemStatus::set(Subsystem::OTA, StatusLevel::ERROR, "Display teardown failed");
+                    g_otaUploads.push_back(state);
+                    LOG_E("OTA", "prepareForOTA() failed — aborting upload");
+                    return;
+                }
+
                 // Begin update with partition size (NOT Content-Length per AR18)
                 if (!Update.begin(partition->size)) {
                     state.valid = false;
@@ -844,6 +891,12 @@ void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
     data["rollback_acknowledged"] = prefs.getUChar("ota_rb_ack", 0) == 1;
     prefs.end();
 
+    // OTA availability from last check (Story dl-6.2, AC #3)
+    bool otaAvail = (OTAUpdater::getState() == OTAState::AVAILABLE);
+    data["ota_available"] = otaAvail;
+    data["ota_version"] = otaAvail ? (const char*)OTAUpdater::getRemoteVersion()
+                                   : (const char*)nullptr;
+
     String output;
     serializeJson(doc, output);
     request->send(200, "application/json", output);
@@ -999,31 +1052,190 @@ void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
                 zoneObj["relH"] = region.relH;
             }
         }
+
+        // Per-mode settings from settingsSchema (Story dl-5.1, AC #1–#2)
+        // Loops ModeEntry.settingsSchema only — no hardcoded key lists (rule 28).
+        // Adding a ModeSettingDef to any schema auto-appears here.
+        if (entry.settingsSchema != nullptr && entry.settingsSchema->settingCount > 0) {
+            JsonArray settings = modeObj["settings"].to<JsonArray>();
+            const ModeSettingsSchema* schema = entry.settingsSchema;
+            for (uint8_t s = 0; s < schema->settingCount; s++) {
+                const ModeSettingDef& def = schema->settings[s];
+                JsonObject settingObj = settings.add<JsonObject>();
+                settingObj["key"] = def.key;
+                settingObj["label"] = def.label;
+                settingObj["type"] = def.type;
+                settingObj["default"] = def.defaultValue;
+                settingObj["min"] = def.minValue;
+                settingObj["max"] = def.maxValue;
+                if (def.enumOptions != nullptr) {
+                    settingObj["enumOptions"] = def.enumOptions;
+                } else {
+                    settingObj["enumOptions"] = (const char*)nullptr;
+                }
+                // Current persisted value via ConfigManager (uses modeAbbrev for NVS key)
+                settingObj["value"] = ConfigManager::getModeSetting(
+                    schema->modeAbbrev, def.key, def.defaultValue);
+            }
+        } else {
+            modeObj["settings"] = (const char*)nullptr;  // null for modes without settings
+        }
     }
 
     data["active"] = activeId;
 
     // Switch state from ModeRegistry (AC #1, replacing stub "idle")
-    SwitchState ss = ModeRegistry::getSwitchState();
-    switch (ss) {
-        case SwitchState::REQUESTED: data["switch_state"] = "requested"; break;
-        case SwitchState::SWITCHING: data["switch_state"] = "switching"; break;
-        default:                     data["switch_state"] = "idle";      break;
-    }
+    data["switch_state"] = switchStateToString(ModeRegistry::getSwitchState());
 
     // Orchestrator transparency (AC #3 — retain dl-1.5 fields)
     data["orchestrator_state"] = ModeOrchestrator::getStateString();
     data["state_reason"] = ModeOrchestrator::getStateReason();
 
     // Registry error if present (AC #9)
-    const char* lastErr = ModeRegistry::getLastError();
-    if (lastErr != nullptr && lastErr[0] != '\0') {
-        data["registry_error"] = lastErr;
+    // Use copyLastError() — thread-safe snapshot for Core 1 (synthesis ds-3.2 Pass 3).
+    // getLastError() returns a raw pointer to a Core 0 mutable buffer; unsafe here.
+    char regErrBuf[64];
+    ModeRegistry::copyLastError(regErrBuf, sizeof(regErrBuf));
+    if (regErrBuf[0] != '\0') {
+        data["registry_error"] = regErrBuf;
     }
 
     // Upgrade notification NVS flag (AC #10; ds-3.2, AC #4)
     // Uses ConfigManager::getUpgNotif() to keep NVS reads centralized (AR7).
     data["upgrade_notification"] = ConfigManager::getUpgNotif();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+// POST /api/display/mode (Story ds-3.1)
+// AC #5: accept "mode" with fallback to "mode_id" for one release.
+// AC #6 / Rule 24: always route user intent through orchestrator — even when re-selecting
+//   the current mode — so the orchestrator exits IDLE_FALLBACK / SCHEDULED and returns
+//   to MANUAL state as the user explicitly intended.
+//   ModeRegistry::tick() is idempotent when requested == active (line 367 guard), so
+//   calling onManualSwitch for the same mode does not restart the running DisplayMode.
+// AC #7: async strategy (documented deviation from architecture D5 — bounded wait not
+//   feasible in ESPAsyncWebServer body handler; client re-fetches via ds-3.4 UX).
+void WebPortal::_handlePostDisplayMode(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument reqDoc;
+    DeserializationError err = deserializeJson(reqDoc, data, len);
+    if (err) {
+        _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
+        return;
+    }
+
+    // AC #5: prefer "mode", fall back to "mode_id" for one release
+    const char* modeId = reqDoc["mode"] | (const char*)nullptr;
+    if (!modeId) {
+        modeId = reqDoc["mode_id"] | (const char*)nullptr;
+    }
+    if (!modeId) {
+        _sendJsonError(request, 400, "Missing mode or mode_id field", "MISSING_FIELD");
+        return;
+    }
+
+    // Resolve mode from ModeRegistry (AC #8 — unknown mode → 400)
+    const ModeEntry* table = ModeRegistry::getModeTable();
+    const uint8_t count = ModeRegistry::getModeCount();
+    const ModeEntry* matchedEntry = nullptr;
+    for (uint8_t i = 0; i < count; i++) {
+        if (strcmp(table[i].id, modeId) == 0) {
+            matchedEntry = &table[i];
+            break;
+        }
+    }
+    if (!matchedEntry) {
+        _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
+        return;
+    }
+
+    // Story dl-5.1, AC #4: handle optional "settings" object
+    bool hasSettings = reqDoc["settings"].is<JsonObject>();
+    bool settingsApplied = false;
+    if (hasSettings) {
+        JsonObject settingsObj = reqDoc["settings"].as<JsonObject>();
+
+        // Validate all keys exist in schema before applying any (no partial apply)
+        if (matchedEntry->settingsSchema == nullptr || matchedEntry->settingsSchema->settingCount == 0) {
+            if (settingsObj.size() > 0) {
+                _sendJsonError(request, 400, "Mode has no configurable settings", "UNKNOWN_SETTING");
+                return;
+            }
+        } else {
+            const ModeSettingsSchema* schema = matchedEntry->settingsSchema;
+            // Pre-validate: check all keys exist in schema
+            for (JsonPair kv : settingsObj) {
+                bool found = false;
+                for (uint8_t s = 0; s < schema->settingCount; s++) {
+                    if (strcmp(kv.key().c_str(), schema->settings[s].key) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    _sendJsonError(request, 400, "Unknown setting key", "UNKNOWN_SETTING");
+                    return;
+                }
+            }
+            // Pre-validate values against schema min/max BEFORE writing any setting
+            // to NVS — prevents partial apply where early keys succeed but a later
+            // key fails, leaving NVS in an inconsistent state (no partial apply rule).
+            // Also reject non-numeric values: as<int32_t>() silently returns 0 for strings,
+            // which could pass range checks (e.g. format=0 is valid). is<int32_t>() guards this.
+            for (JsonPair kv : settingsObj) {
+                if (!kv.value().is<int32_t>()) {
+                    _sendJsonError(request, 400, "Setting value must be numeric", "INVALID_SETTING_TYPE");
+                    return;
+                }
+                int32_t val = kv.value().as<int32_t>();
+                for (uint8_t s = 0; s < schema->settingCount; s++) {
+                    if (strcmp(kv.key().c_str(), schema->settings[s].key) == 0) {
+                        if (val < schema->settings[s].minValue || val > schema->settings[s].maxValue) {
+                            _sendJsonError(request, 400, "Setting value out of range", "INVALID_SETTING_VALUE");
+                            return;
+                        }
+                        break;
+                    }
+                }
+            }
+            // Apply all settings (all values pre-validated — no partial apply risk)
+            for (JsonPair kv : settingsObj) {
+                int32_t val = kv.value().as<int32_t>();
+                if (!ConfigManager::setModeSetting(schema->modeAbbrev, kv.key().c_str(), val)) {
+                    _sendJsonError(request, 400, "Setting validation failed", "INVALID_SETTING_VALUE");
+                    return;
+                }
+            }
+            if (settingsObj.size() > 0) settingsApplied = true;
+        }
+    }
+
+    // AC #6 / Rule 24: always call onManualSwitch so the orchestrator transitions to
+    // MANUAL state regardless of whether the requested mode is already active.
+    ModeOrchestrator::onManualSwitch(modeId, matchedEntry->displayName);
+
+    // Build truthful response (AC #7, #9)
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject respData = root["data"].to<JsonObject>();
+    respData["switching_to"] = modeId;
+    respData["active"] = ModeRegistry::getActiveModeId()
+                           ? ModeRegistry::getActiveModeId() : "classic_card";
+    respData["settings_applied"] = settingsApplied;
+    respData["switch_state"] = switchStateToString(ModeRegistry::getSwitchState());
+    respData["orchestrator_state"] = ModeOrchestrator::getStateString();
+    respData["state_reason"] = ModeOrchestrator::getStateReason();
+
+    // Registry error if present (AC #9 — HEAP_INSUFFICIENT etc.)
+    // Use copyLastError() — thread-safe snapshot for Core 1 (synthesis ds-3.2 Pass 3).
+    char regErrBuf2[64];
+    ModeRegistry::copyLastError(regErrBuf2, sizeof(regErrBuf2));
+    if (regErrBuf2[0] != '\0') {
+        respData["registry_error"] = regErrBuf2;
+    }
 
     String output;
     serializeJson(doc, output);
@@ -1209,6 +1421,250 @@ void WebPortal::_handleGetLogoFile(AsyncWebServerRequest* request) {
     }
 
     request->send(LittleFS, path, "application/octet-stream");
+}
+
+void WebPortal::_handleGetOtaCheck(AsyncWebServerRequest* request) {
+    // AC #2: if WiFi not connected, return error rather than hitting GitHub
+    if (WiFi.status() != WL_CONNECTED) {
+        JsonDocument doc;
+        JsonObject root = doc.to<JsonObject>();
+        root["ok"] = true;
+        JsonObject data = root["data"].to<JsonObject>();
+        data["available"] = false;
+        data["version"] = (const char*)nullptr;
+        data["current_version"] = FW_VERSION;
+        data["release_notes"] = (const char*)nullptr;
+        data["error"] = "WiFi not connected";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+        return;
+    }
+
+    // Perform the check — this makes an HTTPS request to GitHub (blocks ~1-10s)
+    bool updateAvailable = OTAUpdater::checkForUpdate();
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    if (OTAUpdater::getState() == OTAState::AVAILABLE) {
+        data["available"] = true;
+        data["version"] = OTAUpdater::getRemoteVersion();
+        data["current_version"] = FW_VERSION;
+        data["release_notes"] = OTAUpdater::getReleaseNotes();
+    } else if (OTAUpdater::getState() == OTAState::ERROR) {
+        // Rate limit / network / parse failure — include error message
+        data["available"] = false;
+        data["version"] = (const char*)nullptr;
+        data["current_version"] = FW_VERSION;
+        data["release_notes"] = (const char*)nullptr;
+        data["error"] = OTAUpdater::getLastError();
+    } else {
+        // Up to date (IDLE state after successful check)
+        data["available"] = false;
+        data["version"] = (const char*)nullptr;
+        data["current_version"] = FW_VERSION;
+        data["release_notes"] = (const char*)nullptr;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostOtaPull(AsyncWebServerRequest* request) {
+    OTAState state = OTAUpdater::getState();
+
+    // Guard: already downloading/verifying (AC #2)
+    if (state == OTAState::DOWNLOADING || state == OTAState::VERIFYING) {
+        _sendJsonError(request, 409, "Download already in progress", "OTA_BUSY");
+        return;
+    }
+
+    // Guard: no update available (AC #2)
+    if (state != OTAState::AVAILABLE) {
+        _sendJsonError(request, 400, "No update available \u2014 check for updates first", "NO_UPDATE");
+        return;
+    }
+
+    // Start the download (AC #2)
+    bool started = OTAUpdater::startDownload();
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    if (started) {
+        root["ok"] = true;
+        JsonObject data = root["data"].to<JsonObject>();
+        data["started"] = true;
+    } else {
+        root["ok"] = false;
+        root["error"] = OTAUpdater::getLastError();
+        root["code"] = "OTA_START_FAILED";
+    }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(started ? 200 : 500, "application/json", output);
+}
+
+void WebPortal::_handleGetOtaStatus(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    // AC #3: stable contract — lowercase state string
+    data["state"] = OTAUpdater::getStateString();
+
+    // progress: required for downloading, null otherwise
+    OTAState state = OTAUpdater::getState();
+    if (state == OTAState::DOWNLOADING) {
+        data["progress"] = OTAUpdater::getProgress();
+    } else if (state == OTAState::VERIFYING) {
+        data["progress"] = (const char*)nullptr;  // indeterminate
+    } else {
+        data["progress"] = (const char*)nullptr;
+    }
+
+    // error: non-null only when state == error
+    if (state == OTAState::ERROR) {
+        data["error"] = OTAUpdater::getLastError();
+    } else {
+        data["error"] = (const char*)nullptr;
+    }
+
+    // Phase from dl-7.2 structured failure
+    data["failure_phase"] = OTAUpdater::getFailurePhaseString();
+    data["retriable"] = OTAUpdater::isRetriable();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetSchedule(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+
+    // Build rules array from ConfigManager (AC #1)
+    ModeScheduleConfig sched = ConfigManager::getModeSchedule();
+    JsonArray rules = data["rules"].to<JsonArray>();
+    for (uint8_t i = 0; i < sched.ruleCount; i++) {
+        const ScheduleRule& r = sched.rules[i];
+        JsonObject ruleObj = rules.add<JsonObject>();
+        ruleObj["index"] = i;
+        ruleObj["start_min"] = r.startMin;
+        ruleObj["end_min"] = r.endMin;
+        ruleObj["mode_id"] = r.modeId;
+        ruleObj["enabled"] = r.enabled;
+    }
+
+    // Orchestrator state and active rule index (AC #1)
+    data["orchestrator_state"] = ModeOrchestrator::getStateString();
+    data["active_rule_index"] = ModeOrchestrator::getActiveScheduleRuleIndex();
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handlePostSchedule(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument reqDoc;
+    DeserializationError err = deserializeJson(reqDoc, data, len);
+    if (err) {
+        _sendJsonError(request, 400, "Invalid JSON", "INVALID_JSON");
+        return;
+    }
+
+    if (!reqDoc["rules"].is<JsonArray>()) {
+        _sendJsonError(request, 400, "Missing or invalid 'rules' array", "INVALID_SCHEDULE");
+        return;
+    }
+
+    JsonArray rulesArr = reqDoc["rules"].as<JsonArray>();
+    if (rulesArr.size() > MAX_SCHEDULE_RULES) {
+        _sendJsonError(request, 400, "Too many rules (max 8)", "INVALID_SCHEDULE");
+        return;
+    }
+
+    // Build ModeScheduleConfig from JSON (AC #2–#5)
+    ModeScheduleConfig cfg = {};
+    cfg.ruleCount = rulesArr.size();
+
+    // Build mode ID lookup table for validation
+    const ModeEntry* modeTable = ModeRegistry::getModeTable();
+    const uint8_t modeCount = ModeRegistry::getModeCount();
+
+    for (size_t i = 0; i < rulesArr.size(); i++) {
+        JsonObject ruleObj = rulesArr[i];
+
+        // Validate required fields
+        if (!ruleObj["start_min"].is<int>() || !ruleObj["end_min"].is<int>() ||
+            !ruleObj["mode_id"].is<const char*>() || !ruleObj["enabled"].is<int>()) {
+            _sendJsonError(request, 400, "Rule missing required fields", "INVALID_SCHEDULE");
+            return;
+        }
+
+        int startMin = ruleObj["start_min"].as<int>();
+        int endMin = ruleObj["end_min"].as<int>();
+        const char* modeId = ruleObj["mode_id"].as<const char*>();
+        int enabled = ruleObj["enabled"].as<int>();
+
+        // Range validation (AC #3)
+        if (startMin < 0 || startMin > 1439 || endMin < 0 || endMin > 1439) {
+            _sendJsonError(request, 400, "start_min/end_min out of range (0-1439)", "INVALID_SCHEDULE");
+            return;
+        }
+
+        if (enabled < 0 || enabled > 1) {
+            _sendJsonError(request, 400, "enabled must be 0 or 1", "INVALID_SCHEDULE");
+            return;
+        }
+
+        if (!modeId || strlen(modeId) == 0 || strlen(modeId) >= MODE_ID_BUF_LEN) {
+            _sendJsonError(request, 400, "Invalid mode_id", "INVALID_SCHEDULE");
+            return;
+        }
+
+        // Validate mode_id exists in ModeRegistry (AC #3)
+        bool modeFound = false;
+        for (uint8_t m = 0; m < modeCount; m++) {
+            if (strcmp(modeTable[m].id, modeId) == 0) {
+                modeFound = true;
+                break;
+            }
+        }
+        if (!modeFound) {
+            _sendJsonError(request, 400, "Unknown mode_id", "UNKNOWN_MODE");
+            return;
+        }
+
+        cfg.rules[i].startMin = (uint16_t)startMin;
+        cfg.rules[i].endMin = (uint16_t)endMin;
+        strncpy(cfg.rules[i].modeId, modeId, MODE_ID_BUF_LEN - 1);
+        cfg.rules[i].modeId[MODE_ID_BUF_LEN - 1] = '\0';
+        cfg.rules[i].enabled = (uint8_t)enabled;
+    }
+
+    // Persist via ConfigManager (AC #2) — orchestrator tick picks up on next cycle (Rule 24)
+    if (!ConfigManager::setModeSchedule(cfg)) {
+        _sendJsonError(request, 500, "Failed to save schedule", "NVS_ERROR");
+        return;
+    }
+
+    JsonDocument respDoc;
+    JsonObject resp = respDoc.to<JsonObject>();
+    resp["ok"] = true;
+    JsonObject respData = resp["data"].to<JsonObject>();
+    respData["applied"] = true;
+
+    String output;
+    serializeJson(respDoc, output);
+    request->send(200, "application/json", output);
 }
 
 void WebPortal::_sendJsonError(AsyncWebServerRequest* request, int httpCode, const char* error, const char* code) {

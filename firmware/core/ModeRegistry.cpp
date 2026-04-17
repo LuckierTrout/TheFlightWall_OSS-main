@@ -8,23 +8,29 @@ References: architecture.md#D2, core/ModeRegistry.h
 
 #include "core/ModeRegistry.h"
 #include "core/ConfigManager.h"
+#include "core/ModeOrchestrator.h"
 #include "utils/Log.h"
 #include <Arduino.h>
 #include <cstring>
 #include <FastLED.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "esp_task_wdt.h"
 
 // Static member initialization
 const ModeEntry* ModeRegistry::_table = nullptr;
 uint8_t ModeRegistry::_count = 0;
 DisplayMode* ModeRegistry::_activeMode = nullptr;
-uint8_t ModeRegistry::_activeModeIndex = MODE_INDEX_NONE;
+std::atomic<uint8_t> ModeRegistry::_activeModeIndex(MODE_INDEX_NONE);
 std::atomic<uint8_t> ModeRegistry::_requestedIndex(MODE_INDEX_NONE);
-SwitchState ModeRegistry::_switchState = SwitchState::IDLE;
+std::atomic<SwitchState> ModeRegistry::_switchState(SwitchState::IDLE);
 char ModeRegistry::_lastError[64] = {0};
+std::atomic<const char*> ModeRegistry::_lastErrorCode(nullptr);
+std::atomic<bool> ModeRegistry::_errorUpdating(false);
 bool ModeRegistry::_nvsWritePending = false;
 unsigned long ModeRegistry::_lastSwitchMs = 0;
+std::atomic<bool> ModeRegistry::_otaMode(false);
+bool ModeRegistry::_recoveryQueued = false;
 
 void ModeRegistry::init(const ModeEntry* table, uint8_t count) {
     _table = table;
@@ -32,10 +38,13 @@ void ModeRegistry::init(const ModeEntry* table, uint8_t count) {
     _activeMode = nullptr;
     _activeModeIndex = MODE_INDEX_NONE;
     _requestedIndex.store(MODE_INDEX_NONE);
-    _switchState = SwitchState::IDLE;
+    _switchState.store(SwitchState::IDLE);
     _lastError[0] = '\0';
+    _lastErrorCode.store(nullptr);
+    _errorUpdating.store(false);
     _nvsWritePending = false;
     _lastSwitchMs = 0;
+    _otaMode.store(false);
 
     LOG_I("ModeRegistry", "Initialized");
 #if LOG_LEVEL >= 2
@@ -54,8 +63,11 @@ uint8_t ModeRegistry::findIndex(const char* modeId) {
 bool ModeRegistry::requestSwitch(const char* modeId) {
     uint8_t idx = findIndex(modeId);
     if (idx == MODE_INDEX_NONE) {
+        _lastErrorCode.store("UNKNOWN_MODE");
+        _errorUpdating.store(true);
         snprintf(_lastError, sizeof(_lastError), "Unknown mode: %.40s",
                  modeId ? modeId : "(null)");
+        _errorUpdating.store(false);
         LOG_W("ModeRegistry", "Switch request rejected");
 #if LOG_LEVEL >= 1
         Serial.printf("[ModeRegistry] %s\n", _lastError);
@@ -65,6 +77,10 @@ bool ModeRegistry::requestSwitch(const char* modeId) {
 
     // Latest-wins: atomic store overwrites any pending request (AC #6, #7)
     _requestedIndex.store(idx);
+    // Signal REQUESTED immediately so Core-1 HTTP callers read truthful state in
+    // the POST response before tick() runs on Core 0 (ds-3.1 AC #7 async strategy).
+    // _switchState is atomic — safe to write from Core 1 here.
+    _switchState.store(SwitchState::REQUESTED);
     LOG_I("ModeRegistry", "Switch requested");
 #if LOG_LEVEL >= 2
     Serial.printf("[ModeRegistry] Target: %s (index %d)\n", modeId, (int)idx);
@@ -74,7 +90,7 @@ bool ModeRegistry::requestSwitch(const char* modeId) {
 
 void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
                                  const std::vector<FlightInfo>& flights) {
-    _switchState = SwitchState::SWITCHING;
+    _switchState.store(SwitchState::SWITCHING);
 
     const ModeEntry& target = _table[targetIndex];
     const ModeEntry* prevEntry = (_activeModeIndex != MODE_INDEX_NONE)
@@ -144,22 +160,33 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
     // Step 3: Heap guard
     if (freeHeap < required) {
         // Insufficient memory — restore previous mode
+        _lastErrorCode.store("HEAP_INSUFFICIENT");
+        _errorUpdating.store(true);
         snprintf(_lastError, sizeof(_lastError),
                  "Insufficient memory for %.30s", target.displayName);
+        _errorUpdating.store(false);
         LOG_W("ModeRegistry", "Heap guard rejected switch");
 #if LOG_LEVEL >= 1
         Serial.printf("[ModeRegistry] Need %u, have %u\n", (unsigned)required, (unsigned)freeHeap);
 #endif
 
         if (_activeMode != nullptr) {
-            // Re-init the still-allocated previous mode
-            _activeMode->init(ctx);
+            // Re-init the still-allocated previous mode.
+            // If re-init also fails, discard the shell to avoid a mode that renders
+            // from an uninitialized state. Registry will be idle (no active mode)
+            // until the next valid requestSwitch() + tick() cycle.
+            if (!_activeMode->init(ctx)) {
+                LOG_E("ModeRegistry", "Heap guard: previous mode re-init failed — clearing active mode");
+                delete _activeMode;
+                _activeMode = nullptr;
+                _activeModeIndex = MODE_INDEX_NONE;
+            }
         }
         // Story ds-3.2, AC #5: correct NVS to actually-active mode so it doesn't drift
         _nvsWritePending = true;
         _lastSwitchMs = millis();
         free(fadeSnapshotBuf);  // AC #7: free snapshot on early exit
-        _switchState = SwitchState::IDLE;
+        _switchState.store(SwitchState::IDLE);
         return;
     }
 
@@ -170,41 +197,67 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
     DisplayMode* newMode = target.factory();
     if (newMode == nullptr) {
         // Factory returned null — restore previous mode
+        _lastErrorCode.store("MODE_FACTORY_FAILED");
+        _errorUpdating.store(true);
         snprintf(_lastError, sizeof(_lastError),
                  "Factory failed for %.40s", target.displayName);
+        _errorUpdating.store(false);
         LOG_E("ModeRegistry", "Factory returned null");
 
-        // Re-create previous mode
+        // Re-create previous mode; if re-init also fails, leave registry idle
         if (prevEntry != nullptr) {
             _activeMode = prevEntry->factory();
             if (_activeMode != nullptr) {
-                _activeMode->init(ctx);
+                if (!_activeMode->init(ctx)) {
+                    LOG_E("ModeRegistry", "Factory-null: previous mode re-init failed — clearing active mode");
+                    delete _activeMode;
+                    _activeMode = nullptr;
+                    _activeModeIndex = MODE_INDEX_NONE;
+                } else {
+                    _activeModeIndex = prevIndex;
+                }
+            } else {
+                _activeModeIndex = MODE_INDEX_NONE;
             }
-            _activeModeIndex = prevIndex;
         }
         // Story ds-3.2, AC #5: correct NVS to actually-active mode
         _nvsWritePending = true;
         _lastSwitchMs = millis();
         free(fadeSnapshotBuf);  // AC #7: free snapshot on early exit
-        _switchState = SwitchState::IDLE;
+        _switchState.store(SwitchState::IDLE);
         return;
     }
 
     // Step 5: Init new mode
     if (!newMode->init(ctx)) {
-        // Init failed — delete new, re-create previous
+        // Init failed — delete new, re-create previous; if re-init also fails, leave idle
+        _lastErrorCode.store("MODE_INIT_FAILED");
+        _errorUpdating.store(true);
         snprintf(_lastError, sizeof(_lastError),
                  "Init failed for %.40s", target.displayName);
+        _errorUpdating.store(false);
         LOG_W("ModeRegistry", "Mode init failed");
 
+        // Architecture D2: teardown-before-delete — init() may have partially
+        // allocated resources; teardown() is required to release them safely
+        // before deletion (synthesis ds-3.2 Pass 3).
+        newMode->teardown();
         delete newMode;
 
         if (prevEntry != nullptr) {
             _activeMode = prevEntry->factory();
             if (_activeMode != nullptr) {
-                _activeMode->init(ctx);
+                if (!_activeMode->init(ctx)) {
+                    LOG_E("ModeRegistry", "Init-fail: previous mode re-init failed — clearing active mode");
+                    delete _activeMode;
+                    _activeMode = nullptr;
+                    _activeModeIndex = MODE_INDEX_NONE;
+                } else {
+                    _activeModeIndex = prevIndex;
+                }
+            } else {
+                _activeModeIndex = MODE_INDEX_NONE;
             }
-            _activeModeIndex = prevIndex;
         } else {
             _activeMode = nullptr;
             _activeModeIndex = MODE_INDEX_NONE;
@@ -213,14 +266,18 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
         _nvsWritePending = true;
         _lastSwitchMs = millis();
         free(fadeSnapshotBuf);  // AC #7: free snapshot on early exit
-        _switchState = SwitchState::IDLE;
+        _switchState.store(SwitchState::IDLE);
         return;
     }
 
     // Step 6: Switch successful — set new mode as active
     _activeMode = newMode;
     _activeModeIndex = targetIndex;
+    _recoveryQueued = false;  // ds-3.2 AC #5: clear flag so a future failure starts a fresh recovery
+    _errorUpdating.store(true);
     _lastError[0] = '\0';
+    _lastErrorCode.store(nullptr);
+    _errorUpdating.store(false);
     _nvsWritePending = true;
     _lastSwitchMs = millis();
 
@@ -276,6 +333,7 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
                 }
 
                 FastLED.show();
+                esp_task_wdt_reset();  // Prevent WDT timeout during ~990ms crossfade
                 vTaskDelay(pdMS_TO_TICKS(FADE_STEP_DELAY_MS));
             }
 
@@ -294,33 +352,64 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
 #if LOG_LEVEL >= 2
     Serial.printf("[ModeRegistry] Active mode: %s\n", target.id);
 #endif
-    _switchState = SwitchState::IDLE;
+    _switchState.store(SwitchState::IDLE);
 }
 
 void ModeRegistry::tickNvsPersist() {
     if (!_nvsWritePending) return;
     if (millis() - _lastSwitchMs < 2000) return;
 
+    // Guard: _table must be initialized before NVS persistence
+    if (_table == nullptr || _count == 0) {
+        _nvsWritePending = false;
+        return;
+    }
+
     // Debounce elapsed — persist via ConfigManager (AR7: single writer)
     if (_activeModeIndex < _count) {
         ConfigManager::setDisplayMode(_table[_activeModeIndex].id);
         LOG_I("ModeRegistry", "Mode persisted to NVS");
     } else {
-        // Story ds-3.2, AC #5: no active mode (all failed) — correct NVS to default
-        ConfigManager::setDisplayMode("classic_card");
-        LOG_W("ModeRegistry", "No active mode — NVS corrected to classic_card");
+        // Story ds-3.2, AC #5: no active mode (all failed) — correct NVS to safe default.
+        // Use table[0] dynamically so ModeRegistry is not coupled to a specific mode ID.
+        // Also queue a switch to table[0] so active mode catches up to NVS (no silent drift).
+        // _recoveryQueued prevents an infinite retry loop if table[0] also fails to init:
+        //   activation is queued at most once per "no active mode" episode; the flag is
+        //   cleared in executeSwitch() when any mode succeeds so a future failure starts fresh.
+        const char* safeId = (_count > 0) ? _table[0].id : "classic_card";
+        ConfigManager::setDisplayMode(safeId);
+        LOG_W("ModeRegistry", "No active mode — NVS corrected to safe default");
+        if (_count > 0 && !_recoveryQueued) {
+            _recoveryQueued = true;
+            LOG_W("ModeRegistry", "Queuing default mode activation (one attempt)");
+            _requestedIndex.store(0);  // AC #5: queue table[0] for next tick to close NVS drift
+        } else if (_recoveryQueued) {
+            LOG_E("ModeRegistry", "Default mode failed to activate — no further recovery attempts");
+        }
     }
     _nvsWritePending = false;
 }
 
 void ModeRegistry::tick(const RenderContext& ctx,
                         const std::vector<FlightInfo>& flights) {
-    // Check for pending switch request (atomic read from Core 0)
+    // Check for pending switch request (atomic read on Core 0).
+    // Always consume the request (store MODE_INDEX_NONE) even when the target
+    // equals the currently active mode — otherwise a same-mode request leaves
+    // _requestedIndex permanently set, which can fire unexpectedly after an
+    // unrelated _activeModeIndex change (e.g. OTA restore, heap-guard fallback).
     uint8_t requested = _requestedIndex.load();
-    if (requested != MODE_INDEX_NONE && requested != _activeModeIndex) {
-        // Consume the request
-        _requestedIndex.store(MODE_INDEX_NONE);
-        executeSwitch(requested, ctx, flights);
+    if (requested != MODE_INDEX_NONE) {
+        _requestedIndex.store(MODE_INDEX_NONE);  // consume before any branch
+        if (requested != _activeModeIndex) {
+            // Ensure REQUESTED is set (requestSwitch() already set it on Core 1,
+            // but re-affirm on Core 0 as the authoritative write path).
+            _switchState.store(SwitchState::REQUESTED);
+            executeSwitch(requested, ctx, flights);
+        } else {
+            // Same-mode request consumed silently — no mode restart (idempotent).
+            // Reset REQUESTED that requestSwitch() set on Core 1 so state returns to IDLE.
+            _switchState.store(SwitchState::IDLE);
+        }
     }
 
     // NVS debounced persistence
@@ -352,11 +441,99 @@ uint8_t ModeRegistry::getModeCount() {
 }
 
 SwitchState ModeRegistry::getSwitchState() {
-    return _switchState;
+    return _switchState.load();
 }
 
 const char* ModeRegistry::getLastError() {
+    // Guard against cross-core read during write (review follow-up #2)
+    if (_errorUpdating.load()) {
+        return "";
+    }
     return _lastError;
+}
+
+void ModeRegistry::copyLastError(char* outBuf, size_t maxLen) {
+    // Thread-safe snapshot for Core 1 callers (synthesis ds-3.2 Pass 3).
+    // Uses seqlock-style double-check: discard copy if a write started or was
+    // in progress during the memcpy so callers never see a torn string.
+    if (outBuf == nullptr || maxLen == 0) return;
+    outBuf[0] = '\0';
+    if (_errorUpdating.load()) return;  // write in progress — return empty
+    strlcpy(outBuf, _lastError, maxLen);
+    if (_errorUpdating.load()) outBuf[0] = '\0';  // write started during copy — discard
+}
+
+const char* ModeRegistry::getLastErrorCode() {
+    // Returns stable string literal (nullptr when no error).
+    // Atomic pointer read — safe across cores without locking.
+    return _lastErrorCode.load();
+}
+
+bool ModeRegistry::prepareForOTA() {
+    if (_otaMode.load()) {
+        LOG_W("ModeRegistry", "prepareForOTA: already in OTA mode");
+        return false;
+    }
+    if (_table == nullptr) {
+        snprintf(_lastError, sizeof(_lastError), "prepareForOTA: no mode table");
+        LOG_E("ModeRegistry", "prepareForOTA failed: no mode table");
+        return false;
+    }
+
+    // Set SWITCHING so tick() does not run normal mode logic
+    _switchState.store(SwitchState::SWITCHING);
+
+    // Teardown and delete the active mode to free heap for OTA
+    if (_activeMode != nullptr) {
+        _activeMode->teardown();
+        LOG_I("ModeRegistry", "prepareForOTA: mode torn down");
+        delete _activeMode;
+        _activeMode = nullptr;
+    }
+    _activeModeIndex = MODE_INDEX_NONE;
+
+    // Consume any pending switch request so tick() doesn't try to execute it
+    _requestedIndex.store(MODE_INDEX_NONE);
+
+    _otaMode.store(true);
+    LOG_I("ModeRegistry", "prepareForOTA: system ready for OTA flash");
+    return true;
+}
+
+bool ModeRegistry::isOtaMode() {
+    return _otaMode.load();
+}
+
+void ModeRegistry::completeOTAAttempt(bool success) {
+    if (success) {
+        // No-op — device will reboot momentarily
+        return;
+    }
+
+    if (!_otaMode.load()) {
+        LOG_W("ModeRegistry", "completeOTAAttempt: not in OTA mode");
+        return;
+    }
+
+    // Story dl-7.2, AC #8: Hold OTA mode for 3s so display task shows "Update failed"
+    // visual before we restore the flight rendering pipeline. Display task runs at ~5fps
+    // during OTA mode, so this gives ~15 frames of the error message.
+    LOG_I("ModeRegistry", "completeOTAAttempt: showing error visual for 3s");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // Restore normal tick() behavior
+    _otaMode.store(false);
+    _switchState.store(SwitchState::IDLE);
+
+    // Request default mode so display pipeline resumes rendering.
+    // Route through ModeOrchestrator per Architecture Rule 24 — requestSwitch()
+    // must only be called from ModeOrchestrator::tick() or onManualSwitch().
+    if (_table != nullptr && _count > 0) {
+        ModeOrchestrator::onManualSwitch(_table[0].id, _table[0].displayName);
+        LOG_I("ModeRegistry", "completeOTAAttempt: restored default mode via orchestrator after OTA failure");
+    } else {
+        LOG_W("ModeRegistry", "completeOTAAttempt: no mode table — display will be idle");
+    }
 }
 
 void ModeRegistry::enumerate(void (*cb)(const char* id, const char* displayName,

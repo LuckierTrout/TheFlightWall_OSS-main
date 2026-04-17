@@ -28,6 +28,12 @@ This is a high-level overview of the firmware that powers TheFlightWall on ESP32
 ### Build
 - PlatformIO project: see `platformio.ini`.
 
+### First boot
+On first flash the device starts an AP named `FlightWall-Setup`. Connect and visit `http://flightwall.local/` (or `192.168.4.1`) to complete the setup wizard.
+
+### OTA updates
+The dashboard **Firmware** card can check GitHub Releases for newer versions and download them over the air. You can also upload a `.bin` file manually via the same card.
+
 ### Notes
 - OpenSky OAuth is required for `states/all`. Token auto‑refreshes with a safety skew.
 - Display uses `FastLED_NeoMatrix` with WS2812B strips; adjust tiling/orientation in hardware config.

@@ -15,6 +15,17 @@ Story dl-1.1: Renders current local time using Adafruit GFX text APIs.
 // NTP sync accessor (defined in main.cpp, Story fn-2.1)
 extern bool isNtpSynced();
 
+// Settings schema definitions (moved from header to avoid ODR violations)
+const ModeSettingDef CLOCK_SETTINGS[] = {
+    { "format", "Time Format", "enum", 0, 0, 1, "24-hour,12-hour" }
+};
+
+const ModeSettingsSchema CLOCK_SCHEMA = {
+    "clock",         // modeAbbrev (<=5 chars, NVS key prefix)
+    CLOCK_SETTINGS,
+    1
+};
+
 // Zone descriptor for Mode Picker UI — single full-matrix "Time" region
 const ZoneRegion ClockMode::_zones[] = {
     {"Time", 0, 0, 100, 100}
@@ -56,7 +67,6 @@ void ClockMode::render(const RenderContext& ctx,
     if (!isNtpSynced()) {
         // Only redraw fallback once (or on first frame)
         if (_lastRenderedSecond != -2) {
-            ctx.matrix->fillScreen(0);
             renderFallback(ctx);
             _lastRenderedSecond = -2;  // Sentinel: fallback displayed
         }
@@ -68,7 +78,6 @@ void ClockMode::render(const RenderContext& ctx,
     if (!getLocalTime(&timeinfo, 0)) {
         // Time not yet available — show fallback
         if (_lastRenderedSecond != -2) {
-            ctx.matrix->fillScreen(0);
             renderFallback(ctx);
             _lastRenderedSecond = -2;
         }
@@ -81,9 +90,6 @@ void ClockMode::render(const RenderContext& ctx,
     }
     _lastRenderedSecond = (int8_t)timeinfo.tm_sec;
 
-    // Re-read format setting each render in case it changed via API
-    _format = (uint8_t)ConfigManager::getModeSetting("clock", "format", 0);
-
     // Build time string
     char timeStr[16];
     if (_format == 1) {
@@ -91,14 +97,13 @@ void ClockMode::render(const RenderContext& ctx,
         int hour12 = timeinfo.tm_hour % 12;
         if (hour12 == 0) hour12 = 12;
         const char* ampm = (timeinfo.tm_hour < 12) ? "AM" : "PM";
-        snprintf(timeStr, sizeof(timeStr), "%d:%02d%s", hour12, timeinfo.tm_min, ampm);
+        snprintf(timeStr, sizeof(timeStr), "%2d:%02d%s", hour12, timeinfo.tm_min, ampm);
     } else {
         // 24-hour format (AC #4)
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
     }
 
-    // Clear and render
-    ctx.matrix->fillScreen(0);
+    // Render time (AC #2: no fillScreen to avoid flicker)
     renderTime(ctx, timeStr);
 }
 
@@ -143,7 +148,8 @@ void ClockMode::renderTime(const RenderContext& ctx, const char* timeStr) {
     int16_t y = (mh - charH) / 2;
 
     ctx.matrix->setTextSize(textSize);
-    ctx.matrix->setTextColor(ctx.textColor);
+    // Draw text with black background to overwrite previous pixels (AC #2: no flicker)
+    ctx.matrix->setTextColor(ctx.textColor, 0);
     ctx.matrix->setTextWrap(false);
     ctx.matrix->setCursor(x, y);
     ctx.matrix->print(timeStr);

@@ -109,10 +109,14 @@
 
   function renderDevice(d) {
     var dev = d.device;
+    var sub = d.subsystems;
     var html = '';
     html += row('Uptime', formatUptime(dev.uptime_ms));
     html += row('Free heap', formatBytes(dev.free_heap));
     html += row('Storage', formatBytes(dev.fs_used) + ' / ' + formatBytes(dev.fs_total));
+    if (sub.ota_pull) {
+      html += dotRow('OTA Pull', sub.ota_pull.level, sub.ota_pull.message || sub.ota_pull.level.toUpperCase());
+    }
     deviceBody.innerHTML = html;
   }
 

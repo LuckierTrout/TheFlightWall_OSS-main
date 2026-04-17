@@ -3,6 +3,11 @@ misc
 .env
 .venv
 firmware/.pio
+firmware/.cache/
+
+# Python
+__pycache__/
+*.py[cod]
 
 # bmad-assist artifacts (auto-generated, never commit)
 .bmad-assist/cache/

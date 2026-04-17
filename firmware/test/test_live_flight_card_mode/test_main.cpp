@@ -1,15 +1,20 @@
 /*
- * Purpose: Unity tests for LiveFlightCardMode (ds-2.1, ds-2.2).
+ * Purpose: Unity tests for LiveFlightCardMode (ds-2.1).
  * Tests: init/teardown lifecycle, zone descriptor correctness, render dispatch
  *        (valid/invalid layout, empty flights), cycling state management,
- *        MEMORY_REQUIREMENT sizing, metadata (getName, getZoneDescriptor),
- *        adaptive field dropping (ds-2.2), vertical trend indicator (ds-2.2).
+ *        MEMORY_REQUIREMENT sizing, metadata (getName, getZoneDescriptor).
  * Environment: esp32dev (on-device test) — requires NVS flash.
  *
  * Architecture Reference: Display System Release decisions D1, D2
  * - LiveFlightCardMode implements DisplayMode via RenderContext
  * - Zone rendering: logo, flight info, enriched telemetry (alt, spd, hdg, vrate)
- * - ds-2.2: adaptive dropping when zones too small, vertical trend glyph
+ * - ds-2.2 scope: adaptive field dropping + vertical trend glyph (classifyVerticalTrend,
+ *   computeTelemetryFields tested here as public static methods; drawVerticalTrend tested
+ *   indirectly via render() with null-matrix no-crash guards)
+ *
+ * Note on null-matrix tests: cycling state is updated before the matrix null guard,
+ * so cycling-logic tests that pass ctx.matrix=nullptr exercise the state machine
+ * without needing hardware. Draw-path tests require a physical matrix.
  */
 #include <Arduino.h>
 #include <unity.h>
@@ -84,27 +89,6 @@ static FlightInfo makeNanTelemetryFlight() {
     return f;
 }
 
-// Helper: Create a climbing flight (positive vertical rate)
-static FlightInfo makeClimbingFlight() {
-    FlightInfo f = makeTestFlight("UAL", "KLAX", "KJFK", "B738");
-    f.vertical_rate_fps = 15.0;   // clear climb
-    return f;
-}
-
-// Helper: Create a descending flight (negative vertical rate)
-static FlightInfo makeDescendingFlight() {
-    FlightInfo f = makeTestFlight("DAL", "KATL", "KORD", "A320");
-    f.vertical_rate_fps = -12.0;  // clear descent
-    return f;
-}
-
-// Helper: Create a level flight (vrate within epsilon band)
-static FlightInfo makeLevelFlight() {
-    FlightInfo f = makeTestFlight("AAL", "KDFW", "KLAX", "B738");
-    f.vertical_rate_fps = 0.3;    // within 0.5 eps — should be level
-    return f;
-}
-
 // ============================================================================
 // Test: Init and teardown lifecycle
 // ============================================================================
@@ -124,22 +108,27 @@ void test_teardown_does_not_crash() {
 }
 
 void test_init_resets_cycling_state() {
+    // Cycling state is updated before the null guard, so this exercises
+    // the state machine even without a physical matrix.
     LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
+    RenderContext ctx = makeTestCtx();  // ctx.matrix = nullptr
 
     mode.init(ctx);
     std::vector<FlightInfo> flights;
     flights.push_back(makeTestFlight("UAL", "KLAX", "KJFK", "B738"));
     flights.push_back(makeTestFlight("DAL", "KATL", "KORD", "A320"));
 
-    // render with nullptr matrix should not crash (guard check)
+    // Cycling state updates before null guard — these calls exercise state logic
+    mode.render(ctx, flights);
     mode.render(ctx, flights);
 
-    // Teardown and re-init should reset state
+    // Teardown and re-init must reset cycle fields
     mode.teardown();
     mode.init(ctx);
     mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
+    // After teardown + init the timer anchors on first render; index stays 0 (no elapsed interval)
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
+    TEST_ASSERT_TRUE(mode.getLastCycleMs() > 0);  // Timer anchored after first multi-flight render
 }
 
 // ============================================================================
@@ -199,7 +188,7 @@ void test_memory_requirement_value() {
 }
 
 // ============================================================================
-// Test: Render with nullptr matrix (guard)
+// Test: Render with nullptr matrix (null guard)
 // ============================================================================
 
 void test_render_null_matrix_no_crash() {
@@ -266,8 +255,9 @@ void test_live_flight_factory_creates_instance() {
 }
 
 void test_live_flight_init_and_render_lifecycle() {
+    // Cycling state updates before null guard; render calls exercise state machine
     LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
+    RenderContext ctx = makeTestCtx();  // ctx.matrix = nullptr
 
     TEST_ASSERT_TRUE(mode.init(ctx));
 
@@ -281,7 +271,9 @@ void test_live_flight_init_and_render_lifecycle() {
     }
 
     mode.teardown();
-    TEST_ASSERT_TRUE(true);
+    // teardown() must reset both cycling fields to 0
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
+    TEST_ASSERT_EQUAL(0, mode.getLastCycleMs());
 }
 
 // ============================================================================
@@ -289,6 +281,8 @@ void test_live_flight_init_and_render_lifecycle() {
 // ============================================================================
 
 void test_single_flight_always_index_zero() {
+    // With single flight, cycling logic must always set index=0 and lastCycleMs=0,
+    // regardless of render call count (single-flight branch resets both fields).
     LiveFlightCardMode mode;
     RenderContext ctx = makeTestCtx();
     mode.init(ctx);
@@ -299,176 +293,70 @@ void test_single_flight_always_index_zero() {
     for (int i = 0; i < 10; i++) {
         mode.render(ctx, flights);
     }
-    TEST_ASSERT_TRUE(true);
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
+    TEST_ASSERT_EQUAL(0, mode.getLastCycleMs());  // Single-flight branch resets timer
 }
 
-// ============================================================================
-// Test: ds-2.2 — Adaptive field dropping (null matrix, no-crash tests)
-// ============================================================================
-
-// Compact telemetry zone (1 line only) — fields should be dropped gracefully
-void test_render_compact_telemetry_zone_no_crash() {
+void test_cycling_zero_interval_no_rapid_strobe() {
+    // displayCycleMs == 0 must NOT advance index (guard: ctx.displayCycleMs > 0).
+    // Even after many render calls the index must stay at 0.
     LiveFlightCardMode mode;
     RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    ctx.layout.valid = true;
-    ctx.layout.matrixWidth = 64;
-    ctx.layout.matrixHeight = 16;
-    ctx.layout.logoZone = {0, 0, 16, 16};
-    ctx.layout.flightZone = {16, 0, 48, 8};     // 1 line for flight
-    ctx.layout.telemetryZone = {16, 8, 48, 8};   // 1 line for telemetry
+    ctx.displayCycleMs = 0;  // zero interval
     mode.init(ctx);
 
     std::vector<FlightInfo> flights;
     flights.push_back(makeTestFlight("UAL", "KLAX", "KJFK", "B738"));
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
+    flights.push_back(makeTestFlight("DAL", "KATL", "KORD", "A320"));
+
+    for (int i = 0; i < 20; i++) {
+        mode.render(ctx, flights);
+    }
+    // Zero-interval guard must prevent any index advancement
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
 }
 
-// Zero-height telemetry zone — should gracefully show nothing
-void test_render_zero_telemetry_zone_no_crash() {
+void test_empty_flights_then_flights_no_strobe() {
+    // After empty-flights state, _lastCycleMs is reset to 0 so the timer
+    // anchors fresh on first multi-flight render, preventing index strobing.
     LiveFlightCardMode mode;
     RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    ctx.layout.valid = true;
-    ctx.layout.matrixWidth = 64;
-    ctx.layout.matrixHeight = 8;
-    ctx.layout.logoZone = {0, 0, 8, 8};
-    ctx.layout.flightZone = {8, 0, 56, 8};       // 1 line for flight
-    ctx.layout.telemetryZone = {8, 8, 56, 0};     // 0 lines — no telemetry
     mode.init(ctx);
 
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeTestFlight("SWA", "KMDW", "KLAS", "B737"));
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// Narrow columns — should drop more fields
-void test_render_narrow_columns_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    ctx.layout.valid = true;
-    ctx.layout.matrixWidth = 32;
-    ctx.layout.matrixHeight = 16;
-    ctx.layout.logoZone = {0, 0, 8, 16};
-    ctx.layout.flightZone = {8, 0, 24, 8};       // ~4 cols
-    ctx.layout.telemetryZone = {8, 8, 24, 8};     // ~4 cols, 1 line
-    mode.init(ctx);
-
+    std::vector<FlightInfo> empty;
     std::vector<FlightInfo> flights;
     flights.push_back(makeTestFlight("UAL", "KLAX", "KJFK", "B738"));
+    flights.push_back(makeTestFlight("DAL", "KATL", "KORD", "A320"));
+
+    // Empty render must reset the timer
+    mode.render(ctx, empty);
+    TEST_ASSERT_EQUAL(0, mode.getLastCycleMs());  // Timer reset by empty-flights path
+
+    // First multi-flight render anchors timer; index must be 0 (no elapsed time yet)
     mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
+    TEST_ASSERT_TRUE(mode.getLastCycleMs() > 0);  // Timer now anchored at millis()
+
+    // Second render within same tick: no cycle has elapsed, index stays 0
+    mode.render(ctx, flights);
+    TEST_ASSERT_EQUAL(0, mode.getCurrentFlightIndex());
 }
 
 // ============================================================================
-// Test: ds-2.2 — Vertical direction indicator (logic tests via render path)
+// Test: Heap stability under mixed flight rendering (cycling state path)
 // ============================================================================
 
-// Climbing flight should not crash (indicator drawn with green arrow)
-void test_render_climbing_flight_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    mode.init(ctx);
-
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeClimbingFlight());
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// Descending flight should not crash (indicator drawn with red arrow)
-void test_render_descending_flight_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    mode.init(ctx);
-
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeDescendingFlight());
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// Level flight (within epsilon) should not crash (indicator drawn as amber bar)
-void test_render_level_flight_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    mode.init(ctx);
-
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeLevelFlight());
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// NAN vrate — no indicator should be drawn, no crash
-void test_render_nan_vrate_no_indicator_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    mode.init(ctx);
-
-    FlightInfo f = makeTestFlight("UAL", "KLAX", "KJFK", "B738");
-    f.vertical_rate_fps = NAN;
-    std::vector<FlightInfo> flights;
-    flights.push_back(f);
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// AC #7: numeric vrate dropped but trend still shows — compact zone with climb
-void test_render_compact_zone_climb_trend_no_crash() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    ctx.layout.valid = true;
-    ctx.layout.matrixWidth = 64;
-    ctx.layout.matrixHeight = 16;
-    ctx.layout.logoZone = {0, 0, 16, 16};
-    ctx.layout.flightZone = {16, 0, 48, 8};
-    ctx.layout.telemetryZone = {16, 8, 48, 8};   // 1 line — vrate numeric dropped
-    mode.init(ctx);
-
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeClimbingFlight());
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// AC #9: invalid layout preserves ds-2.1 fallback behavior
-void test_render_invalid_layout_preserves_fallback() {
-    LiveFlightCardMode mode;
-    RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
-    ctx.layout.valid = false;
-    mode.init(ctx);
-
-    std::vector<FlightInfo> flights;
-    flights.push_back(makeClimbingFlight());
-    flights.push_back(makeDescendingFlight());
-    flights.push_back(makeLevelFlight());
-    mode.render(ctx, flights);
-    TEST_ASSERT_TRUE(true);
-}
-
-// Mixed flight types in rapid cycling — heap stability
 void test_render_mixed_flights_heap_stable() {
     LiveFlightCardMode mode;
     RenderContext ctx = makeTestCtx();
-    ctx.matrix = nullptr;
     mode.init(ctx);
 
     HeapMonitor monitor;
 
     std::vector<FlightInfo> flights;
-    flights.push_back(makeClimbingFlight());
-    flights.push_back(makeDescendingFlight());
-    flights.push_back(makeLevelFlight());
+    flights.push_back(makeTestFlight("UAL", "KLAX", "KJFK", "B738"));
+    flights.push_back(makeTestFlight("DAL", "KATL", "KORD", "A320"));
+    flights.push_back(makeTestFlight("AAL", "KDFW", "KLAX", "B738"));
     flights.push_back(makeNanTelemetryFlight());
 
     for (int i = 0; i < 100; i++) {
@@ -476,6 +364,89 @@ void test_render_mixed_flights_heap_stable() {
     }
 
     monitor.assertNoLeak(512);
+}
+
+// ============================================================================
+// Test: ds-2.2 — classifyVerticalTrend (pure function, no hardware needed)
+// ============================================================================
+
+void test_classify_climbing() {
+    // vrate clearly above EPS → CLIMBING
+    TEST_ASSERT_EQUAL((int)VerticalTrend::CLIMBING,
+                      (int)LiveFlightCardMode::classifyVerticalTrend(2.0f));
+}
+
+void test_classify_descending() {
+    // vrate clearly below -EPS → DESCENDING
+    TEST_ASSERT_EQUAL((int)VerticalTrend::DESCENDING,
+                      (int)LiveFlightCardMode::classifyVerticalTrend(-2.0f));
+}
+
+void test_classify_level_zero() {
+    // vrate == 0.0 → LEVEL (inside epsilon band)
+    TEST_ASSERT_EQUAL((int)VerticalTrend::LEVEL,
+                      (int)LiveFlightCardMode::classifyVerticalTrend(0.0f));
+}
+
+void test_classify_level_just_below_eps() {
+    // vrate = 0.4f (< VRATE_LEVEL_EPS 0.5f) → still LEVEL
+    TEST_ASSERT_EQUAL((int)VerticalTrend::LEVEL,
+                      (int)LiveFlightCardMode::classifyVerticalTrend(0.4f));
+}
+
+void test_classify_unknown_nan() {
+    // NAN vrate → UNKNOWN (glyph must not be drawn — AC #6)
+    TEST_ASSERT_EQUAL((int)VerticalTrend::UNKNOWN,
+                      (int)LiveFlightCardMode::classifyVerticalTrend(NAN));
+}
+
+// ============================================================================
+// Test: ds-2.2 — computeTelemetryFields (pure function, no hardware needed)
+// ============================================================================
+
+void test_fields_two_lines_wide_all_four() {
+    // 2 lines, 10 text cols: both pair threshold (>=7) and single (>=3) met → all 4 fields
+    TelemetryFieldSet fs = LiveFlightCardMode::computeTelemetryFields(2, 10);
+    TEST_ASSERT_TRUE(fs.alt);
+    TEST_ASSERT_TRUE(fs.spd);
+    TEST_ASSERT_TRUE(fs.hdg);
+    TEST_ASSERT_TRUE(fs.vrate);
+}
+
+void test_fields_two_lines_narrow_singles_only() {
+    // 2 lines, 5 cols: canFitPair (>=7) fails → spd and vrate dropped; alt and hdg kept
+    TelemetryFieldSet fs = LiveFlightCardMode::computeTelemetryFields(2, 5);
+    TEST_ASSERT_TRUE(fs.alt);
+    TEST_ASSERT_FALSE(fs.spd);
+    TEST_ASSERT_TRUE(fs.hdg);
+    TEST_ASSERT_FALSE(fs.vrate);
+}
+
+void test_fields_two_lines_too_narrow_nothing() {
+    // 2 lines, 2 cols: canFitSingle (>=3) fails → no fields at all
+    TelemetryFieldSet fs = LiveFlightCardMode::computeTelemetryFields(2, 2);
+    TEST_ASSERT_FALSE(fs.alt);
+    TEST_ASSERT_FALSE(fs.spd);
+    TEST_ASSERT_FALSE(fs.hdg);
+    TEST_ASSERT_FALSE(fs.vrate);
+}
+
+void test_fields_one_line_wide_all_four() {
+    // 1 line, 16 cols: all thresholds met (15=vrate, 11=hdg, 7=spd, 3=alt) → all 4 fields
+    TelemetryFieldSet fs = LiveFlightCardMode::computeTelemetryFields(1, 16);
+    TEST_ASSERT_TRUE(fs.alt);
+    TEST_ASSERT_TRUE(fs.spd);
+    TEST_ASSERT_TRUE(fs.hdg);
+    TEST_ASSERT_TRUE(fs.vrate);
+}
+
+void test_fields_one_line_alt_only() {
+    // 1 line, 4 cols: only alt threshold (>=3) met → alt only
+    TelemetryFieldSet fs = LiveFlightCardMode::computeTelemetryFields(1, 4);
+    TEST_ASSERT_TRUE(fs.alt);
+    TEST_ASSERT_FALSE(fs.spd);
+    TEST_ASSERT_FALSE(fs.hdg);
+    TEST_ASSERT_FALSE(fs.vrate);
 }
 
 // ============================================================================
@@ -517,20 +488,25 @@ void setup() {
 
     // Cycling behavior
     RUN_TEST(test_single_flight_always_index_zero);
+    RUN_TEST(test_cycling_zero_interval_no_rapid_strobe);
+    RUN_TEST(test_empty_flights_then_flights_no_strobe);
 
-    // ds-2.2: Adaptive field dropping
-    RUN_TEST(test_render_compact_telemetry_zone_no_crash);
-    RUN_TEST(test_render_zero_telemetry_zone_no_crash);
-    RUN_TEST(test_render_narrow_columns_no_crash);
-
-    // ds-2.2: Vertical direction indicator
-    RUN_TEST(test_render_climbing_flight_no_crash);
-    RUN_TEST(test_render_descending_flight_no_crash);
-    RUN_TEST(test_render_level_flight_no_crash);
-    RUN_TEST(test_render_nan_vrate_no_indicator_no_crash);
-    RUN_TEST(test_render_compact_zone_climb_trend_no_crash);
-    RUN_TEST(test_render_invalid_layout_preserves_fallback);
+    // Heap stability
     RUN_TEST(test_render_mixed_flights_heap_stable);
+
+    // ds-2.2: classifyVerticalTrend
+    RUN_TEST(test_classify_climbing);
+    RUN_TEST(test_classify_descending);
+    RUN_TEST(test_classify_level_zero);
+    RUN_TEST(test_classify_level_just_below_eps);
+    RUN_TEST(test_classify_unknown_nan);
+
+    // ds-2.2: computeTelemetryFields
+    RUN_TEST(test_fields_two_lines_wide_all_four);
+    RUN_TEST(test_fields_two_lines_narrow_singles_only);
+    RUN_TEST(test_fields_two_lines_too_narrow_nothing);
+    RUN_TEST(test_fields_one_line_wide_all_four);
+    RUN_TEST(test_fields_one_line_alt_only);
 
     UNITY_END();
 }

@@ -1,6 +1,6 @@
 # Story dl-1.1: Clock Mode Time Display
 
-Status: review
+Status: Ready for Review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -56,6 +56,9 @@ So that the wall always shows something useful even when I'm not tracking flight
 
 - [x] Task 4: Tests + build (**AC: #12, #13**)
 
+#### Review Follow-ups (AI)
+- [ ] [AI-Review] MEDIUM: Mode setting hot-reload — Active mode settings cannot be updated without mode switch/reboot. ConfigManager fires callbacks on setModeSetting but active mode caches values in init() and never re-reads. Affects all modes with settings, not ClockMode-specific. (firmware/modes/ClockMode.cpp:53, firmware/core/ModeRegistry.h)
+
 ## Dev Notes
 
 ### Product vs epic strings
@@ -100,10 +103,10 @@ Claude Opus 4.6
 
 ### Completion Notes List
 
-- **Task 1**: Added `getModeSetting()` and `setModeSetting()` to ConfigManager. Read path is read-only (never creates NVS keys on read per AC #3). Write path validates known mode/key ranges (clock/format: 0 or 1). NVS key composition: `m_{abbrev}_{key}` enforced ≤15 chars via snprintf bounds check.
-- **Task 2**: Created `ClockMode.h` and `ClockMode.cpp`. Implements full `DisplayMode` interface. `getName()` returns `"clock"` (matches MODE_TABLE id and dl-1.4 watchdog text). Auto-scales text size to fill matrix. `_lastRenderedSecond` tracks wall-clock second to avoid flicker (AC #2 — only redraws on second change). 12-hour mode appends AM/PM inline as suffix (e.g., "2:30PM"). Fallback shows "--:--" when NTP not synced (AC #7). `CLOCK_SETTINGS[]` and `CLOCK_SCHEMA` are static const in header per rule 29 (AC #9).
+- **Task 1**: Added `getModeSetting()` and `setModeSetting()` to ConfigManager. Read path is read-only (never creates NVS keys on read per AC #3). Write path is storage-only; validation moved to API layer per SOLID OCP principle (2026-04-15 code review fix). NVS key composition: `m_{abbrev}_{key}` enforced ≤15 chars via snprintf bounds check.
+- **Task 2**: Created `ClockMode.h` and `ClockMode.cpp`. Implements full `DisplayMode` interface. `getName()` returns `"clock"` (matches MODE_TABLE id and dl-1.4 watchdog text). Auto-scales text size to fill matrix. `_lastRenderedSecond` tracks wall-clock second to avoid flicker (AC #2 — only redraws on second change). 12-hour mode appends AM/PM inline as suffix with padded hour format (e.g., " 9:30AM") to prevent UI jumping (2026-04-15 code review fix). Fallback shows "--:--" when NTP not synced (AC #7). `CLOCK_SETTINGS[]` and `CLOCK_SCHEMA` moved to .cpp file to avoid ODR violations (2026-04-15 code review fix). Removed redundant ConfigManager::getModeSetting() call from render() hot path per architecture rule 18 (2026-04-15 code review fix).
 - **Task 3**: Extended `ModeEntry` struct with `const ModeSettingsSchema* settingsSchema` field (AC #11). Added clock row to MODE_TABLE with factory, memReq, priority=2, zone descriptor, and settings schema pointer. Set `nullptr` for classic_card and live_flight settingsSchema. Updated test mode tables accordingly.
-- **Task 4**: Added 5 new ConfigManager tests (getModeSetting missing key returns default, set/get roundtrip, clock format range validation, key length within NVS limit, key too long rejected). Added 6 new ModeRegistry tests (ClockMode name, zone descriptor, settings schema, table presence, init with null matrix, render with null matrix). Build compiles clean — no new warnings.
+- **Task 4**: Added 5 new ConfigManager tests (getModeSetting missing key returns default, set/get roundtrip, storage-only behavior verification, key length within NVS limit, key too long rejected). Added 6 new ModeRegistry tests (ClockMode name, zone descriptor, settings schema, table presence, init with null matrix, render with null matrix). Build compiles clean — no new warnings. Updated test expectations post-review to match storage-only architecture.
 
 ### File List
 
@@ -119,6 +122,8 @@ Claude Opus 4.6
 ### Change Log
 
 - 2026-04-14: Story dl-1.1 implemented — ClockMode, ConfigManager per-mode NVS helpers, ModeEntry extension, tests
+- 2026-04-15: Code review synthesis #1 — Fixed Rule 18 violation (removed NVS read from render hot path), OCP violation (removed hardcoded validation from ConfigManager), UI bouncing bug (padded 12h format), ODR violation (moved schema to .cpp)
+- 2026-04-15: Code review synthesis #2 — Fixed AC #2 violation (removed fillScreen full-screen flicker, added background color to setTextColor), fixed lying test name
 
 ## Previous story intelligence
 
@@ -135,3 +140,19 @@ New **`firmware/modes/ClockMode.*`**, edits **`ConfigManager.*`**, **`ModeRegist
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-15 (First Pass)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 6.8 → MAJOR REWORK
+- **Issues Found:** 4
+- **Issues Fixed:** 4
+- **Action Items Created:** 0
+
+### Review: 2026-04-15 (Second Pass)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 7.1 → REJECT
+- **Issues Found:** 2 verified, 4 dismissed
+- **Issues Fixed:** 2
+- **Action Items Created:** 1

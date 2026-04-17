@@ -12,11 +12,13 @@ import {
   type LayoutData,
   type LogosData,
   type WifiNetwork,
+  type DisplayModesData,
   DEFAULT_SETTINGS,
   HEALTHY_STATUS,
   STANDARD_LAYOUT,
   LOGOS_DATA,
   WIFI_SCAN_RESULTS,
+  DEFAULT_DISPLAY_MODES,
   successResponse,
   errorResponse,
   settingsApplyResponse,
@@ -40,6 +42,7 @@ export interface MockServerState {
   logos: LogosData;
   wifiNetworks: WifiNetwork[];
   isScanning: boolean;
+  displayModes: DisplayModesData;
 }
 
 // ============================================================================
@@ -62,6 +65,7 @@ export class MockApiManager {
       logos: { ...LOGOS_DATA },
       wifiNetworks: [...WIFI_SCAN_RESULTS],
       isScanning: false,
+      displayModes: JSON.parse(JSON.stringify(DEFAULT_DISPLAY_MODES)),
     };
   }
 
@@ -107,6 +111,25 @@ export class MockApiManager {
     await this.page.route('**/api/reset', async (route) => {
       await this.handleReset(route);
     });
+
+    // GET /api/display/modes (ds-3.3, ds-3.6)
+    await this.page.route('**/api/display/modes', async (route) => {
+      await this.handleGetDisplayModes(route);
+    });
+
+    // POST /api/display/mode (ds-3.4)
+    await this.page.route('**/api/display/mode', async (route, request) => {
+      if (request.method() === 'POST') {
+        await this.handlePostDisplayMode(route, request);
+      } else {
+        await route.continue();
+      }
+    });
+
+    // POST /api/display/notification/dismiss (ds-3.6)
+    await this.page.route('**/api/display/notification/dismiss', async (route) => {
+      await this.handleDismissNotification(route);
+    });
   }
 
   // ============================================================================
@@ -143,6 +166,43 @@ export class MockApiManager {
    */
   getState(): MockServerState {
     return { ...this.state };
+  }
+
+  /**
+   * Update display modes state (ds-3.6 upgrade banner testing).
+   */
+  updateDisplayModes(partial: Partial<DisplayModesData>): void {
+    this.state.displayModes = { ...this.state.displayModes, ...partial };
+  }
+
+  /**
+   * Enable upgrade notification banner (ds-3.6).
+   */
+  enableUpgradeNotification(): void {
+    this.state.displayModes.upgrade_notification = true;
+  }
+
+  /**
+   * Disable upgrade notification banner (ds-3.6).
+   */
+  disableUpgradeNotification(): void {
+    this.state.displayModes.upgrade_notification = false;
+  }
+
+  /**
+   * Simulate registry error for mode switch (ds-3.4, ds-3.6).
+   */
+  setRegistryError(error: string | undefined): void {
+    this.state.displayModes.registry_error = error;
+  }
+
+  /**
+   * Remove live_flight mode from available modes (ds-3.6 AC #7 testing).
+   */
+  removeLiveFlightMode(): void {
+    this.state.displayModes.modes = this.state.displayModes.modes.filter(
+      (m) => m.id !== 'live_flight'
+    );
   }
 
   // ============================================================================
@@ -280,6 +340,83 @@ export class MockApiManager {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ ok: true, message: 'Factory reset complete' }),
+    });
+  }
+
+  private async handleGetDisplayModes(route: Route): Promise<void> {
+    const dm = this.state.displayModes;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          modes: dm.modes,
+          active_mode: dm.active_mode,
+          switch_state: dm.switch_state,
+          upgrade_notification: dm.upgrade_notification,
+          ...(dm.registry_error ? { registry_error: dm.registry_error } : {}),
+        },
+      }),
+    });
+  }
+
+  private async handlePostDisplayMode(route: Route, request: Request): Promise<void> {
+    const body = request.postDataJSON() as { mode?: string };
+    const modeId = body?.mode;
+
+    if (!modeId) {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify(errorResponse('Missing mode field', 'MISSING_MODE')),
+      });
+      return;
+    }
+
+    const modeExists = this.state.displayModes.modes.some((m) => m.id === modeId);
+    if (!modeExists) {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify(errorResponse('Mode not found', 'MODE_NOT_FOUND')),
+      });
+      return;
+    }
+
+    // Check for simulated registry error
+    if (this.state.displayModes.registry_error) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: { registry_error: this.state.displayModes.registry_error },
+        }),
+      });
+      return;
+    }
+
+    // Simulate successful mode switch
+    this.state.displayModes.modes.forEach((m) => {
+      m.active = m.id === modeId;
+    });
+    this.state.displayModes.active_mode = modeId;
+    this.state.displayModes.switch_state = 'idle';
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, data: { active_mode: modeId } }),
+    });
+  }
+
+  private async handleDismissNotification(route: Route): Promise<void> {
+    this.state.displayModes.upgrade_notification = false;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
     });
   }
 

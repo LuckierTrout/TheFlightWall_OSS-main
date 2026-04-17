@@ -1,6 +1,6 @@
 # Story ds-3.2: NVS Mode Persistence & Boot Restore
 
-Status: review
+Status: complete
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -45,6 +45,17 @@ So that the device boots into my preferred mode without requiring manual reselec
 - [x] Task 4: Documentation + tests (AC: #1, #2, #7, #8)
   - [x] 4.1: Comment in **`ConfigManager.h`** / epic cross-ref: **`disp_mode`** canonical name
   - [x] 4.2: Extend tests if missing cases for invalid NVS boot
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] HIGH: AC3 violated — normal-boot fallback tried "clock" before "classic_card"; fixed to go directly to "classic_card" (`firmware/src/main.cpp`)
+- [x] [AI-Review] HIGH: AC5 state drift — tickNvsPersist wrote "classic_card" to NVS without activating it; fixed to queue `_requestedIndex=0` for next tick (`firmware/core/ModeRegistry.cpp`)
+- [x] [AI-Review] MEDIUM: OCP violation — tickNvsPersist hardcoded "classic_card" string; fixed to use `_table[0].id` (`firmware/core/ModeRegistry.cpp`)
+- [x] [AI-Review] MEDIUM: Missing test for cold-boot first-switch-fail edge case; added `test_first_switch_fail_queues_recovery_activation` (`firmware/test/test_mode_registry/test_main.cpp`)
+
+#### Review Follow-ups (AI) — Pass 2
+- [x] [AI-Review] HIGH: Infinite recovery loop — if `_table[0]` also fails init, `tickNvsPersist()` queues activation indefinitely every 2s, burning NVS flash; fixed with `_recoveryQueued` flag (`firmware/core/ModeRegistry.h`, `firmware/core/ModeRegistry.cpp`)
+- [x] [AI-Review] HIGH: Layout hot-reload desync — zone_logo_pct, zone_split_pct, zone_layout changes not detected by `hardwareConfigChanged`/`hardwareMappingChanged`, so `_layout` in NeoMatrixDisplay is never updated without reboot despite API returning `reboot_required: false` (`firmware/src/main.cpp`)
+- [x] [AI-Review] MEDIUM: Type safety — `kv.value().as<int32_t>()` silently returns 0 for non-numeric JSON strings, which can pass range validation and overwrite NVS settings with 0; fixed with `is<int32_t>()` pre-check (`firmware/adapters/WebPortal.cpp`)
 
 ## Dev Notes
 
@@ -99,16 +110,20 @@ No debug issues encountered.
 
 ### Implementation Approach (AC #5 Documentation)
 
-AC #5 NVS correction uses the existing debounced `tickNvsPersist()` mechanism rather than immediate writes. In each `executeSwitch()` failure path, `_nvsWritePending` and `_lastSwitchMs` are set so the next `tickNvsPersist()` call (after 2-second debounce) persists the actually-active mode ID. When `_activeModeIndex == MODE_INDEX_NONE` (no mode active), NVS is corrected to `"classic_card"` as the safe default.
+AC #5 NVS correction uses the existing debounced `tickNvsPersist()` mechanism rather than immediate writes. In each `executeSwitch()` failure path, `_nvsWritePending` and `_lastSwitchMs` are set so the next `tickNvsPersist()` call (after 2-second debounce) persists the actually-active mode ID. When `_activeModeIndex == MODE_INDEX_NONE` (no mode active), NVS is corrected to `_table[0].id` (the safe default) **and** `_requestedIndex` is queued to 0 so that the next `tick()` activates that mode — preventing silent drift between NVS and `getActiveModeId()`.
 
 ### File List
 
-- firmware/src/main.cpp (modified — boot NVS correction + upgrade notification detection)
+- firmware/src/main.cpp (modified — boot NVS correction + upgrade notification detection; **synthesis fix: removed intermediate clock fallback in normal-boot invalid-mode path per AC #3**)
 - firmware/core/ConfigManager.h (modified — added hasDisplayMode, setUpgNotif, getUpgNotif; canonical name docs)
 - firmware/core/ConfigManager.cpp (modified — implemented hasDisplayMode, setUpgNotif, getUpgNotif)
-- firmware/core/ModeRegistry.cpp (modified — NVS correction in all failure paths + fallback in tickNvsPersist)
-- firmware/adapters/WebPortal.cpp (modified — refactored upg_notif to use ConfigManager methods)
-- firmware/test/test_mode_registry/test_main.cpp (modified — added 4 new tests)
+- firmware/core/ModeRegistry.h (modified — **synthesis fix 2: added `_recoveryQueued` static member to break infinite recovery loop when table[0] also fails**)
+- firmware/core/ModeRegistry.cpp (modified — NVS correction in all failure paths + fallback in tickNvsPersist; **synthesis fix: AC #5 state-drift fix + replaced hardcoded "classic_card" with _table[0].id**; **synthesis fix 2: `_recoveryQueued` guards tickNvsPersist else-branch; reset on successful switch**)
+- firmware/adapters/WebPortal.cpp (modified — refactored upg_notif to use ConfigManager methods; **synthesis fix 3: added `is<int32_t>()` type check in settings pre-validation to reject non-numeric values with HTTP 400**)
+- firmware/src/main.cpp (modified — boot NVS correction + upgrade notification detection; **synthesis fix: removed intermediate clock fallback in normal-boot invalid-mode path per AC #3**; **synthesis fix 4: zone_logo_pct, zone_split_pct, zone_layout added to hardwareConfigChanged + hardwareMappingChanged so zone hot-reloads update _layout via reconfigureFromConfig()**)
+- firmware/test/test_mode_registry/test_main.cpp (modified — added 4 new tests; **synthesis fix: added test_first_switch_fail_queues_recovery_activation covering cold-boot first-switch-fail edge case**; **synthesis fix Pass 3: changed stale NVS seed from "mock_mode_a" to "stale_invalid_mode" to eliminate tautological assertion**)
+- firmware/core/ModeRegistry.cpp (synthesis fix Pass 3: implemented missing copyLastError(); added teardown() before delete in init-fail path)
+- firmware/adapters/WebPortal.cpp (synthesis fix Pass 3: replaced getLastError() with copyLastError() at both call sites; fixed String capacity loss in all 3 push_back patterns)
 
 ## Previous story intelligence
 
@@ -125,3 +140,26 @@ Touches **`main.cpp`**, **`ConfigManager`**, possibly **`ModeRegistry.cpp`** for
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14 (Pass 1)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 6.3 → REJECT (MAJOR REWORK)
+- **Issues Found:** 4 verified (2 High, 2 Medium) + 1 Low deferred
+- **Issues Fixed:** 4
+- **Action Items Created:** 0 (all verified issues fixed in this synthesis pass)
+
+### Review: 2026-04-14 (Pass 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 5.3 → REJECT (MAJOR REWORK)
+- **Issues Found:** 3 verified (1 High+, 1 High, 1 Medium) + 3 dismissed
+- **Issues Fixed:** 3
+- **Action Items Created:** 0 (all verified issues fixed in this synthesis pass)
+
+### Review: 2026-04-14 (Pass 3)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 8.5 → REJECT (Validator A) / No findings (Validator B)
+- **Issues Found:** 4 verified (2 High, 2 Medium) + 2 dismissed
+- **Issues Fixed:** 4
+- **Action Items Created:** 0 (all verified issues fixed in this synthesis pass)

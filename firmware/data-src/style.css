@@ -264,7 +264,7 @@ body{
   .toast{transition:none;transform:none}
   .toast-visible{opacity:1}
   .toast-exit{opacity:0;transition:opacity 0.15s ease}
-  .mode-card.switching{animation:none;border-color:var(--primary);border-left-color:var(--primary)}
+  .mode-card.switching{animation:none;border-color:var(--primary);border-left-color:var(--primary);opacity:1}
 }
 
 /* Settings import zone (wizard) */
@@ -518,13 +518,14 @@ body{
 .mode-cards-list{display:flex;flex-direction:column;gap:8px}
 .mode-card{
   padding:12px;background:var(--bg);
-  border:1px solid var(--border);border-left:4px solid var(--border);
+  border:1px solid var(--border);
   border-radius:var(--radius);
   cursor:pointer;transition:border-color 0.15s;
 }
 .mode-card:hover{border-color:var(--primary);border-left-color:var(--primary)}
 .mode-card.active{
   border-color:var(--primary);border-left:4px solid var(--primary);
+  padding-left:9px;
   background:rgba(88,166,255,0.08);
 }
 .mode-card-header{display:flex;justify-content:space-between;align-items:center}
@@ -540,6 +541,12 @@ body{
   border-color:var(--primary);border-left-color:var(--primary);
   animation:mode-pulse 1.2s ease-in-out infinite;
 }
+/* Prevent layout shift when an active card (aria-current still set) transitions
+   to switching — preserves the 4px left rail + compensating padding from .active */
+.mode-card.switching[aria-current="true"]{
+  border-left-width:4px;
+  padding-left:9px;
+}
 @keyframes mode-pulse{
   0%,100%{border-color:var(--primary);border-left-color:var(--primary)}
   50%{border-color:var(--primary-hover);border-left-color:var(--primary-hover)}
@@ -549,7 +556,58 @@ body{
   font-size:0.8125rem;color:var(--error);margin-top:6px;
   padding:6px 8px;border-radius:4px;
   background:rgba(248,81,73,0.1);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+
+/* Per-mode settings panel (Story dl-5.1, AC #3-#4) */
+.mode-settings-panel{
+  margin-top:12px;padding-top:12px;
+  border-top:1px solid var(--border);
+}
+.mode-setting-row{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:12px;margin-bottom:10px;
+}
+.mode-setting-row:last-of-type{margin-bottom:0}
+.mode-setting-label{
+  font-size:0.875rem;color:var(--text-muted);
+  flex-shrink:0;
+}
+.mode-setting-input{
+  padding:6px 10px;font-size:0.875rem;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius);
+  outline:none;transition:border-color 0.15s;
+}
+.mode-setting-input:focus{border-color:var(--primary)}
+.mode-setting-select{
+  min-width:100px;
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238b949e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;
+  padding-right:26px;
+}
+.mode-setting-number{
+  width:70px;text-align:center;
+  -moz-appearance:textfield;
+}
+.mode-setting-number::-webkit-inner-spin-button,
+.mode-setting-number::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.mode-setting-checkbox{
+  width:18px;height:18px;accent-color:var(--primary);cursor:pointer;
+}
+.mode-setting-actions{
+  margin-top:12px;display:flex;justify-content:flex-end;
+}
+.mode-setting-apply{
+  padding:6px 16px;font-size:0.875rem;
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  cursor:pointer;font-weight:600;
+  transition:background 0.15s,border-color 0.15s;
+}
+.mode-setting-apply:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.mode-setting-apply:disabled{opacity:0.5;cursor:default}
 
 /* Mode schematic grid (ds-3.3 AC #3) */
 .mode-schematic{
@@ -557,7 +615,8 @@ body{
   display:grid;
   grid-template-columns:repeat(100,minmax(0,1fr));
   grid-template-rows:repeat(100,minmax(0,1fr));
-  gap:1px;border-radius:4px;overflow:hidden;
+  gap:1px;
+  border-radius:4px;overflow:hidden;
   background:var(--border);
 }
 .mode-schematic-zone{
@@ -604,6 +663,47 @@ body{
 .nm-fields input[type="time"]:disabled{cursor:default}
 .nm-fields select:disabled{cursor:default}
 .nm-fields input[type="range"]:disabled{cursor:default}
+
+/* Mode Schedule card (Story dl-4.2) */
+.sched-status{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.sched-orch-badge{
+  font-size:0.75rem;font-weight:600;padding:2px 8px;
+  border-radius:var(--radius);background:var(--border);color:var(--text-muted);
+}
+.sched-orch-scheduled{background:var(--primary);color:var(--bg)}
+.sched-orch-manual{background:var(--border);color:var(--text-muted)}
+.sched-empty-state{color:var(--text-muted);font-size:0.8125rem;font-style:italic}
+.sched-rules-list{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.sched-rule-row{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:8px 10px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius);
+  font-size:0.875rem;
+}
+.sched-rule-row.sched-rule-active{border-color:var(--primary)}
+.sched-rule-times{display:flex;gap:4px;align-items:center}
+.sched-rule-times input[type="time"]{
+  width:auto;padding:4px 6px;font-size:0.875rem;
+  background:var(--bg);color:var(--text);
+  border:1px solid var(--border);border-radius:4px;outline:none;
+}
+.sched-rule-times input[type="time"]:focus{border-color:var(--primary)}
+.sched-rule-mode{flex:1;min-width:100px}
+.sched-rule-mode select{
+  width:100%;padding:4px 6px;font-size:0.875rem;
+  background:var(--bg);color:var(--text);
+  border:1px solid var(--border);border-radius:4px;outline:none;
+}
+.sched-rule-mode select:focus{border-color:var(--primary)}
+.sched-rule-toggle{display:flex;align-items:center;gap:4px}
+.sched-rule-toggle input[type="checkbox"]{
+  width:16px;height:16px;accent-color:var(--primary);cursor:pointer;
+}
+.sched-rule-del{
+  background:none;border:none;color:var(--error);cursor:pointer;
+  font-size:1.1rem;padding:2px 6px;line-height:1;
+}
+.sched-rule-del:hover{color:#e5443c}
 
 /* Danger zone / System card (Story 2.5) */
 .card-danger{border-color:var(--error)}
@@ -652,6 +752,11 @@ body{
 .ota-progress-bar{height:100%;background:var(--primary);transition:width 0.3s;border-radius:var(--radius)}
 .ota-progress-text{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.875rem;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.65),0 -1px 2px rgba(0,0,0,0.65),1px 0 2px rgba(0,0,0,0.65),-1px 0 2px rgba(0,0,0,0.65)}
 .ota-reboot{text-align:center;padding:var(--gap);font-size:1.125rem;color:var(--primary)}
+/* OTA pull progress (Story dl-7.3) */
+.ota-pull-status{font-size:0.875rem;font-weight:500;margin-bottom:8px}
+.ota-pull-error{font-size:0.875rem;color:var(--error);margin-top:8px}
+.ota-progress.indeterminate .ota-progress-bar{width:100%!important;animation:ota-indeterminate 1.5s ease-in-out infinite}
+@keyframes ota-indeterminate{0%{opacity:0.3}50%{opacity:1}100%{opacity:0.3}}
 .banner-warning{
   background:#2d2738;border-left:4px solid #d29922;
   padding:12px 16px;border-radius:var(--radius);
@@ -666,21 +771,23 @@ body{
 }
 .banner-warning .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 
-/* Upgrade notification banner (Story ds-3.6) */
+/* Upgrade notification banner (Story ds-3.6) — informational, not error-styled */
 .banner-info{
   background:rgba(88,166,255,0.08);border-left:4px solid var(--primary);
   padding:12px 16px;border-radius:var(--radius);
-  display:flex;justify-content:space-between;align-items:flex-start;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   margin-bottom:12px;font-size:0.875rem;
 }
-.banner-info-content{flex:1;min-width:0}
-.banner-info-content strong{display:block;margin-bottom:8px}
-.banner-info-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.banner-info .banner-info-btn-primary{
-  width:auto;display:inline-block;padding:8px 16px;
-  font-size:0.875rem;margin-top:0;min-height:36px;
+.banner-info .banner-actions{
+  display:flex;gap:8px;align-items:center;margin-left:auto;flex-shrink:0;
 }
-.banner-info .link-btn{padding:4px 0;font-size:0.875rem}
+.banner-info .btn-primary-inline{
+  background:var(--primary);color:#0d1117;
+  border:1px solid var(--primary);border-radius:var(--radius);
+  padding:6px 14px;cursor:pointer;font-weight:600;font-size:0.875rem;
+  transition:background 0.15s,border-color 0.15s;
+}
+.banner-info .btn-primary-inline:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
 .banner-info .dismiss-btn{
   background:none;border:none;color:var(--text);cursor:pointer;
   font-size:1.25rem;min-width:44px;min-height:44px;
@@ -688,6 +795,34 @@ body{
   border-radius:var(--radius);flex-shrink:0;
 }
 .banner-info .dismiss-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
+/* OTA update check banner (Story dl-6.2) */
+.ota-update-banner{
+  background:rgba(63,185,80,0.08);border-left:4px solid var(--success);
+  padding:12px 16px;border-radius:var(--radius);
+  margin-top:12px;font-size:0.875rem;
+}
+.ota-update-text{font-weight:500;margin-bottom:8px}
+.ota-update-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ota-notes-toggle{
+  background:none;border:none;color:var(--primary);
+  font-size:0.875rem;cursor:pointer;padding:4px 0;
+  text-decoration:underline;
+}
+.ota-notes-toggle:hover{color:var(--primary-hover)}
+.ota-notes-toggle:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.ota-update-now-btn{width:auto;display:inline-block;padding:8px 16px;font-size:0.875rem;margin-top:0;min-height:36px}
+.ota-release-notes{
+  margin-top:8px;padding:8px 12px;
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  max-height:200px;overflow-y:auto;
+}
+.ota-release-notes pre{
+  font-size:0.8125rem;color:var(--text-muted);
+  white-space:pre-wrap;word-break:break-word;
+  font-family:inherit;margin:0;
+}
+.ota-uptodate-text{font-size:0.875rem;color:var(--success);margin-top:8px}
 
 .ota-file-info .apply-btn{min-height:44px;margin-top:0;width:auto}
 .btn-ota-cancel{width:auto;padding:10px 16px;margin-top:0;min-height:44px}
@@ -723,6 +858,12 @@ body{
 }
 
 /* Mode Picker responsive layout (ds-3.5) */
+/* AC 9: max-width:599px keeps the single-column mode list below 600px;
+   this boundary is intentionally isolated from any future shared 600px dashboard
+   breakpoints so both can coexist without conflict. */
+/* Programmatic-focus-only heading (tabindex="-1") — suppress outline ring
+   in browsers that show :focus on script-driven focus (e.g. banner dismiss AC #4). */
+#mode-picker-heading:focus{outline:none}
 @media (max-width:599px){
   .mode-cards-list{display:flex;flex-direction:column;gap:8px}
   .mode-card{min-height:44px}

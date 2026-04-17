@@ -104,18 +104,44 @@ public:
     const ModeSettingsSchema* getSettingsSchema() const override { return nullptr; }
 };
 
+// Heavy mock: MEMORY_REQUIREMENT far exceeds ESP32 heap, triggering the heap guard
+class MockModeHeavy : public DisplayMode {
+public:
+    // 200 KB > ESP32 usable heap (~160 KB) — guaranteed to trip the heap guard
+    static constexpr uint32_t MEMORY_REQUIREMENT = 200 * 1024;
+
+    bool init(const RenderContext& ctx) override { (void)ctx; return true; }
+    void render(const RenderContext& ctx,
+                const std::vector<FlightInfo>& flights) override {
+        (void)ctx; (void)flights;
+    }
+    void teardown() override {}
+    const char* getName() const override { return "Mock Heavy"; }
+    const ModeZoneDescriptor& getZoneDescriptor() const override { return g_mockDescriptor; }
+    const ModeSettingsSchema* getSettingsSchema() const override { return nullptr; }
+};
+
 // Factory functions for test mode table
 static DisplayMode* mockModeAFactory() { return new MockModeA(); }
 static DisplayMode* mockModeBFactory() { return new MockModeB(); }
+static DisplayMode* mockModeHeavyFactory() { return new MockModeHeavy(); }
 static uint32_t mockModeAMemReq() { return MockModeA::MEMORY_REQUIREMENT; }
 static uint32_t mockModeBMemReq() { return MockModeB::MEMORY_REQUIREMENT; }
+static uint32_t mockModeHeavyMemReq() { return MockModeHeavy::MEMORY_REQUIREMENT; }
 
-// Test mode table
+// Test mode table (used by most tests)
 static const ModeEntry TEST_MODE_TABLE[] = {
     { "mock_mode_a", "Mock A", mockModeAFactory, mockModeAMemReq, 0, &g_mockDescriptor, nullptr },
     { "mock_mode_b", "Mock B", mockModeBFactory, mockModeBMemReq, 1, &g_mockDescriptor, nullptr },
 };
 static constexpr uint8_t TEST_MODE_COUNT = sizeof(TEST_MODE_TABLE) / sizeof(TEST_MODE_TABLE[0]);
+
+// Heap-guard test mode table — includes the heavy mock
+static const ModeEntry HEAP_GUARD_MODE_TABLE[] = {
+    { "mock_mode_a",     "Mock A",     mockModeAFactory,     mockModeAMemReq,     0, &g_mockDescriptor, nullptr },
+    { "mock_mode_heavy", "Mock Heavy", mockModeHeavyFactory, mockModeHeavyMemReq, 1, &g_mockDescriptor, nullptr },
+};
+static constexpr uint8_t HEAP_GUARD_MODE_COUNT = sizeof(HEAP_GUARD_MODE_TABLE) / sizeof(HEAP_GUARD_MODE_TABLE[0]);
 
 // Production mode table for table-shape tests
 static DisplayMode* classicFactory() { return new ClassicCardMode(); }
@@ -235,10 +261,34 @@ void test_heap_guard_allows_sufficient_memory() {
     TEST_ASSERT_EQUAL_STRING("", ModeRegistry::getLastError());
 }
 
-// Note: heap_guard_rejects_insufficient_memory is hard to test on-device
-// without a mock mode with extreme MEMORY_REQUIREMENT. Left as IGNORE for now.
 void test_heap_guard_rejects_insufficient_memory() {
-    TEST_IGNORE_MESSAGE("Requires mock mode with extreme MEMORY_REQUIREMENT");
+    // Uses HEAP_GUARD_MODE_TABLE which includes mock_mode_heavy with
+    // MEMORY_REQUIREMENT = 200 KB — guaranteed to exceed ESP32's ~160 KB usable heap.
+    clearModeNvs();
+    g_mockModeAStats.reset();
+    ConfigManager::init();
+    ModeRegistry::init(HEAP_GUARD_MODE_TABLE, HEAP_GUARD_MODE_COUNT);
+
+    // Activate mock_mode_a first
+    ModeRegistry::requestSwitch("mock_mode_a");
+    RenderContext ctx = makeTestCtx();
+    std::vector<FlightInfo> empty;
+    ModeRegistry::tick(ctx, empty);
+    TEST_ASSERT_EQUAL_STRING("mock_mode_a", ModeRegistry::getActiveModeId());
+
+    // Now try to switch to the heavy mode — heap guard must reject it
+    ModeRegistry::requestSwitch("mock_mode_heavy");
+    ModeRegistry::tick(ctx, empty);
+
+    // Active mode should remain mock_mode_a (heap guard rejected the switch)
+    TEST_ASSERT_EQUAL_STRING("mock_mode_a", ModeRegistry::getActiveModeId());
+    // Error message should mention insufficient memory
+    TEST_ASSERT_STRING_CONTAINS("Insufficient memory", ModeRegistry::getLastError());
+    // State should return to IDLE
+    TEST_ASSERT_EQUAL(SwitchState::IDLE, ModeRegistry::getSwitchState());
+
+    // Restore test table for subsequent tests
+    ModeRegistry::init(TEST_MODE_TABLE, TEST_MODE_COUNT);
 }
 
 // ============================================================================
@@ -457,6 +507,50 @@ void test_failed_init_corrects_nvs_after_debounce() {
     // NVS should be corrected to the actually-active mode (mock_mode_a)
     String stored = nvsReadString("disp_mode", "");
     TEST_ASSERT_EQUAL_STRING("mock_mode_a", stored.c_str());
+}
+
+// Story ds-3.2 AC #5: cold-boot scenario — first-ever switch fails, no prior active mode.
+// tickNvsPersist() must correct NVS to table[0] AND queue an activation switch so that
+// NVS and getActiveModeId() do not silently drift (the gap in test_failed_init_corrects_nvs).
+void test_first_switch_fail_queues_recovery_activation() {
+    // Init registry WITHOUT activating any mode (simulate cold boot before first requestSwitch)
+    clearModeNvs();
+    g_mockModeAStats.reset();
+    g_mockModeBStats.reset();
+    ConfigManager::init();
+    ModeRegistry::init(TEST_MODE_TABLE, TEST_MODE_COUNT);
+    // No tick here — no active mode yet
+
+    // Write a DIFFERENT stale value to NVS so the assertion is non-tautological:
+    // if recovery logic fails entirely and NVS is never updated, this value persists
+    // and the assertion below correctly fails (synthesis ds-3.2 Pass 3).
+    nvsWriteString("disp_mode", "stale_invalid_mode");
+
+    // Make table[0] (mock_mode_a) fail init so the first switch collapses
+    g_mockModeAStats.initShouldFail = true;
+
+    ModeRegistry::requestSwitch("mock_mode_a");
+    RenderContext ctx = makeTestCtx();
+    std::vector<FlightInfo> empty;
+    ModeRegistry::tick(ctx, empty);
+
+    // No active mode (first switch failed, no prior mode to restore)
+    TEST_ASSERT_NULL(ModeRegistry::getActiveModeId());
+
+    // Wait for debounce — tickNvsPersist should correct NVS and queue table[0] activation
+    delay(2100);
+    ModeRegistry::tick(ctx, empty);
+
+    // NVS must be corrected to table[0] (mock_mode_a) — no silent NVS drift
+    String stored = nvsReadString("disp_mode", "");
+    TEST_ASSERT_EQUAL_STRING("mock_mode_a", stored.c_str());
+
+    // The queued activation should fire on the next tick; allow it to succeed
+    g_mockModeAStats.initShouldFail = false;
+    ModeRegistry::tick(ctx, empty);
+
+    // Active mode must now match NVS — drift closed
+    TEST_ASSERT_EQUAL_STRING("mock_mode_a", ModeRegistry::getActiveModeId());
 }
 
 // ============================================================================
@@ -886,8 +980,12 @@ void test_rapid_switches_with_fade_no_crash() {
     monitor.assertNoLeak(1024);
 }
 
-void test_switch_returns_to_idle_after_fade() {
-    // AC #1, #8: switch state returns to IDLE after fade completes
+void test_switch_returns_to_idle_after_fade_skip() {
+    // AC #1, #8: switch state returns to IDLE after fade (zero-dim skip path).
+    // makeTestCtx() produces matrixWidth/Height = 0, so the fade snapshot is skipped
+    // entirely (instant handoff). Validates IDLE state on the skip path.
+    // A separate real-fade test with non-zero dimensions would require a live FastLED
+    // setup; deferred as a future improvement.
     initTestRegistry();
 
     ModeRegistry::requestSwitch("mock_mode_b");
@@ -923,6 +1021,107 @@ void test_fade_blend_math_correctness() {
     // Expected midpoint: ~125
     uint8_t expected_mid = (a + b) / 2;
     TEST_ASSERT_UINT8_WITHIN(5, expected_mid, result);
+}
+
+// ============================================================================
+// Test: Per-mode settings API shape (Story dl-5.1, AC #1–#2)
+// ============================================================================
+
+void test_settings_schema_shape_for_clock() {
+    // AC #1: GET /api/display/modes should include settings array for clock
+    // Validate schema shape: key, label, type, default, min, max, enumOptions
+    ModeRegistry::init(PROD_MODE_TABLE, PROD_MODE_COUNT);
+    const ModeEntry* table = ModeRegistry::getModeTable();
+    for (uint8_t i = 0; i < ModeRegistry::getModeCount(); i++) {
+        if (strcmp(table[i].id, "clock") == 0) {
+            TEST_ASSERT_NOT_NULL(table[i].settingsSchema);
+            const ModeSettingsSchema* schema = table[i].settingsSchema;
+            TEST_ASSERT_EQUAL_STRING("clock", schema->modeAbbrev);
+            TEST_ASSERT_EQUAL(1, schema->settingCount);
+            const ModeSettingDef& def = schema->settings[0];
+            TEST_ASSERT_EQUAL_STRING("format", def.key);
+            TEST_ASSERT_EQUAL_STRING("Time Format", def.label);
+            TEST_ASSERT_EQUAL_STRING("enum", def.type);
+            TEST_ASSERT_EQUAL(0, def.defaultValue);
+            TEST_ASSERT_EQUAL(0, def.minValue);
+            TEST_ASSERT_EQUAL(1, def.maxValue);
+            TEST_ASSERT_NOT_NULL(def.enumOptions);
+            return;
+        }
+    }
+    TEST_FAIL_MESSAGE("Clock mode not found in prod table");
+}
+
+void test_settings_schema_shape_for_departures_board() {
+    // AC #1: GET response settings for departures_board
+    ModeRegistry::init(PROD_MODE_TABLE, PROD_MODE_COUNT);
+    const ModeEntry* table = ModeRegistry::getModeTable();
+    for (uint8_t i = 0; i < ModeRegistry::getModeCount(); i++) {
+        if (strcmp(table[i].id, "departures_board") == 0) {
+            TEST_ASSERT_NOT_NULL(table[i].settingsSchema);
+            const ModeSettingsSchema* schema = table[i].settingsSchema;
+            TEST_ASSERT_EQUAL_STRING("depbd", schema->modeAbbrev);
+            TEST_ASSERT_EQUAL(1, schema->settingCount);
+            const ModeSettingDef& def = schema->settings[0];
+            TEST_ASSERT_EQUAL_STRING("rows", def.key);
+            TEST_ASSERT_EQUAL_STRING("uint8", def.type);
+            TEST_ASSERT_EQUAL(4, def.defaultValue);
+            TEST_ASSERT_EQUAL(1, def.minValue);
+            TEST_ASSERT_EQUAL(4, def.maxValue);
+            TEST_ASSERT_NULL(def.enumOptions);
+            return;
+        }
+    }
+    TEST_FAIL_MESSAGE("Departures board not found in prod table");
+}
+
+void test_settings_null_for_modes_without_schema() {
+    // AC #1: classic_card and live_flight have no settings
+    ModeRegistry::init(PROD_MODE_TABLE, PROD_MODE_COUNT);
+    const ModeEntry* table = ModeRegistry::getModeTable();
+    for (uint8_t i = 0; i < ModeRegistry::getModeCount(); i++) {
+        if (strcmp(table[i].id, "classic_card") == 0) {
+            TEST_ASSERT_NULL(table[i].settingsSchema);
+        }
+        if (strcmp(table[i].id, "live_flight") == 0) {
+            TEST_ASSERT_NULL(table[i].settingsSchema);
+        }
+    }
+}
+
+void test_set_mode_setting_fires_callbacks() {
+    // AC #4: setModeSetting fires callbacks so g_configChanged gets signaled
+    clearModeNvs();
+    ConfigManager::init();
+    bool callbackFired = false;
+    ConfigManager::onChange([&callbackFired]() { callbackFired = true; });
+    ConfigManager::setModeSetting("clock", "format", 1);
+    TEST_ASSERT_TRUE(callbackFired);
+}
+
+void test_settings_get_returns_persisted_value() {
+    // AC #5: after setModeSetting, getModeSetting returns new value
+    clearModeNvs();
+    ConfigManager::init();
+    // Default should be 0 (24h)
+    TEST_ASSERT_EQUAL(0, ConfigManager::getModeSetting("clock", "format", 0));
+    // Set to 12h
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 1));
+    TEST_ASSERT_EQUAL(1, ConfigManager::getModeSetting("clock", "format", 0));
+    // Set back to 24h
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 0));
+    TEST_ASSERT_EQUAL(0, ConfigManager::getModeSetting("clock", "format", 0));
+}
+
+void test_settings_reject_unknown_mode_key() {
+    // AC #4: unknown keys should not write to NVS (no explicit reject from
+    // setModeSetting — it writes any key that fits in 15 chars).
+    // But the validation for known combos already exists in setModeSetting.
+    // This tests that invalid range is rejected for known combos.
+    clearModeNvs();
+    ConfigManager::init();
+    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", 2));  // out of range
+    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", -1)); // negative
 }
 
 // ============================================================================
@@ -977,6 +1176,7 @@ void setup() {
 
     // Story ds-3.2: NVS correction on failed switch (AC #5)
     RUN_TEST(test_failed_init_corrects_nvs_after_debounce);
+    RUN_TEST(test_first_switch_fail_queues_recovery_activation);  // cold-boot / no prior mode
 
     // Story ds-3.2: hasDisplayMode / upg_notif (AC #1, #4)
     RUN_TEST(test_has_display_mode_false_when_absent);
@@ -1015,8 +1215,16 @@ void setup() {
     RUN_TEST(test_switch_with_zero_layout_no_crash);
     RUN_TEST(test_switch_no_heap_leak_with_fade_skip);
     RUN_TEST(test_rapid_switches_with_fade_no_crash);
-    RUN_TEST(test_switch_returns_to_idle_after_fade);
+    RUN_TEST(test_switch_returns_to_idle_after_fade_skip);
     RUN_TEST(test_fade_blend_math_correctness);
+
+    // Per-mode settings API shape tests (Story dl-5.1)
+    RUN_TEST(test_settings_schema_shape_for_clock);
+    RUN_TEST(test_settings_schema_shape_for_departures_board);
+    RUN_TEST(test_settings_null_for_modes_without_schema);
+    RUN_TEST(test_set_mode_setting_fires_callbacks);
+    RUN_TEST(test_settings_get_returns_persisted_value);
+    RUN_TEST(test_settings_reject_unknown_mode_key);
 
     // Cleanup
     clearModeNvs();

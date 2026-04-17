@@ -50,8 +50,7 @@ private:
     // --- Diff state for selective row repaint (dl-2.2) ---
     bool     _firstFrame = true;         // Full clear on first frame after init/mode switch
     uint8_t  _lastCount  = 0;            // Row count drawn on previous frame
-    uint8_t  _lastMaxRows = 0;           // maxRows on previous frame (detect config change)
-    uint32_t _lastIds[MAX_SUPPORTED_ROWS] = {};  // Compact ident hash per row slot
+    uint32_t _lastIds[MAX_SUPPORTED_ROWS] = {0, 0, 0, 0};  // Compact ident hash per row slot (explicit zero init)
 
     // Compute a compact hash for a flight's identity (ident_icao / ident)
     static uint32_t identHash(const FlightInfo& f);

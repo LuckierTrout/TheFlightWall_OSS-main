@@ -1,6 +1,6 @@
 # Story ds-3.1: Display Mode API Endpoints
 
-Status: review
+Status: complete
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -63,6 +63,9 @@ So that the mode system can be controlled programmatically from any client.
 - [x] Task 5: Assets / consumers (AC: #11)
   - [x] 5.1: If JSON field names change (**`active`** vs **`active_mode`**), update **`data-src/dashboard.js`** in same story **or** log follow-up for **ds-3.3** — avoid breaking **`dl-1.5`** dashboard
 
+#### Review Follow-ups (AI)
+<!-- All verified issues fixed during synthesis — no open items. -->
+
 ## Dev Notes
 
 ### Existing code
@@ -112,14 +115,18 @@ Claude Opus 4.6
 - Task 3: Updated POST handler to accept `mode` field with fallback to `mode_id` (AC #5). Mode name resolution now uses ModeRegistry lookup instead of hardcoded if-chain. Response includes truthful `active`, `switch_state`, `orchestrator_state`, `state_reason`, and `registry_error` fields.
 - Task 4: Registered `POST /api/display/notification/dismiss` route that clears NVS `upg_notif` flag and returns `{ ok: true }`.
 - Task 5: No dashboard.js changes needed — all existing field names (`active`, `modes`, `state_reason`, `orchestrator_state`) preserved. `mode_id` POST field still accepted via fallback. New fields (`zone_layout`, `switch_state`, `upgrade_notification`, `registry_error`) are additive-only.
+- Synthesis fix (switch_state truthfulness): `ModeRegistry::requestSwitch()` now sets `_switchState=REQUESTED` immediately on Core 1 so the POST response always returns `switch_state: "requested"` as required by AC #7 async strategy. `tick()` resets IDLE for same-mode consumes to prevent state leakage.
+- Synthesis fix (no partial apply): `_handlePostDisplayMode` now pre-validates all setting values against schema min/max before writing any to NVS, preventing partial NVS corruption on mixed-validity batches.
+- Synthesis fix (concat performance): All three POST body handlers now use `pending->body.concat(data, len)` instead of char-by-char loop, reducing AsyncTCP task CPU load for multi-chunk requests.
 
 ### File List
 
-- `firmware/core/ModeRegistry.h` — Added `zoneDescriptor` field to `ModeEntry` struct
+- `firmware/core/ModeRegistry.h` — Added `zoneDescriptor` field to `ModeEntry` struct; updated `_switchState` comment to document cross-core writes
+- `firmware/core/ModeRegistry.cpp` — `requestSwitch()` now sets `_switchState=REQUESTED` immediately; `tick()` resets to IDLE for same-mode consumes
 - `firmware/modes/ClassicCardMode.h` — Made `_descriptor` public for MODE_TABLE access
 - `firmware/modes/LiveFlightCardMode.h` — Made `_descriptor` public for MODE_TABLE access
 - `firmware/src/main.cpp` — Updated MODE_TABLE entries with descriptor pointers
-- `firmware/adapters/WebPortal.cpp` — Rewrote GET /api/display/modes, updated POST /api/display/mode, added POST /api/display/notification/dismiss, added ModeRegistry.h include
+- `firmware/adapters/WebPortal.cpp` — Rewrote GET /api/display/modes, updated POST /api/display/mode, added POST /api/display/notification/dismiss, added ModeRegistry.h include; pre-validates setting values before NVS writes; bulk concat in body handlers
 - `firmware/test/test_mode_registry/test_main.cpp` — Updated test mode tables with zoneDescriptor field
 
 ## Change Log
@@ -146,3 +153,25 @@ After **`data-src/`** edits, regenerate **`.gz`** per **`AGENTS.md`**.
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14 (Pass 1)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 6.8 → REJECT
+- **Issues Found:** 3 verified (2 dismissed as false positives)
+- **Issues Fixed:** 3
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI)
+<!-- All verified issues fixed during synthesis — no open items. -->
+
+### Review: 2026-04-14 (Pass 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 11.0 → REJECT (Validator A) / no findings (Validator B)
+- **Issues Found:** 4 verified (4 dismissed as false positives / design deferred)
+- **Issues Fixed:** 4
+- **Action Items Created:** 0
+
+#### Review Follow-ups (AI)
+<!-- All verified issues fixed during synthesis — no open items. -->

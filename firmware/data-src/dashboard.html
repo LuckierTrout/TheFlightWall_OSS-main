@@ -49,9 +49,9 @@
     <!-- Mode Picker (Story ds-3.3) -->
     <section class="card" id="mode-picker">
       <h2 id="mode-picker-heading" tabindex="-1">Display Mode</h2>
-      <div class="mode-status-line" id="modeStatusLine">
+      <div class="mode-status-line" id="modeStatusLine" aria-live="polite">
         Active: <span class="mode-status-name" id="modeStatusName">&mdash;</span>
-        (<span class="mode-status-reason" id="modeStatusReason">loading</span>)
+        <span class="mode-status-reason" id="modeStatusReason">loading</span>
       </div>
       <div class="mode-cards-list" id="modeCardsList"></div>
     </section>
@@ -233,13 +233,36 @@
       </div>
     </section>
 
-    <!-- Firmware Card (Story fn-1.6) -->
+    <!-- Firmware Card (Story fn-1.6, dl-6.2) -->
     <section class="card" id="firmware-card">
       <h2>Firmware</h2>
       <p id="fw-version" class="fw-version-text"></p>
       <div id="rollback-banner" class="banner-warning" role="alert" aria-live="polite" style="display:none">
         <span>Firmware rolled back to previous version</span>
         <button type="button" class="dismiss-btn" id="btn-dismiss-rollback" aria-label="Dismiss rollback warning">&times;</button>
+      </div>
+      <button type="button" class="btn-secondary" id="btn-check-update">Check for Updates</button>
+      <div id="ota-update-banner" class="ota-update-banner" role="alert" aria-live="polite" style="display:none">
+        <p class="ota-update-text" id="ota-update-text"></p>
+        <div class="ota-update-actions">
+          <button type="button" class="ota-notes-toggle" id="btn-toggle-notes" aria-expanded="false" aria-controls="ota-release-notes">View Release Notes</button>
+          <button type="button" class="apply-btn ota-update-now-btn" id="btn-update-now">Update Now</button>
+        </div>
+        <div class="ota-release-notes" id="ota-release-notes" role="region" aria-label="Release notes" style="display:none">
+          <pre id="ota-notes-content"></pre>
+        </div>
+      </div>
+      <div id="ota-uptodate" style="display:none">
+        <p class="ota-uptodate-text" id="ota-uptodate-text"></p>
+      </div>
+      <div id="ota-pull-progress" style="display:none" aria-live="polite">
+        <p class="ota-pull-status" id="ota-pull-status"></p>
+        <div class="ota-progress" id="ota-pull-bar-wrap" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+          <div class="ota-progress-bar" id="ota-pull-bar"></div>
+          <span class="ota-progress-text" id="ota-pull-pct">0%</span>
+        </div>
+        <p id="ota-pull-error" class="ota-pull-error" style="display:none"></p>
+        <button type="button" class="btn-secondary" id="btn-ota-retry" style="display:none">Retry</button>
       </div>
       <div class="ota-upload-zone" id="ota-upload-zone" role="button" tabindex="0" aria-label="Select firmware file for upload">
         <p class="upload-prompt">Drag .bin file here or tap to select</p>
@@ -290,6 +313,21 @@
         <label for="nm-timezone">Timezone</label>
         <select id="nm-timezone" class="cal-select"></select>
       </div>
+    </section>
+
+    <!-- Mode Schedule Card (Story dl-4.2) -->
+    <section class="card" id="schedule-card">
+      <h2>Mode Schedule</h2>
+
+      <div class="sched-status" id="sched-status" aria-live="polite">
+        <span class="sched-orch-badge" id="sched-orch-badge">State: --</span>
+      </div>
+
+      <div class="sched-rules-list" id="sched-rules-list">
+        <p class="sched-empty-state" id="sched-empty-state">No schedule rules configured. Add a rule to automatically switch display modes at set times.</p>
+      </div>
+
+      <button type="button" class="btn-secondary" id="btn-add-rule">+ Add Rule</button>
     </section>
 
     <!-- System / Danger Zone Card -->

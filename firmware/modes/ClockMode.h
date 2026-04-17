@@ -13,16 +13,9 @@ References: interfaces/DisplayMode.h, core/ConfigManager.h (getModeSetting/setMo
 
 #include "interfaces/DisplayMode.h"
 
-// Static schema declaration (AC #9, rule 29): settings defined in header
-static const ModeSettingDef CLOCK_SETTINGS[] = {
-    { "format", "Time Format", "enum", 0, 0, 1, "24-hour,12-hour" }
-};
-
-static const ModeSettingsSchema CLOCK_SCHEMA = {
-    "clock",         // modeAbbrev (<=5 chars, NVS key prefix)
-    CLOCK_SETTINGS,
-    1
-};
+// Static schema declaration (AC #9, rule 29): extern in header, defined in .cpp
+extern const ModeSettingDef CLOCK_SETTINGS[];
+extern const ModeSettingsSchema CLOCK_SCHEMA;
 
 class ClockMode : public DisplayMode {
 public:

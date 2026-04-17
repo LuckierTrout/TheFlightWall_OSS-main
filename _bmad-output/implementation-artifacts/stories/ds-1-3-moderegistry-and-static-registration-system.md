@@ -180,3 +180,23 @@ See `_bmad-output/project-context.md` — core pinning (display Core 0, network 
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14
+- **Reviewer:** AI Code Review Synthesis (2 reviewers)
+- **Evidence Score:** 9.15 (average of 12.0 and 6.3) → Changes Requested
+- **Issues Found:** 4 verified (2 Critical/High fixed; 2 Medium deferred)
+- **Issues Fixed:** 2
+- **Action Items Created:** 2
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: `SwitchState::REQUESTED` is never set — resolved in HEAD: `_switchState` is now `std::atomic<SwitchState>` and `REQUESTED` is assigned in `tick()` on Core 0 before `executeSwitch()`. (`firmware/core/ModeRegistry.cpp`)
+- [x] [AI-Review] MEDIUM: `_lastError[64]` and `_switchState` data race — resolved in HEAD: `_switchState` is `std::atomic`, `_lastError` writes are guarded by `std::atomic<bool> _errorUpdating`. (`firmware/core/ModeRegistry.h`, `firmware/core/ModeRegistry.cpp`)
+
+### Review: 2026-04-14 (Synthesis Round 2)
+- **Reviewer:** AI Code Review Synthesis (Validator A detailed; Validator B non-responsive)
+- **Evidence Score:** 7.5 / 10 → Changes Requested → **Approved after fixes**
+- **Issues Found:** 5 verified (1 High, 4 Medium); 2 dismissed (Low — sprint-boundary only)
+- **Issues Fixed:** 5
+- **Action Items Created:** 0

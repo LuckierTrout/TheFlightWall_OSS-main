@@ -2,7 +2,7 @@
 Purpose: DeparturesBoardMode implementation — multi-row departures list on LED matrix.
 Story dl-2.1 + dl-2.2: Renders up to maxRows flights simultaneously in stacked row bands.
 Each row: callsign | altitude(kft) | speed(mph).
-- maxRows read from ConfigManager::getModeSetting("depbd", "rows", 4).
+- maxRows read from ConfigManager in init(), cached for render() (Rule 18 compliance).
 - N > maxRows: only first maxRows flights shown (no scrolling — dl-2.1 AC #3).
 - N == 0: render "NO FLIGHTS" centered (dl-2.1 AC #7).
 - Row diff: only repaint dirty rows using fillRect (dl-2.2 AC #1, #3, #4).
@@ -41,6 +41,7 @@ static constexpr int ROW_BUF_SIZE = 40;
 
 bool DeparturesBoardMode::init(const RenderContext& ctx) {
     (void)ctx;
+    // Rule 18: read settings only in init(), cache for render() use
     _maxRows = (uint8_t)ConfigManager::getModeSetting("depbd", "rows", 4);
     if (_maxRows < 1) _maxRows = 1;
     if (_maxRows > 4) _maxRows = 4;
@@ -48,7 +49,6 @@ bool DeparturesBoardMode::init(const RenderContext& ctx) {
     // Reset diff state — force full clear on first render
     _firstFrame = true;
     _lastCount = 0;
-    _lastMaxRows = 0;
     memset(_lastIds, 0, sizeof(_lastIds));
     return true;
 }
@@ -58,18 +58,38 @@ void DeparturesBoardMode::teardown() {
     _maxRows = 4;
     _firstFrame = true;
     _lastCount = 0;
-    _lastMaxRows = 0;
     memset(_lastIds, 0, sizeof(_lastIds));
 }
 
-// djb2 variant — compact, deterministic, no heap
+// djb2 variant — compact, deterministic, no heap (dl-2.2 AC #5 compliance)
+// CRITICAL FIX (2026-04-16): Include altitude and speed in hash to detect telemetry changes.
+// Previous implementation only hashed ident, causing stale data display when telemetry changed.
 uint32_t DeparturesBoardMode::identHash(const FlightInfo& f) {
     uint32_t h = 5381;
-    const String& s = f.ident_icao.length() ? f.ident_icao
-                      : (f.ident.length() ? f.ident : String());
-    for (unsigned int i = 0; i < s.length(); i++) {
-        h = ((h << 5) + h) + (uint8_t)s[i];
+    // Direct char* access - no String allocation (avoid .length() in hot path)
+    const char* s = nullptr;
+    if (f.ident_icao.c_str()[0] != '\0') {
+        s = f.ident_icao.c_str();
+    } else if (f.ident.c_str()[0] != '\0') {
+        s = f.ident.c_str();
+    } else {
+        s = "---";  // Static string in flash, no allocation
     }
+
+    if (s != nullptr) {
+        for (unsigned int i = 0; s[i] != '\0'; i++) {
+            h = ((h << 5) + h) + (uint8_t)s[i];
+        }
+    }
+
+    // Include telemetry in hash to detect altitude/speed changes
+    // Use memcpy for standards-compliant type conversion (avoid UB from union type-punning)
+    uint32_t altBits, spdBits;
+    memcpy(&altBits, &f.altitude_kft, sizeof(float));
+    memcpy(&spdBits, &f.speed_mph, sizeof(float));
+    h = ((h << 5) + h) ^ altBits;
+    h = ((h << 5) + h) ^ spdBits;
+
     return h;
 }
 
@@ -90,10 +110,8 @@ void DeparturesBoardMode::render(const RenderContext& ctx,
         return;
     }
 
-    // Re-read maxRows each render in case it changed via API
-    uint8_t newMaxRows = (uint8_t)ConfigManager::getModeSetting("depbd", "rows", 4);
-    if (newMaxRows < 1) newMaxRows = 1;
-    if (newMaxRows > 4) newMaxRows = 4;
+    // Rule 18 compliance: use cached _maxRows from init() — no ConfigManager reads
+    // in render(). Settings changes take effect on next mode switch (init/teardown).
 
     // Determine matrix dimensions
     uint16_t mw = ctx.layout.matrixWidth;
@@ -102,26 +120,36 @@ void DeparturesBoardMode::render(const RenderContext& ctx,
     if (mh == 0) mh = ctx.matrix->height();
 
     // AC #1, #2: R = min(N, maxRows)
-    uint8_t rowCount = (uint8_t)(flights.size() < newMaxRows
-                                 ? flights.size() : newMaxRows);
+    uint8_t rowCount = (uint8_t)(flights.size() < _maxRows
+                                 ? flights.size() : _maxRows);
+
+    // Guard against zero-dimension matrix or zero rows
+    if (rowCount == 0 || mh == 0) {
+        // Cannot render anything - leave display as-is
+        return;
+    }
 
     // Determine if full clear needed (dl-2.2 AC #4 exceptions)
-    bool fullClear = _firstFrame
-                     || (newMaxRows != _lastMaxRows)
-                     || (rowCount != _lastCount);
+    // Note: _maxRows is stable during mode lifetime (set in init), so no maxRows
+    // change check needed — changes require mode teardown/init cycle.
+    bool fullClear = _firstFrame || (rowCount != _lastCount);
 
     if (fullClear) {
         ctx.matrix->fillScreen(0);
     }
 
-    _maxRows = newMaxRows;
-
-    // Compute row band height (integer division)
+    // Compute row band height (integer division) - guarded above
     uint16_t rowHeight = mh / rowCount;
+    if (rowHeight == 0) {
+        // Cannot render - rows have no height (extreme matrix dimensions)
+        return;
+    }
 
     // Compute current ident hashes
+    // SAFETY FIX (2026-04-16): Clamp hash loop to prevent array overrun
     uint32_t curIds[MAX_SUPPORTED_ROWS] = {};
-    for (uint8_t i = 0; i < rowCount; i++) {
+    uint8_t hashCount = (rowCount <= MAX_SUPPORTED_ROWS) ? rowCount : MAX_SUPPORTED_ROWS;
+    for (uint8_t i = 0; i < hashCount; i++) {
         curIds[i] = identHash(flights[i]);
     }
 
@@ -141,7 +169,6 @@ void DeparturesBoardMode::render(const RenderContext& ctx,
     // Update diff state for next frame
     _firstFrame = false;
     _lastCount = rowCount;
-    _lastMaxRows = _maxRows;
     memcpy(_lastIds, curIds, sizeof(_lastIds));
     // Zero out slots beyond current rowCount
     for (uint8_t i = rowCount; i < MAX_SUPPORTED_ROWS; i++) {
@@ -165,6 +192,7 @@ const ModeSettingsSchema* DeparturesBoardMode::getSettingsSchema() const {
 void DeparturesBoardMode::renderRow(FastLED_NeoMatrix* matrix, const FlightInfo& f,
                                      int16_t y, uint16_t rowHeight, uint16_t matrixWidth,
                                      uint16_t textColor) {
+    // CODE QUALITY FIX (2026-04-16): Add const for immutable value
     const int maxCols = matrixWidth / CHAR_WIDTH;
     if (maxCols <= 0) return;
 
@@ -173,9 +201,10 @@ void DeparturesBoardMode::renderRow(FastLED_NeoMatrix* matrix, const FlightInfo&
     int pos = 0;
 
     // Pick callsign: prefer ident_icao, fall back to ident (dl-2.1 AC #2)
+    // Avoid .length() in hot path - use c_str() check directly
     const char* cs = nullptr;
-    if (f.ident_icao.length()) cs = f.ident_icao.c_str();
-    else if (f.ident.length()) cs = f.ident.c_str();
+    if (f.ident_icao.c_str()[0] != '\0') cs = f.ident_icao.c_str();
+    else if (f.ident.c_str()[0] != '\0') cs = f.ident.c_str();
     else cs = "---";
 
     // Append callsign
@@ -186,21 +215,36 @@ void DeparturesBoardMode::renderRow(FastLED_NeoMatrix* matrix, const FlightInfo&
     buf[pos++] = ' ';
 
     // Format altitude (kft)
+    // SAFETY FIX (2026-04-16): Check snprintf return value to prevent buffer overflow
     if (isnan(f.altitude_kft)) {
         memcpy(buf + pos, "--", 2);
         pos += 2;
     } else {
-        pos += snprintf(buf + pos, ROW_BUF_SIZE - pos, "%.1fkft", f.altitude_kft);
+        int written = snprintf(buf + pos, ROW_BUF_SIZE - pos, "%.1fkft", f.altitude_kft);
+        if (written > 0 && written < (ROW_BUF_SIZE - pos)) {
+            pos += written;
+        } else {
+            // Truncation occurred - clamp to buffer end
+            pos = ROW_BUF_SIZE - 1;
+        }
     }
 
-    buf[pos++] = ' ';
+    if (pos < ROW_BUF_SIZE - 1) buf[pos++] = ' ';
 
     // Format speed (mph)
     if (isnan(f.speed_mph)) {
-        memcpy(buf + pos, "--", 2);
-        pos += 2;
+        if (pos + 2 < ROW_BUF_SIZE) {
+            memcpy(buf + pos, "--", 2);
+            pos += 2;
+        }
     } else {
-        pos += snprintf(buf + pos, ROW_BUF_SIZE - pos, "%dmph", (int)f.speed_mph);
+        int written = snprintf(buf + pos, ROW_BUF_SIZE - pos, "%dmph", (int)f.speed_mph);
+        if (written > 0 && written < (ROW_BUF_SIZE - pos)) {
+            pos += written;
+        } else {
+            // Truncation occurred - clamp to buffer end
+            pos = ROW_BUF_SIZE - 1;
+        }
     }
 
     buf[pos] = '\0';

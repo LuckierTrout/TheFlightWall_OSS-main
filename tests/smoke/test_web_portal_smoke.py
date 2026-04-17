@@ -217,6 +217,94 @@ class FlightWallSmokeTests(unittest.TestCase):
         for key in ("used", "total", "logo_count"):
             self.assertIn(key, payload["storage"])
 
+    def test_get_status_includes_ota_fields(self) -> None:
+        """Story dl-6.2, AC #3: GET /api/status must include ota_available and ota_version."""
+        payload = self.assert_json_object(self.client.request("GET", "/api/status"))
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, dict)
+        # AC #3: ota_available must be present and boolean
+        self.assertIn("ota_available", data)
+        self.assertIsInstance(data["ota_available"], bool)
+        # AC #3: ota_version must be present (string when available, null otherwise)
+        self.assertIn("ota_version", data)
+        # ota_version is either a string or null (None in Python)
+        self.assertTrue(data["ota_version"] is None or isinstance(data["ota_version"], str))
+
+    def test_get_ota_check_contract(self) -> None:
+        """Story dl-6.2, AC #1-#2: GET /api/ota/check endpoint response shape."""
+        payload = self.assert_json_object(self.client.request("GET", "/api/ota/check"))
+        # Root 'ok' field must be true (even on error, pattern documented in story)
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, dict)
+        # AC #2: required fields
+        self.assertIn("available", data)
+        self.assertIsInstance(data["available"], bool)
+        self.assertIn("current_version", data)
+        self.assertIsInstance(data["current_version"], str)
+        # version and release_notes may be string or null
+        self.assertIn("version", data)
+        self.assertTrue(data["version"] is None or isinstance(data["version"], str))
+        self.assertIn("release_notes", data)
+        self.assertTrue(data["release_notes"] is None or isinstance(data["release_notes"], str))
+        # If there's an error field, it should be a string
+        if "error" in data:
+            self.assertIsInstance(data["error"], str)
+
+    def test_get_ota_status_contract(self) -> None:
+        """Story dl-7.3, AC #3: GET /api/ota/status endpoint response shape."""
+        payload = self.assert_json_object(self.client.request("GET", "/api/ota/status"))
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, dict)
+        # AC #3: required fields with stable lowercase state names
+        self.assertIn("state", data)
+        self.assertIsInstance(data["state"], str)
+        valid_states = ("idle", "checking", "available", "downloading", "verifying", "rebooting", "error")
+        self.assertIn(data["state"], valid_states, f"State '{data['state']}' not in valid states")
+        # progress: required for downloading, null otherwise
+        self.assertIn("progress", data)
+        if data["state"] == "downloading":
+            self.assertIsInstance(data["progress"], int)
+        else:
+            # progress can be int or None for other states
+            self.assertTrue(data["progress"] is None or isinstance(data["progress"], int))
+        # error: non-null only when state == error
+        self.assertIn("error", data)
+        if data["state"] == "error":
+            self.assertIsInstance(data["error"], str)
+        else:
+            self.assertIsNone(data["error"])
+        # failure_phase and retriable from dl-7.2
+        self.assertIn("failure_phase", data)
+        self.assertIsInstance(data["failure_phase"], str)
+        valid_phases = ("none", "download", "verify", "boot")
+        self.assertIn(data["failure_phase"], valid_phases)
+        self.assertIn("retriable", data)
+        self.assertIsInstance(data["retriable"], bool)
+
+    def test_post_ota_pull_rejects_when_not_available(self) -> None:
+        """Story dl-7.3, AC #2: POST /api/ota/pull error when no update available."""
+        # First ensure we're not in AVAILABLE state by not calling /api/ota/check
+        # or by device being in IDLE state after boot
+        response = self.client.request("POST", "/api/ota/pull", json_body={})
+        # Should return error (400 or 409) since no update is available
+        # The exact status depends on current state
+        payload = response.json()
+        self.assertIsInstance(payload, dict)
+        # If state is not AVAILABLE, should return error
+        # We don't control state, so we just verify the response shape is correct
+        if not payload.get("ok"):
+            # AC #2: error response shape
+            self.assertIn("error", payload)
+            self.assertIsInstance(payload["error"], str)
+            self.assertIn("code", payload)
+            self.assertIsInstance(payload["code"], str)
+            # Valid error codes per AC #2
+            valid_codes = ("NO_UPDATE", "OTA_BUSY", "OTA_START_FAILED")
+            self.assertIn(payload["code"], valid_codes)
+
     def test_post_settings_rejects_empty_payload(self) -> None:
         payload = self.assert_json_object(self.client.request("POST", "/api/settings", json_body={}), expected_status=400)
         self.assertFalse(payload.get("ok"))

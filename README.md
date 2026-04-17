@@ -109,6 +109,14 @@ The firmware can be built and uploaded to the ESP32 using [PlatformIO](https://p
 
 We may add more customization options in the future, but of course this being open source the whole thing is customizable to your liking.
 
+## Firmware & OTA
+
+See [`firmware/README.md`](firmware/README.md) for build/flash instructions and [`firmware/platformio.ini`](firmware/platformio.ini) for the PlatformIO configuration.
+
+**First boot:** The ESP32 starts in AP mode as `FlightWall-Setup`. Connect to this network and navigate to `http://flightwall.local/` (or `192.168.4.1`) to run the setup wizard. Once Wi-Fi is configured the device connects to your network and the dashboard is available at `http://flightwall.local/`.
+
+**OTA updates:** The dashboard Firmware card can check GitHub Releases for new versions and download them directly to the device, or you can upload a `.bin` file manually.
+
 # Thanks
 We really appreciate all the support on this project!
 

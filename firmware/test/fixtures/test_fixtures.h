@@ -204,7 +204,7 @@ struct MockRenderContext {
     uint16_t textColor;
     uint8_t brightness;
     uint16_t* logoBuffer;
-    uint16_t displayCycleMs;
+    uint32_t displayCycleMs;
 
     // Flag to track if render was called
     mutable bool renderCalled;

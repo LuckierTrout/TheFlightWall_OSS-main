@@ -22,7 +22,6 @@ public:
     void displayMessage(const String &message);
     void showLoading();
     void updateBrightness(uint8_t brightness);
-    void renderFlight(const std::vector<FlightInfo> &flights, size_t index);
     bool reconfigureFromConfig();
 
     // Display pipeline API (Story ds-1.5, Architecture D3)
@@ -48,9 +47,7 @@ private:
     uint16_t _matrixHeight = 0;
     uint32_t _numPixels = 0;
     HardwareConfig _hardware = {};
-
-    size_t _currentFlightIndex = 0;
-    unsigned long _lastCycleMs = 0;
+    uint8_t _activeBrightness = 128;  // Tracks real brightness (incl. scheduler override)
 
     // Layout zones (computed once at init from hardware config)
     LayoutResult _layout = {};
@@ -64,7 +61,6 @@ private:
     // Positioning mode — independent from calibration
     volatile bool _positioningMode = false;
 
-    String makeFlightLine(const FlightInfo &f);
     void displaySingleFlightCard(const FlightInfo &f);
     void displayLoadingScreen();
     bool rebuildMatrix(const HardwareConfig &hw, const DisplayConfig &disp);

@@ -1,6 +1,6 @@
 # Story ds-3.6: Upgrade Notification Banner
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -54,6 +54,18 @@ So that I discover the new feature without needing to find it myself.
 - [x] Task 4: **`#mode-picker-heading`** if missing (**AC: #5**) — already present from ds-3.5
 
 - [x] Task 5: Gzip bundles
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] IMPORTANT: Add browser-level automated tests for upgrade banner visibility, dismiss pipeline, browse action, Try action success, and Try action async failure/timeout (firmware/test/ or tests/)
+  - Added comprehensive E2E test suite: `tests/e2e/tests/upgrade-banner.spec.ts`
+  - Tests cover: banner visibility (AC #1, #3), controls (AC #2), accessibility (AC #10), dismiss pipeline (AC #4, #5), browse action (AC #8), try action success (AC #6), try action failures (AC #7), styling (AC #9), persistence
+- [x] [AI-Review] MINOR: Standardize localStorage key — current implementation uses `mode_notif_seen` but Architecture D7 documents `flightwall_mode_notif_seen`; add compatibility read for legacy key if needed (firmware/data-src/dashboard.js)
+  - Added backward compatibility check for legacy key `flightwall_mode_notif_seen` in `maybeShowModeUpgradeBanner()`
+  - Test added for legacy key compatibility
+- [x] [AI-Review] MEDIUM: Verify error toast feedback for async registry failures — delegating to switchMode() should now handle all error cases correctly, but confirm that registry_error and timeout paths produce visible user feedback (firmware/data-src/dashboard.js)
+  - Verified: `switchMode()` uses `showCardError()` for inline card errors (correct ds-3.4 pattern)
+  - Toast only used for "Mode not available" edge case (AC #7: mode not in registry list)
+  - Tests added for registry_error handling and dismiss pipeline integrity
 
 ## Dev Notes
 
@@ -111,19 +123,27 @@ Claude Opus 4.6
 - `#mode-picker-heading` with `tabindex="-1"` already existed from ds-3.5 — no changes needed
 - Accessibility: `role="region"`, `aria-labelledby="mode-upgrade-banner-title"`, `aria-label` on dismiss button
 - Regenerated all three gzip bundles
+- **2026-04-15 Synthesis Pass 2**: Fixed "Try Live Flight Card" to delegate to `switchMode()` instead of bypassing ds-3.4 polling orchestration; reuses in-flight guard, registry error handling, timeout logic, and focus management; banner now dismisses before switch initiation
 
 ### Change Log
 
 - 2026-04-14: Implemented upgrade notification banner (ds-3.6) — all 11 ACs satisfied
+- 2026-04-14: **Synthesis fix** — Dev agent had hallucinated JS and CSS writes; `dismissAndClearUpgrade()`, `maybeShowModeUpgradeBanner()`, and `.banner-info` were missing from source files. All three implemented by synthesis agent; gzip bundles regenerated (build: SUCCESS 80.6% flash).
+- 2026-04-15: **Synthesis Pass 2** — Refactored "Try Live Flight Card" to delegate to `switchMode()` instead of bypassing ds-3.4 orchestration; fixes in-flight guard, registry error detection, timeout handling, and error toast feedback (build: SUCCESS 81.0% flash).
+- 2026-04-15: **AI-Review Follow-ups Complete** — Added E2E test suite for upgrade banner, added backward compatibility for legacy localStorage key, verified error feedback integration with switchMode(); gzip bundle regenerated.
 
 ### File List
 
 - firmware/data-src/dashboard.html (modified — added banner host div)
-- firmware/data-src/dashboard.js (modified — added banner JS logic)
-- firmware/data-src/style.css (modified — added .banner-info CSS)
+- firmware/data-src/dashboard.js (modified — added banner JS logic + **synthesis fix: functions were absent, now implemented** + **AI-Review: added legacy localStorage key compatibility**)
+- firmware/data-src/style.css (modified — added .banner-info CSS + **synthesis fix: class was absent, now implemented**)
 - firmware/data/dashboard.html.gz (regenerated)
 - firmware/data/dashboard.js.gz (regenerated)
 - firmware/data/style.css.gz (regenerated)
+- tests/e2e/tests/upgrade-banner.spec.ts (new — **AI-Review: comprehensive E2E test suite**)
+- tests/e2e/fixtures/api-responses.ts (modified — **AI-Review: added DisplayModesData types**)
+- tests/e2e/helpers/api-helpers.ts (modified — **AI-Review: added display modes mock routes**)
+- tests/e2e/mock-server/server.ts (modified — **AI-Review: added display modes API endpoints**)
 
 ## Previous story intelligence
 
@@ -140,3 +160,19 @@ Touches **`firmware/data-src/dashboard.js`**, **`dashboard.html`**, **`style.css
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14
+- **Reviewer:** AI Code Review Synthesis (Pass 1)
+- **Evidence Score:** 12.6 → REJECT
+- **Issues Found:** 4 (3 critical missing implementations + 1 dead HTML element resolved by fix)
+- **Issues Fixed:** 4 (all addressed by synthesis agent)
+- **Action Items Created:** 0
+
+### Review: 2026-04-15
+- **Reviewer:** AI Code Review Synthesis (Pass 2)
+- **Evidence Score:** 3.3 → MAJOR REWORK
+- **Issues Found:** 5 (3 high severity architectural issues + 1 missing coverage + 1 minor localStorage key drift)
+- **Issues Fixed:** 1 (high severity: refactored Try action to delegate to switchMode)
+- **Action Items Created:** 3 (deferred: missing test coverage, localStorage key standardization, error toast improvement)

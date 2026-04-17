@@ -8,6 +8,7 @@ Responsibilities:
 - Only file that includes config/*.h headers (AR13 compliance).
 */
 #include "core/ConfigManager.h"
+#include "core/ModeOrchestrator.h"
 #include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -783,12 +784,23 @@ bool ConfigManager::setModeSetting(const char* abbrev, const char* key, int32_t 
         return false;
     }
 
-    // Validate known mode/key ranges
-    if (strcmp(abbrev, "clock") == 0 && strcmp(key, "format") == 0) {
-        if (value < 0 || value > 1) return false;  // Only 0 (24h) or 1 (12h)
-    }
+    // Note: Validation of mode-specific value ranges should be performed
+    // by the caller using the mode's ModeSettingsSchema (minValue/maxValue)
+    // before calling setModeSetting. ConfigManager is storage-only.
+    //
+    // EXCEPTION: Known mode settings validated here to prevent invalid NVS writes.
+    // This ensures AC compliance and prevents violation of write-then-clamp pattern.
     if (strcmp(abbrev, "depbd") == 0 && strcmp(key, "rows") == 0) {
-        if (value < 1 || value > 4) return false;  // Clamp 1-4 (AC #1)
+        if (value < 1 || value > 4) {
+            LOG_E("ConfigManager", "depbd/rows out of range, must be 1-4");
+            return false;
+        }
+    }
+    if (strcmp(abbrev, "clock") == 0 && strcmp(key, "format") == 0) {
+        if (value < 0 || value > 1) {
+            LOG_E("ConfigManager", "clock/format out of range, must be 0-1");
+            return false;
+        }
     }
 
     Preferences prefs;
@@ -799,6 +811,126 @@ bool ConfigManager::setModeSetting(const char* abbrev, const char* key, int32_t 
     prefs.putInt(nvsKey, value);
     prefs.end();
     LOG_I("ConfigManager", "Mode setting persisted");
+    // Notify listeners so display task picks up the change (Story dl-5.1, AC #4)
+    fireCallbacks();
+    return true;
+}
+
+// Mode schedule NVS persistence (Story dl-4.1, AC #1/#2)
+// Keys: sched_r{N}_start (14), sched_r{N}_end (12), sched_r{N}_mode (13),
+//        sched_r{N}_ena (12), sched_r_count (13) — all within 15-char NVS limit.
+// Validation: range checks done here; modeId existence validated by ModeOrchestrator
+// at evaluation time (ConfigManager cannot depend on ModeRegistry — circular dep).
+
+ModeScheduleConfig ConfigManager::getModeSchedule() {
+    ModeScheduleConfig config = {};
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, true)) {
+        return config;
+    }
+
+    config.ruleCount = prefs.getUChar("sched_r_count", 0);
+    if (config.ruleCount > MAX_SCHEDULE_RULES) {
+        config.ruleCount = 0;  // Corrupted — treat as empty
+        LOG_W("ConfigManager", "Corrupted sched_r_count in NVS — reset to 0");
+    }
+
+    char key[16];
+    for (uint8_t i = 0; i < config.ruleCount; i++) {
+        snprintf(key, sizeof(key), "sched_r%d_start", i);
+        uint16_t start = prefs.getUShort(key, 0);
+        if (start > 1439) start = 0;
+        config.rules[i].startMin = start;
+
+        snprintf(key, sizeof(key), "sched_r%d_end", i);
+        uint16_t end = prefs.getUShort(key, 0);
+        if (end > 1439) end = 0;
+        config.rules[i].endMin = end;
+
+        snprintf(key, sizeof(key), "sched_r%d_mode", i);
+        String mode = prefs.getString(key, "");
+        strncpy(config.rules[i].modeId, mode.c_str(), MODE_ID_BUF_LEN - 1);
+        config.rules[i].modeId[MODE_ID_BUF_LEN - 1] = '\0';
+
+        snprintf(key, sizeof(key), "sched_r%d_ena", i);
+        uint8_t ena = prefs.getUChar(key, 0);
+        config.rules[i].enabled = (ena > 1) ? 0 : ena;
+    }
+
+    prefs.end();
+    return config;
+}
+
+bool ConfigManager::setModeSchedule(const ModeScheduleConfig& config) {
+    if (config.ruleCount > MAX_SCHEDULE_RULES) {
+        LOG_E("ConfigManager", "ruleCount exceeds MAX_SCHEDULE_RULES");
+        return false;
+    }
+
+    // Validate all rules before persisting (AC #2)
+    // NOTE: modeId existence in ModeRegistry is NOT validated here to avoid
+    // circular dependency. Invalid modeIds will fail at runtime when
+    // ModeOrchestrator::tick() attempts to switch. See AC #2 documentation.
+    for (uint8_t i = 0; i < config.ruleCount; i++) {
+        const ScheduleRule& r = config.rules[i];
+        if (r.startMin > 1439 || r.endMin > 1439) {
+            LOG_E("ConfigManager", "Schedule rule time out of range");
+            return false;
+        }
+        if (r.enabled > 1) {
+            LOG_E("ConfigManager", "Schedule rule enabled field invalid");
+            return false;
+        }
+        if (strlen(r.modeId) == 0) {
+            LOG_E("ConfigManager", "Schedule rule modeId is empty");
+            return false;
+        }
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) {
+        LOG_E("ConfigManager", "Failed to open NVS for mode schedule write");
+        return false;
+    }
+
+    // Persist all rules atomically (single NVS session)
+    char key[16];
+    for (uint8_t i = 0; i < config.ruleCount; i++) {
+        const ScheduleRule& r = config.rules[i];
+
+        snprintf(key, sizeof(key), "sched_r%d_start", i);
+        prefs.putUShort(key, r.startMin);
+
+        snprintf(key, sizeof(key), "sched_r%d_end", i);
+        prefs.putUShort(key, r.endMin);
+
+        snprintf(key, sizeof(key), "sched_r%d_mode", i);
+        prefs.putString(key, r.modeId);
+
+        snprintf(key, sizeof(key), "sched_r%d_ena", i);
+        prefs.putUChar(key, r.enabled);
+    }
+
+    // Clear any old rules beyond new ruleCount
+    for (uint8_t i = config.ruleCount; i < MAX_SCHEDULE_RULES; i++) {
+        snprintf(key, sizeof(key), "sched_r%d_start", i);
+        prefs.remove(key);
+        snprintf(key, sizeof(key), "sched_r%d_end", i);
+        prefs.remove(key);
+        snprintf(key, sizeof(key), "sched_r%d_mode", i);
+        prefs.remove(key);
+        snprintf(key, sizeof(key), "sched_r%d_ena", i);
+        prefs.remove(key);
+    }
+
+    prefs.putUChar("sched_r_count", config.ruleCount);
+    prefs.end();
+
+    // Invalidate ModeOrchestrator schedule cache so new rules take effect immediately
+    // (Story dl-4.1, AC #2: changes must be visible to orchestrator on next tick)
+    ModeOrchestrator::invalidateScheduleCache();
+
+    LOG_I("ConfigManager", "Mode schedule persisted");
     return true;
 }
 

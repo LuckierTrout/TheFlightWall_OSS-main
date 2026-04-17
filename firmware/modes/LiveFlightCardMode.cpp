@@ -2,15 +2,24 @@
 Purpose: LiveFlightCardMode implementation — enriched telemetry flight card
          rendering via the DisplayMode system.
 Story ds-2.1: replaces ds-1.3 stub with real rendering via DisplayUtils + RenderContext.
-Story ds-2.2: adaptive field dropping + vertical direction indicator.
-Sources: ClassicCardMode (ds-1.4) for cycling/idle/fallback patterns;
+Story ds-2.2: adaptive field dropping (priority: vrate→hdg→spd→alt→route→airline) +
+              vertical trend indicator (5×5 glyph, telemetry zone leading column).
+Sources: ClassicCardMode (ds-1.4) for cycling/idle/fallback/clamp patterns;
          NeoMatrixDisplay::renderFlightZone, renderTelemetryZone for telemetry layout.
+
+Review follow-ups addressed (synthesis-ds-2.1):
+- Cycling state moved before matrix null guard for testability (mirrors ClassicCardMode)
+- Fixed cycling: zero-interval guard, multi-step catch-up, _lastCycleMs resets on
+  single-flight and empty-flight states
+- Added clampZone() and applied to all zones in renderZoneFlight()
+- Replaced String temporaries with char[] + snprintf (zero heap on hot path)
 */
 
 #include "modes/LiveFlightCardMode.h"
 #include "utils/DisplayUtils.h"
 #include "core/LogoManager.h"
 
+#include <cstring>
 #include <cmath>
 
 // Zone descriptors for Mode Picker UI — reflect real LayoutEngine zones:
@@ -22,7 +31,7 @@ const ZoneRegion LiveFlightCardMode::_zones[] = {
 };
 
 const ModeZoneDescriptor LiveFlightCardMode::_descriptor = {
-    "Live flight card with adaptive layout, telemetry overlay, and vertical trend indicator",
+    "Live flight card with adaptive telemetry layout (priority drop: vrate->hdg->spd->alt) and vertical trend indicator",
     _zones,
     3
 };
@@ -31,125 +40,137 @@ const ModeZoneDescriptor LiveFlightCardMode::_descriptor = {
 static constexpr int CHAR_WIDTH = 6;
 static constexpr int CHAR_HEIGHT = 8;
 
-// Vertical rate level-flight epsilon threshold (feet per second).
-// Values within +/- this band are treated as level flight.
-// 0.5 fps ~= 30 fpm — below typical instrument precision.
-static constexpr float VRATE_LEVEL_EPS = 0.5f;
+// Maximum buffer size for text lines.
+// The compact telemetry format "A%s S%s T%s V%s" with four 15-char values
+// can reach 68 characters; 72 provides safe headroom without silent truncation.
+static constexpr size_t LINE_BUF_SIZE = 72;
 
-// Width in pixels reserved for the vertical trend indicator glyph
-static constexpr int TREND_GLYPH_WIDTH = 5;
+// ds-2.2: Trend glyph occupies 5px at the leading edge of the telemetry zone (AC #8).
+// Glyph placement documented choice: telemetry zone leading column, not flight zone edge,
+// because the trend relates to telemetry data and accent colors contrast with text color.
+static constexpr int TREND_GLYPH_WIDTH = 5;  // px wide
+static constexpr int TREND_GLYPH_GAP   = 1;  // px gap between glyph and text
 
-// --- Vertical Trend Indicator ---
-// Draws a small directional glyph (up-arrow / down-arrow / level-bar)
-// in the telemetry zone to show climb/descend/level state.
-// Uses accent colors for contrast: green=climb, red=descend, amber=level.
-// Placed at the leading column of the specified position.
-namespace {
+// ============================================================================
+// ds-2.2: Vertical trend indicator helpers
+// ============================================================================
 
-enum class VerticalTrend : uint8_t { CLIMB, DESCEND, LEVEL, UNKNOWN };
-
-VerticalTrend classifyVerticalTrend(float vrate_fps) {
+// classifyVerticalTrend — pure, no hardware dependency; defined as class method for testing.
+VerticalTrend LiveFlightCardMode::classifyVerticalTrend(float vrate_fps) {
     if (std::isnan(vrate_fps)) return VerticalTrend::UNKNOWN;
-    if (vrate_fps > VRATE_LEVEL_EPS) return VerticalTrend::CLIMB;
-    if (vrate_fps < -VRATE_LEVEL_EPS) return VerticalTrend::DESCEND;
+    if (vrate_fps >  VRATE_LEVEL_EPS) return VerticalTrend::CLIMBING;
+    if (vrate_fps < -VRATE_LEVEL_EPS) return VerticalTrend::DESCENDING;
     return VerticalTrend::LEVEL;
 }
 
-void drawVerticalTrend(FastLED_NeoMatrix* matrix, int16_t x, int16_t y,
-                       VerticalTrend trend) {
-    // Glyph is 5px wide x 7px tall (fits in one character cell).
-    // Up-arrow (climb):    centered triangle pointing up
-    // Down-arrow (descend): centered triangle pointing down
-    // Level bar:           horizontal line in center
+// drawVerticalTrend — file-static (hardware-dependent; not declared in header).
+// Draws a 5×5 directional glyph centered vertically in [zoneY, zoneY+zoneH) at column x.
+// Colors: CLIMBING=green, DESCENDING=red, LEVEL=amber, UNKNOWN=no-op (AC #6).
+// Pixels clipped to zone bounds for safety on very short zones.
+static void drawVerticalTrend(FastLED_NeoMatrix* matrix, VerticalTrend trend,
+                               int16_t x, int16_t zoneY, int16_t zoneH) {
+    if (trend == VerticalTrend::UNKNOWN) return;
+    if (zoneH <= 0) return;
+
     uint16_t color;
-    switch (trend) {
-        case VerticalTrend::CLIMB:
-            color = matrix->Color(0, 255, 0);    // green
-            // Up-arrow: 5-wide triangle
-            matrix->drawPixel(x + 2, y,     color);  // tip
-            matrix->drawPixel(x + 1, y + 1, color);
-            matrix->drawPixel(x + 2, y + 1, color);
-            matrix->drawPixel(x + 3, y + 1, color);
-            matrix->drawPixel(x,     y + 2, color);
-            matrix->drawPixel(x + 1, y + 2, color);
-            matrix->drawPixel(x + 2, y + 2, color);
-            matrix->drawPixel(x + 3, y + 2, color);
-            matrix->drawPixel(x + 4, y + 2, color);
-            // Stem
-            matrix->drawPixel(x + 2, y + 3, color);
-            matrix->drawPixel(x + 2, y + 4, color);
-            matrix->drawPixel(x + 2, y + 5, color);
-            matrix->drawPixel(x + 2, y + 6, color);
-            break;
+    if      (trend == VerticalTrend::CLIMBING)   color = matrix->Color(0,   220, 0);    // green
+    else if (trend == VerticalTrend::DESCENDING) color = matrix->Color(220, 0,   0);    // red
+    else                                         color = matrix->Color(220, 140, 0);    // amber
 
-        case VerticalTrend::DESCEND:
-            color = matrix->Color(255, 0, 0);    // red
-            // Down-arrow: inverted triangle
-            matrix->drawPixel(x + 2, y,     color);  // stem top
-            matrix->drawPixel(x + 2, y + 1, color);
-            matrix->drawPixel(x + 2, y + 2, color);
-            matrix->drawPixel(x + 2, y + 3, color);
-            matrix->drawPixel(x,     y + 4, color);
-            matrix->drawPixel(x + 1, y + 4, color);
-            matrix->drawPixel(x + 2, y + 4, color);
-            matrix->drawPixel(x + 3, y + 4, color);
-            matrix->drawPixel(x + 4, y + 4, color);
-            matrix->drawPixel(x + 1, y + 5, color);
-            matrix->drawPixel(x + 2, y + 5, color);
-            matrix->drawPixel(x + 3, y + 5, color);
-            matrix->drawPixel(x + 2, y + 6, color);  // tip
-            break;
+    // 5×5 glyph patterns (static const → .rodata, no stack/heap cost).
+    // Up-arrow (climbing): apex at top, shaft below
+    // Down-arrow (descending): shaft at top, apex at bottom
+    // Level-bar: single horizontal bar across centre row
+    static const uint8_t CLIMB_PATTERN[5][5] = {
+        {0,0,1,0,0},
+        {0,1,1,1,0},
+        {1,1,1,1,1},
+        {0,0,1,0,0},
+        {0,0,1,0,0}
+    };
+    static const uint8_t DESCEND_PATTERN[5][5] = {
+        {0,0,1,0,0},
+        {0,0,1,0,0},
+        {1,1,1,1,1},
+        {0,1,1,1,0},
+        {0,0,1,0,0}
+    };
+    static const uint8_t LEVEL_PATTERN[5][5] = {
+        {0,0,0,0,0},
+        {0,0,0,0,0},
+        {1,1,1,1,1},
+        {0,0,0,0,0},
+        {0,0,0,0,0}
+    };
 
-        case VerticalTrend::LEVEL:
-            color = matrix->Color(255, 191, 0);  // amber
-            // Horizontal bar centered vertically
-            for (int i = 0; i < 5; ++i) {
-                matrix->drawPixel(x + i, y + 3, color);
+    const uint8_t (*pat)[5] =
+        (trend == VerticalTrend::CLIMBING)   ? CLIMB_PATTERN :
+        (trend == VerticalTrend::DESCENDING) ? DESCEND_PATTERN : LEVEL_PATTERN;
+
+    static constexpr int GLYPH_H = 5;
+    const int16_t startY = zoneY + (zoneH >= GLYPH_H ? (zoneH - GLYPH_H) / 2 : 0);
+
+    for (int row = 0; row < GLYPH_H; ++row) {
+        const int16_t py = startY + row;
+        if (py < zoneY || py >= zoneY + zoneH) continue;  // clip to zone
+        for (int col = 0; col < TREND_GLYPH_WIDTH; ++col) {
+            if (pat[row][col]) {
+                matrix->drawPixel(x + col, py, color);
             }
-            break;
-
-        case VerticalTrend::UNKNOWN:
-            // No glyph when data is unavailable
-            break;
+        }
     }
 }
 
-// Bitfield flags for which telemetry fields are visible
-static constexpr uint8_t FIELD_ALTITUDE = 0x01;
-static constexpr uint8_t FIELD_SPEED    = 0x02;
-static constexpr uint8_t FIELD_HEADING  = 0x04;
-static constexpr uint8_t FIELD_VRATE    = 0x08;
+// ============================================================================
+// ds-2.2: Priority field selection for telemetry zone
+// ============================================================================
 
-// Compute which telemetry fields fit in the available zone.
-// Drop order (lowest priority first): vrate -> heading -> speed -> altitude
-// Returns a bitmask of FIELD_* constants.
-uint8_t computeTelemetryFields(int linesAvailable, int maxCols) {
-    if (linesAvailable <= 0 || maxCols <= 0) return 0;
+// computeTelemetryFields — pure, no hardware dependency; defined as class method for testing.
+// Given available display lines and text columns (after reserving glyph space),
+// returns which fields to render using strict priority drop order (AC #1):
+//   lowest priority (first to drop): vrate → hdg → spd → alt
+//
+// Two-line layout thresholds (per-line, each line holds a pair or single value):
+//   MIN_COLS_PAIR   = 7: "Aval Sval" or "Tval Vval" abbreviated minimum (~7 chars)
+//   MIN_COLS_SINGLE = 3: "Aval" abbreviated minimum (~3 chars)
+//
+// One-line compact thresholds (all enabled fields packed into one line):
+//   >=15 cols: all 4 fields  (min "A-- S-- T-- V--" = 15 chars)
+//   >=11 cols: alt+spd+hdg   (min "A-- S-- T--"     = 11 chars)
+//   >= 7 cols: alt+spd       (min "A-- S--"          = 7 chars)
+//   >= 3 cols: alt only      (min "A--"              = 3 chars)
+TelemetryFieldSet LiveFlightCardMode::computeTelemetryFields(int linesAvailable, int textCols) {
+    if (linesAvailable <= 0 || textCols <= 0) return {false, false, false, false};
 
     if (linesAvailable >= 2) {
-        // Two lines: all four fields fit (alt+spd line 1, hdg+vrate line 2)
-        return FIELD_ALTITUDE | FIELD_SPEED | FIELD_HEADING | FIELD_VRATE;
+        // Two-line: line1 = alt[+spd], line2 = hdg[+vrate]
+        const bool canFitPair   = (textCols >= 7);
+        const bool canFitSingle = (textCols >= 3);
+        return {
+            /* alt   */ canFitSingle,
+            /* spd   */ canFitPair,
+            /* hdg   */ canFitSingle,
+            /* vrate */ canFitPair
+        };
     }
 
-    // Single line: try fitting fields left-to-right, dropping lowest priority first.
-    // Each formatted field is ~4-8 chars. We try progressively smaller sets.
-    // Rough field widths: alt ~7 ("35.0kft"), spd ~6 ("450mph"), hdg ~4 ("90d"), vr ~5 ("0fps")
-    // With separating spaces: all4 ~25, no_vr ~19, no_vr_hdg ~14, no_vr_hdg_spd ~7
-    // We use conservative estimates — if columns are tight, drop more fields.
-
-    // Try all four on one line (very unlikely on compact displays)
-    if (maxCols >= 25) return FIELD_ALTITUDE | FIELD_SPEED | FIELD_HEADING | FIELD_VRATE;
-    // Drop vrate
-    if (maxCols >= 19) return FIELD_ALTITUDE | FIELD_SPEED | FIELD_HEADING;
-    // Drop heading
-    if (maxCols >= 14) return FIELD_ALTITUDE | FIELD_SPEED;
-    // Drop speed
-    if (maxCols >= 7) return FIELD_ALTITUDE;
-    // Nothing fits reasonably
-    return 0;
+    // One-line compact
+    const bool vrate = (textCols >= 15);
+    const bool hdg   = (textCols >= 11);
+    const bool spd   = (textCols >= 7);
+    const bool alt   = (textCols >= 3);
+    return {alt, spd, hdg, vrate};
 }
 
-} // anonymous namespace
+// Clamp a zone rect to matrix dimensions — prevents out-of-bounds draw calls
+// from malformed RenderContext (mirrors ClassicCardMode review item ds-1.4 #4).
+static Rect clampZone(const Rect& zone, uint16_t matW, uint16_t matH) {
+    Rect c = zone;
+    if (c.x >= matW || c.y >= matH) { c.x = 0; c.y = 0; c.w = 0; c.h = 0; return c; }
+    if (c.x + c.w > matW) c.w = matW - c.x;
+    if (c.y + c.h > matH) c.h = matH - c.y;
+    return c;
+}
 
 bool LiveFlightCardMode::init(const RenderContext& ctx) {
     (void)ctx;
@@ -165,27 +186,36 @@ void LiveFlightCardMode::teardown() {
 
 void LiveFlightCardMode::render(const RenderContext& ctx,
                                 const std::vector<FlightInfo>& flights) {
+    // --- Cycling state update (pure logic, no matrix needed) ---
+    // Moved before matrix null guard so tests can verify cycling without hardware.
+    // Multi-step catch-up prevents rapid strobing after long pauses (OTA, WiFi reconnect).
+    if (!flights.empty()) {
+        if (flights.size() > 1) {
+            const unsigned long now = millis();
+            if (_lastCycleMs == 0) {
+                // First render after init (or after returning from ≤1 flight) — anchor timer
+                _lastCycleMs = now;
+            }
+            if (ctx.displayCycleMs > 0 && now - _lastCycleMs >= ctx.displayCycleMs) {
+                const unsigned long steps =
+                    (now - _lastCycleMs) / (unsigned long)ctx.displayCycleMs;
+                _currentFlightIndex = (_currentFlightIndex + (size_t)steps) % flights.size();
+                _lastCycleMs += steps * (unsigned long)ctx.displayCycleMs;
+            }
+        } else {
+            _currentFlightIndex = 0;
+            _lastCycleMs = 0;  // Reset so next multi-flight entry gets a fresh anchor
+        }
+    } else {
+        _lastCycleMs = 0;  // Reset so returning flights don't strobe on first frames
+    }
+
+    // --- Matrix guard: all draw calls below require a valid matrix ---
     if (ctx.matrix == nullptr) return;
 
     ctx.matrix->fillScreen(0);
 
     if (!flights.empty()) {
-        // Cycling logic — mirrored from ClassicCardMode
-        const unsigned long now = millis();
-
-        if (flights.size() > 1) {
-            if (_lastCycleMs == 0) {
-                // First render after init — anchor the cycle timer
-                _lastCycleMs = now;
-            }
-            if (now - _lastCycleMs >= ctx.displayCycleMs) {
-                _lastCycleMs = now;
-                _currentFlightIndex = (_currentFlightIndex + 1) % flights.size();
-            }
-        } else {
-            _currentFlightIndex = 0;
-        }
-
         const size_t index = _currentFlightIndex % flights.size();
 
         if (ctx.layout.valid) {
@@ -214,13 +244,22 @@ const ModeSettingsSchema* LiveFlightCardMode::getSettingsSchema() const {
 // --- Zone rendering ---
 
 void LiveFlightCardMode::renderZoneFlight(const RenderContext& ctx, const FlightInfo& f) {
-    renderLogoZone(ctx, f, ctx.layout.logoZone);
-    renderFlightZone(ctx, f, ctx.layout.flightZone);
-    renderTelemetryZone(ctx, f, ctx.layout.telemetryZone);
+    // Clamp zones against matrix dimensions (mirrors ClassicCardMode)
+    uint16_t mw = ctx.layout.matrixWidth ? ctx.layout.matrixWidth : ctx.matrix->width();
+    uint16_t mh = ctx.layout.matrixHeight ? ctx.layout.matrixHeight : ctx.matrix->height();
+
+    Rect logo     = clampZone(ctx.layout.logoZone,      mw, mh);
+    Rect flight   = clampZone(ctx.layout.flightZone,    mw, mh);
+    Rect telemetry = clampZone(ctx.layout.telemetryZone, mw, mh);
+
+    if (logo.w > 0 && logo.h > 0)      renderLogoZone(ctx, f, logo);
+    if (flight.w > 0 && flight.h > 0)  renderFlightZone(ctx, f, flight);
+    if (telemetry.w > 0 && telemetry.h > 0) renderTelemetryZone(ctx, f, telemetry);
 }
 
 void LiveFlightCardMode::renderLogoZone(const RenderContext& ctx, const FlightInfo& f,
                                          const Rect& zone) {
+    if (ctx.logoBuffer == nullptr) return;  // No buffer supplied — skip logo zone silently
     LogoManager::loadLogo(f.operator_icao, ctx.logoBuffer);
     DisplayUtils::drawBitmapRGB565(ctx.matrix, zone.x, zone.y,
                                     LOGO_WIDTH, LOGO_HEIGHT,
@@ -232,40 +271,41 @@ void LiveFlightCardMode::renderFlightZone(const RenderContext& ctx, const Flight
     const int maxCols = zone.w / CHAR_WIDTH;
     if (maxCols <= 0) return;
 
-    // Airline name precedence: full display name > IATA > ICAO > operator_code
-    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
-                     : (f.operator_iata.length() ? f.operator_iata
-                     : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
-
     int linesAvailable = zone.h / CHAR_HEIGHT;
     if (linesAvailable <= 0) return;
 
-    // Adaptive field dropping (AC #1-#3):
-    // Flight zone contains: airline (priority 6, never dropped) + route (priority 5).
-    // Route is dropped when only 1 line fits in the flight zone.
-    // Airline is always shown — it is the minimum viable display (AC #3).
+    // Airline name precedence: full display name > IATA > ICAO > operator_code
+    const char* airline = f.airline_display_name_full.length() ? f.airline_display_name_full.c_str()
+                         : (f.operator_iata.length() ? f.operator_iata.c_str()
+                         : (f.operator_icao.length() ? f.operator_icao.c_str()
+                         : f.operator_code.c_str()));
 
-    String line1;
-    String line2;
+    // Route string in fixed buffer — ICAO origin > destination (e.g. "KJFK>KLAX")
+    char route[LINE_BUF_SIZE] = "";
+    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
+        snprintf(route, sizeof(route), "%s>%s",
+                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    }
+
+    char line1[LINE_BUF_SIZE] = "";
+    char line2[LINE_BUF_SIZE] = "";
     int linesToDraw = 1;
 
     if (linesAvailable >= 2) {
         // Two-line: airline on line 1, route on line 2
-        String route = f.origin.code_icao + String(">") + f.destination.code_icao;
-        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
-        line2 = DisplayUtils::truncateToColumns(route, maxCols);
-        linesToDraw = line2.length() > 0 ? 2 : 1;
+        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
+        DisplayUtils::truncateToColumns(route, maxCols, line2, sizeof(line2));
+        linesToDraw = (strlen(line2) > 0) ? 2 : 1;
     } else {
-        // One-line: airline only (route dropped per priority order)
-        // AC #3: airline must always remain visible
-        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
+        // One-line: airline only (route dropped, airline is minimum viable display)
+        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
     }
 
     int totalTextH = linesToDraw * CHAR_HEIGHT;
     int16_t y = zone.y + (zone.h - totalTextH) / 2;
 
     DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line1, ctx.textColor);
-    if (linesToDraw >= 2 && line2.length() > 0) {
+    if (linesToDraw >= 2 && strlen(line2) > 0) {
         y += CHAR_HEIGHT;
         DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line2, ctx.textColor);
     }
@@ -273,77 +313,96 @@ void LiveFlightCardMode::renderFlightZone(const RenderContext& ctx, const Flight
 
 void LiveFlightCardMode::renderTelemetryZone(const RenderContext& ctx, const FlightInfo& f,
                                                const Rect& zone) {
-    const int maxCols = zone.w / CHAR_WIDTH;
-    if (maxCols <= 0) return;
+    // --- ds-2.2: Vertical trend glyph (AC #4-8) ---
+    // Draw glyph at leading column regardless of whether numeric vrate is shown (AC #7).
+    // UNKNOWN (NaN vrate) → no glyph drawn (AC #6).
+    const VerticalTrend trend = classifyVerticalTrend(static_cast<float>(f.vertical_rate_fps));
+    if (zone.w >= TREND_GLYPH_WIDTH && zone.h > 0) {
+        drawVerticalTrend(ctx.matrix, trend, zone.x, zone.y, zone.h);
+    }
 
-    int linesAvailable = zone.h / CHAR_HEIGHT;
-    if (linesAvailable <= 0) return;
+    // --- ds-2.2: Adaptive text layout (AC #1-3) ---
+    // Text column starts after the glyph reservation.
+    const int16_t textX = static_cast<int16_t>(zone.x + TREND_GLYPH_WIDTH + TREND_GLYPH_GAP);
+    const int textW = static_cast<int>(zone.w) - TREND_GLYPH_WIDTH - TREND_GLYPH_GAP;
+    if (textW <= 0) return;
 
-    // Classify vertical trend — always computed even if numeric vrate is dropped (AC #7)
-    VerticalTrend trend = classifyVerticalTrend(static_cast<float>(f.vertical_rate_fps));
+    const int textCols      = textW / CHAR_WIDTH;
+    const int linesAvailable = zone.h / CHAR_HEIGHT;
+    if (textCols <= 0 || linesAvailable <= 0) return;
 
-    // Reserve leading column for trend indicator if we have trend data (AC #8)
-    bool showTrendGlyph = (trend != VerticalTrend::UNKNOWN);
-    int trendOffset = showTrendGlyph ? (TREND_GLYPH_WIDTH + 1) : 0;  // +1px gap
-    int textCols = (zone.w - trendOffset) / CHAR_WIDTH;
-    if (textCols <= 0) textCols = 1;
+    // Compute which fields fit given available lines and text columns.
+    // Drop order (lowest priority first): vrate → hdg → spd → alt (AC #1).
+    const TelemetryFieldSet fs = computeTelemetryFields(linesAvailable, textCols);
 
-    // Compute which telemetry fields fit (adaptive dropping per AC #1)
-    uint8_t fields = computeTelemetryFields(linesAvailable, textCols);
+    // Format only the enabled fields to avoid unnecessary snprintf calls.
+    char alt[16] = "", spd[16] = "", trk[16] = "", vr[16] = "";
+    if (fs.alt)   DisplayUtils::formatTelemetryValue(f.altitude_kft,       "kft", 1, alt, sizeof(alt));
+    if (fs.spd)   DisplayUtils::formatTelemetryValue(f.speed_mph,          "mph", 0, spd, sizeof(spd));
+    if (fs.hdg)   DisplayUtils::formatTelemetryValue(f.track_deg,          "d",   0, trk, sizeof(trk));
+    if (fs.vrate) DisplayUtils::formatTelemetryValue(f.vertical_rate_fps,  "fps", 0, vr,  sizeof(vr));
 
-    String telLine1, telLine2;
+    char telLine1[LINE_BUF_SIZE] = "";
+    char telLine2[LINE_BUF_SIZE] = "";
+    // combined is reused for both lines to avoid double-buffering (stack budget AC #10)
+    char combined[LINE_BUF_SIZE] = "";
 
-    if (linesAvailable >= 2 && fields == (FIELD_ALTITUDE | FIELD_SPEED | FIELD_HEADING | FIELD_VRATE)) {
-        // Two-line enriched: altitude+speed on line 1, heading+vrate on line 2
-        String alt = DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1);
-        String spd = DisplayUtils::formatTelemetryValue(f.speed_mph, "mph");
-        telLine1 = DisplayUtils::truncateToColumns(alt + " " + spd, textCols);
+    if (linesAvailable >= 2) {
+        // Two-line enriched: line 1 = alt[+spd], line 2 = hdg[+vrate]
+        if (fs.alt && fs.spd) {
+            snprintf(combined, sizeof(combined), "%s %s", alt, spd);
+        } else if (fs.alt) {
+            snprintf(combined, sizeof(combined), "%s", alt);
+        }
+        DisplayUtils::truncateToColumns(combined, textCols, telLine1, sizeof(telLine1));
 
-        String trk = DisplayUtils::formatTelemetryValue(f.track_deg, "d");
-        String vr = DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "fps");
-        telLine2 = DisplayUtils::truncateToColumns(trk + " " + vr, textCols);
+        // Build line 2 (reuse combined)
+        combined[0] = '\0';
+        if (fs.hdg && fs.vrate) {
+            snprintf(combined, sizeof(combined), "%s %s", trk, vr);
+        } else if (fs.hdg) {
+            snprintf(combined, sizeof(combined), "%s", trk);
+        } else if (fs.vrate) {
+            snprintf(combined, sizeof(combined), "%s", vr);
+        }
+        if (combined[0] != '\0') {
+            DisplayUtils::truncateToColumns(combined, textCols, telLine2, sizeof(telLine2));
+        }
     } else {
-        // Single-line adaptive: build string from highest-priority fields that fit
-        String parts;
-        if (fields & FIELD_ALTITUDE) {
-            String alt = DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1);
-            parts += alt;
+        // Compact single-line: pack only enabled fields with "X%s" prefix notation.
+        // Fields omitted here are dropped by computeTelemetryFields — not truncated.
+        int pos = 0;
+        if (fs.alt) {
+            int n = snprintf(combined + pos, LINE_BUF_SIZE - (size_t)pos, "A%s", alt);
+            if (n > 0) pos += n;
         }
-        if (fields & FIELD_SPEED) {
-            if (parts.length()) parts += " ";
-            String spd = DisplayUtils::formatTelemetryValue(f.speed_mph, "mph");
-            parts += spd;
+        if (fs.spd && pos < (int)LINE_BUF_SIZE - 1) {
+            int n = snprintf(combined + pos, LINE_BUF_SIZE - (size_t)pos,
+                             "%sS%s", pos > 0 ? " " : "", spd);
+            if (n > 0) pos += n;
         }
-        if (fields & FIELD_HEADING) {
-            if (parts.length()) parts += " ";
-            String trk = DisplayUtils::formatTelemetryValue(f.track_deg, "d");
-            parts += trk;
+        if (fs.hdg && pos < (int)LINE_BUF_SIZE - 1) {
+            int n = snprintf(combined + pos, LINE_BUF_SIZE - (size_t)pos,
+                             "%sT%s", pos > 0 ? " " : "", trk);
+            if (n > 0) pos += n;
         }
-        if (fields & FIELD_VRATE) {
-            if (parts.length()) parts += " ";
-            String vr = DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "fps");
-            parts += vr;
+        if (fs.vrate && pos < (int)LINE_BUF_SIZE - 1) {
+            snprintf(combined + pos, LINE_BUF_SIZE - (size_t)pos,
+                     "%sV%s", pos > 0 ? " " : "", vr);
         }
-        telLine1 = DisplayUtils::truncateToColumns(parts, textCols);
+        DisplayUtils::truncateToColumns(combined, textCols, telLine1, sizeof(telLine1));
     }
 
-    // Compute vertical centering
-    int linesToDraw = (linesAvailable >= 2 && telLine2.length() > 0) ? 2 : 1;
-    int totalTextH = linesToDraw * CHAR_HEIGHT;
-    int16_t y = zone.y + (zone.h - totalTextH) / 2;
-    int16_t textX = zone.x + trendOffset;
+    // Reflow: draw only lines that have content — no intentional blank gaps (AC #2).
+    const int linesToDraw = (linesAvailable >= 2 && strlen(telLine2) > 0) ? 2 : 1;
+    const int totalTextH  = linesToDraw * CHAR_HEIGHT;
+    int16_t y = static_cast<int16_t>(zone.y + (zone.h - totalTextH) / 2);
 
-    // Draw trend indicator in leading column (AC #4-#8)
-    if (showTrendGlyph) {
-        // Vertically center the glyph alongside the text block
-        int16_t glyphY = y;  // align with first text line
-        drawVerticalTrend(ctx.matrix, zone.x, glyphY, trend);
+    if (strlen(telLine1) > 0) {
+        DisplayUtils::drawTextLine(ctx.matrix, textX, y, telLine1, ctx.textColor);
     }
-
-    // Draw text
-    DisplayUtils::drawTextLine(ctx.matrix, textX, y, telLine1, ctx.textColor);
     if (linesToDraw >= 2) {
-        y += CHAR_HEIGHT;
+        y = static_cast<int16_t>(y + CHAR_HEIGHT);
         DisplayUtils::drawTextLine(ctx.matrix, textX, y, telLine2, ctx.textColor);
     }
 }
@@ -360,21 +419,39 @@ void LiveFlightCardMode::renderSingleFlightCard(const RenderContext& ctx, const 
     ctx.matrix->drawRect(0, 0, mw, mh, ctx.textColor);
 
     const int padding = 2;
-    const int innerWidth = mw - 2 - (2 * padding);
-    const int maxCols = innerWidth / CHAR_WIDTH;
-
-    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
-                     : (f.operator_iata.length() ? f.operator_iata
-                     : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
-    String line2 = f.origin.code_icao + String(">") + f.destination.code_icao;
-    String line3 = DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1)
-                   + " " + DisplayUtils::formatTelemetryValue(f.speed_mph, "mph");
-
-    String line1 = DisplayUtils::truncateToColumns(airline, maxCols);
-    line2 = DisplayUtils::truncateToColumns(line2, maxCols);
-    line3 = DisplayUtils::truncateToColumns(line3, maxCols);
-
+    const int innerWidth  = mw - 2 - (2 * padding);
     const int innerHeight = mh - 2 - (2 * padding);
+    if (innerWidth <= 0 || innerHeight <= 0) return;  // Matrix too small for bordered card
+    const int maxCols = innerWidth / CHAR_WIDTH;
+    if (maxCols <= 0) return;
+
+    const char* airlineSrc = f.airline_display_name_full.length() ? f.airline_display_name_full.c_str()
+                             : (f.operator_iata.length() ? f.operator_iata.c_str()
+                             : (f.operator_icao.length() ? f.operator_icao.c_str()
+                             : f.operator_code.c_str()));
+
+    char route[LINE_BUF_SIZE] = "";
+    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
+        snprintf(route, sizeof(route), "%s>%s",
+                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    }
+
+    // Enriched telemetry summary: all four fields in compact abbreviated form
+    // (ds-2.1 distinguishes itself by showing heading + vrate; must appear in fallback too)
+    char alt[16], spd[16], trk[16], vr[16];
+    DisplayUtils::formatTelemetryValue(f.altitude_kft,       "k",  0, alt, sizeof(alt));
+    DisplayUtils::formatTelemetryValue(f.speed_mph,          "",   0, spd, sizeof(spd));
+    DisplayUtils::formatTelemetryValue(f.track_deg,          "d",  0, trk, sizeof(trk));
+    DisplayUtils::formatTelemetryValue(f.vertical_rate_fps,  "",   0, vr,  sizeof(vr));
+
+    char telStr[LINE_BUF_SIZE];
+    snprintf(telStr, sizeof(telStr), "A%s S%s T%s V%s", alt, spd, trk, vr);
+
+    char line1[LINE_BUF_SIZE], line2[LINE_BUF_SIZE], line3[LINE_BUF_SIZE];
+    DisplayUtils::truncateToColumns(airlineSrc, maxCols, line1, sizeof(line1));
+    DisplayUtils::truncateToColumns(route,      maxCols, line2, sizeof(line2));
+    DisplayUtils::truncateToColumns(telStr,     maxCols, line3, sizeof(line3));
+
     const int lineCount = 3;
     const int lineSpacing = 1;
     const int totalTextHeight = lineCount * CHAR_HEIGHT + (lineCount - 1) * lineSpacing;
@@ -402,11 +479,10 @@ void LiveFlightCardMode::renderLoadingScreen(const RenderContext& ctx) {
     ctx.matrix->drawRect(0, 0, mw, mh, borderColor);
 
     // Centered "..." text using user theme color
-    const char loadingText[] = "...";
     const int textWidth = 3 * CHAR_WIDTH;
     const int16_t x = (mw - textWidth) / 2;
     const int16_t y = (mh - CHAR_HEIGHT) / 2 - 2;
 
-    DisplayUtils::drawTextLine(ctx.matrix, x, y, String(loadingText), ctx.textColor);
+    DisplayUtils::drawTextLine(ctx.matrix, x, y, "...", ctx.textColor);
     // No FastLED.show() — pipeline responsibility
 }

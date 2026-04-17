@@ -13,6 +13,10 @@
 // sched_dim_start = schedule_dim_start (15 chars - AT LIMIT)
 // sched_dim_end  = schedule_dim_end (13 chars)
 // sched_dim_brt  = schedule_dim_brightness (13 chars)
+// Mode schedule NVS keys (Story dl-4.1, AR4):
+// sched_r0_start = 14 chars, sched_r0_end = 12, sched_r0_mode = 13,
+// sched_r0_ena = 12, sched_r_count = 13 — all within 15-char limit.
+// Prefix "sched_r" distinguishes from brightness schedule "sched_dim_*".
 
 struct DisplayConfig {
     uint8_t brightness;
@@ -52,6 +56,23 @@ struct ScheduleConfig {
     uint8_t sched_dim_brt;     // brightness during dim window (0-255), default 10
 };
 
+// Mode schedule rule for time-based automatic display mode switching (Story dl-4.1, AC #1)
+// NVS keys per rule: sched_r{N}_start, sched_r{N}_end, sched_r{N}_mode, sched_r{N}_ena
+static constexpr uint8_t MAX_SCHEDULE_RULES = 8;
+static constexpr uint8_t MODE_ID_BUF_LEN = 32;  // matches MODE_TABLE id max length
+
+struct ScheduleRule {
+    uint16_t startMin;                 // 0–1439 minutes since midnight
+    uint16_t endMin;                   // 0–1439 minutes since midnight
+    char modeId[MODE_ID_BUF_LEN];     // mode ID string (≤31 chars + null)
+    uint8_t enabled;                   // 0=disabled, 1=enabled
+};
+
+struct ModeScheduleConfig {
+    ScheduleRule rules[MAX_SCHEDULE_RULES];
+    uint8_t ruleCount;                 // 0–8 active rules
+};
+
 struct ApplyResult {
     std::vector<String> applied;
     bool reboot_required;
@@ -88,6 +109,18 @@ public:
     // firmware upgrade (disp_mode key absent). Cleared by POST /api/display/notification/dismiss.
     static void setUpgNotif(bool enabled);
     static bool getUpgNotif();
+
+    // Mode schedule NVS persistence (Story dl-4.1, AC #1/#2)
+    // Up to 8 time-based rules for automatic display mode switching.
+    // NVS keys: sched_r{N}_start, sched_r{N}_end, sched_r{N}_mode, sched_r{N}_ena, sched_r_count
+    //
+    // VALIDATION NOTE (AC #2): modeId existence in ModeRegistry is NOT validated
+    // here to avoid circular dependency (ConfigManager cannot depend on ModeRegistry).
+    // Invalid modeIds will be persisted but will fail when ModeOrchestrator::tick()
+    // attempts to switch to the non-existent mode. Callers should verify modeIds
+    // against ModeRegistry::getModeTable() before calling setModeSchedule().
+    static ModeScheduleConfig getModeSchedule();
+    static bool setModeSchedule(const ModeScheduleConfig& config);
 
     // Per-mode NVS settings (Story dl-1.1, AC #3/#6)
     // Key format: m_{abbrev}_{key} — must be ≤15 chars total (NVS limit).

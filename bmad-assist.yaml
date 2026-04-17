@@ -48,13 +48,11 @@ providers:
 
   multi:
     - provider: gemini
-      model: gemini-3-flash-preview
-    - provider: codex
-      model: gpt-5.4
-    - provider: kimi
-      model: kimi-code/kimi-for-coding
-    - provider: opencode
-      model: zai-coding-plan/glm-4.7
+      model: gemini-3.1-flash-lite-preview
+    - provider: amp
+      model: smart
+    - provider: cursor-agent
+      model: composer-2
 
 phase_models:
   create_story:
@@ -87,29 +85,28 @@ phase_models:
 
   validate_story:
     - provider: gemini
-      model: gemini-3-flash-preview
-    - provider: opencode
-      model: zai-coding-plan/glm-4.7
+      model: gemini-3.1-flash-lite-preview
+    - provider: amp
+      model: smart
   code_review:
-    - provider: codex
-      model: gpt-5.4
-    - provider: kimi
-      model: kimi-code/kimi-for-coding
-      thinking: true
+    - provider: claude
+      model: claude-haiku-4-5
+    - provider: cursor-agent
+      model: composer-2
     - provider: gemini
-      model: gemini-3-flash-preview
+      model: gemini-3.1-flash-lite-preview
 
 compiler:
   source_context:
     budgets:
       # create-story embeds project-context + PRD + architecture + UX; estimate is ~2× token_estimate (XML overhead).
-      create_story: 100000
-      validate_story: 100000
+      create_story: 300000
+      validate_story: 300000
       validate_story_synthesis: 0
-      dev_story: 150000
-      code_review: 150000
+      dev_story: 300000
+      code_review: 300000
       code_review_synthesis: 0
-      default: 150000
+      default: 300000
 
     scoring:
       in_file_list: 50
@@ -138,7 +135,7 @@ compiler:
     validate_story_synthesis:
       include: [project-context]
     dev_story:
-      include: [project-context, architecture]
+      include: [project-context]
     code_review:
       include: [project-context, architecture]
     code_review_synthesis:

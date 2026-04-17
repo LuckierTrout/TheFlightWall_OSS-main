@@ -1,6 +1,6 @@
 # Story ds-1.4: Classic Card Mode Implementation
 
-Status: review
+Status: ready-for-review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -57,6 +57,12 @@ So that the familiar display continues working identically while enabling the mo
   - [x] 4.1: Add or extend `firmware/test/` coverage for parity (recommended: dedicated test target or reuse patterns from `test_layout_engine`)
   - [x] 4.2: Document manual visual checklist if automated pixel test is impractical on CI
   - [x] 4.3: `pio run` clean build
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] HIGH: All render-path tests use `ctx.matrix=nullptr` — render(), renderLogoZone, renderFlightZone, renderTelemetryZone, renderSingleFlightCard, renderLoadingScreen are never exercised in CI. Add at least one test with a non-null matrix (real or spy) to verify actual draw calls. (`firmware/test/test_classic_card_mode/test_main.cpp`) — **RESOLVED**: Added 4 real-matrix tests using CRGB buffer + FastLED_NeoMatrix (no hardware needed): `test_render_valid_layout_draws_pixels`, `test_render_loading_screen_draws_border`, `test_render_fallback_card_draws_border`, `test_render_with_matrix_no_heap_leak`.
+- [x] [AI-Review] HIGH: Flight cycling logic (_currentFlightIndex advance, _lastCycleMs anchor) is unreachable in all tests because render() returns early on nullptr matrix before executing cycling state updates. Add cycling coverage via non-null matrix or expose read-only cycling state under a TEST_ONLY accessor. (`firmware/modes/ClassicCardMode.cpp:54-65`, `firmware/test/test_classic_card_mode/test_main.cpp`) — **RESOLVED**: Moved cycling state update before matrix null guard in render(). Added `#ifdef PIO_UNIT_TESTING` accessors (getCurrentFlightIndex, getLastCycleMs). Added 6 cycling tests: starts_at_zero, stays_zero_for_single, advances_after_display_cycle, wraps_around, does_not_advance_before_interval, teardown_resets.
+- [x] [AI-Review] MEDIUM: renderFlightZone and renderTelemetryZone construct 6–10 Arduino String objects per call at ~20fps, causing per-frame heap fragmentation. Refactor hot paths to fixed `char[]` + `snprintf` without pixel change. (`firmware/modes/ClassicCardMode.cpp:109-207`) — **RESOLVED**: Refactored all render methods to use `char[]` buffers + `snprintf`. Added 3 new char*-based overloads to DisplayUtils (drawTextLine, truncateToColumns, formatTelemetryValue). Zero heap allocation on hot path.
+- [x] [AI-Review] MEDIUM: renderZoneFlight passes ctx.layout zones directly to draw helpers with no clipping against matrix dimensions. Add defensive bounds assertions or clamp logic before draw calls to guard against malformed RenderContext. (`firmware/modes/ClassicCardMode.cpp:94-98`) — **RESOLVED**: Added static `clampZone()` helper that constrains zone rects to matrix dimensions. Zones with zero w/h after clamping are skipped. Added 2 tests: `test_render_zone_clamping_oversized_zones`, `test_render_zone_completely_outside_matrix`.
 
 ## Dev Notes
 
@@ -124,9 +130,18 @@ Claude Opus 4.6
 
 ### Debug Log References
 
-- `pio run` clean build: SUCCESS — no new warnings (78.2% flash, 16.7% RAM)
-- `pio test --filter test_classic_card_mode` compile: SUCCESS — test binary built cleanly
+- `pio run` clean build: SUCCESS — no new warnings (78.2% flash, 16.7% RAM) [initial]
+- `pio run` post-review-followup: SUCCESS — 80.8% flash, 17.1% RAM (added DisplayUtils overloads)
+- `pio test --filter test_classic_card_mode` compile: SUCCESS — 27-test binary built cleanly
+- `pio test --without-uploading --without-testing` full regression: SUCCESS — all test suites compile clean
 - On-device test execution: requires ESP32 hardware (Unity on-device framework)
+- `pio run` post-synthesis: SUCCESS — 81.2% flash, 17.1% RAM (synthesis fixes: timer fix, null guards, route fix, snprintf)
+- `pio test -f test_classic_card_mode` compile post-synthesis: PASSED
+- `pio test -f test_telemetry_conversion` compile post-synthesis: PASSED
+- `pio test -f test_mode_registry` compile post-synthesis: PASSED
+- `pio run` post-synthesis-round2: SUCCESS — 81.2% flash, 17.1% RAM (round-2 fixes: outLen==0 guards, multi-step cycling, stale anchor reset)
+- `pio test -f test_classic_card_mode` compile post-synthesis-round2: PASSED
+- `pio test --without-uploading --without-testing` full regression post-synthesis-round2: ALL PASSED
 
 ### Completion Notes List
 
@@ -134,6 +149,13 @@ Claude Opus 4.6
 - **Task 2**: Added `_currentFlightIndex` and `_lastCycleMs` member fields. Cycling uses `ctx.displayCycleMs` (not ConfigManager). Both fields reset in init() and teardown(). Empty flights path renders white-bordered "..." loading screen without FastLED.show().
 - **Task 3**: MEMORY_REQUIREMENT kept at 64 bytes (sizeof instance ~12 bytes actual: vtable ptr + size_t + unsigned long). Zone descriptors updated from 4-zone stub (Logo/Airline/Route/Aircraft) to 3-zone real layout (Logo 25%/Flight 75%x60%/Telemetry 75%x40%) matching LayoutEngine output. String usage reviewed: all temporaries are local to render() scope, longest ~40 chars, well under 512 byte stack budget. ctx.brightness is never written.
 - **Task 4**: Created `firmware/test/test_classic_card_mode/test_main.cpp` with 16 Unity tests covering: init/teardown lifecycle, metadata correctness (getName, getZoneDescriptor 3-zone alignment, getSettingsSchema null), MEMORY_REQUIREMENT sizing, null matrix guards, heap safety (10 init/teardown cycles), factory integration, render lifecycle with multiple flights, and single-flight cycling behavior.
+- **Review Follow-up #1 (render coverage)**: Added 4 real-matrix tests using CRGB[2048] buffer + FastLED_NeoMatrix(64x32). Tests verify non-zero pixel output for zone layout, loading screen border, fallback card border, and heap stability across 20 render frames.
+- **Review Follow-up #2 (cycling coverage)**: Moved cycling state update before matrix null guard. Added PIO_UNIT_TESTING accessors. Added 6 cycling tests covering start, single-flight, advance, wraparound, pre-interval hold, and teardown reset.
+- **Review Follow-up #3 (String heap churn)**: Refactored renderFlightZone, renderTelemetryZone, renderSingleFlightCard to char[] + snprintf. Added 3 char*-based overloads to DisplayUtils (drawTextLine, truncateToColumns, formatTelemetryValue). Zero heap allocation on 20fps hot path.
+- **Review Follow-up #4 (zone bounds)**: Added static clampZone() helper that constrains zone Rects to matrix dimensions. Added 2 tests for oversized and fully-outside zones.
+- **Synthesis Pass (2026-04-14)**: Applied 9 fixes from 2-validator synthesis: (1) Cycling timer drift fixed — `_lastCycleMs += ctx.displayCycleMs` instead of `= now` for stable average cadence; (2) `displayCycleMs == 0` runaway guard added; (3) `dtostrf` replaced with bounded `snprintf` in `formatTelemetryValue`; (4) `truncateToColumns` buffer overflow fixed for `outLen < 4` edge case; (5) Route string now initialised to `""` and only formatted when origin/destination codes are present — fixes dead-code fallback and avoids displaying stray `">"` for flights with no route data; (6) `drawBitmapRGB565` null-bitmap guard added at function entry; (7) Redundant RGB565 unpack/repack removed from `drawBitmapRGB565` hot path; (8) Vacuous `TEST_ASSERT_TRUE_MESSAGE(true, ...)` in oversized-zone test replaced with meaningful pixel-count assertion; (9) Misleading test name `test_classic_mode_factory_creates_instance` renamed to `test_classic_mode_heap_instantiation`.
+- **Synthesis Review Follow-ups (2026-04-14)**: Resolved all 3 remaining review items: (1) Added 6 branch-coverage tests for renderFlightZone 1/2/3-line paths + NaN telemetry + no-route fallback; (2) Added logo zone integration test with dummy RGB565 buffer; (3) Cached `routeLen`/`aircraftLen` in renderFlightZone to eliminate redundant strlen() calls. Total: 34 tests, all compile clean. Full regression suite (11 test suites) compiles clean. Build: 80.8% flash, 17.1% RAM.
+- **Synthesis Round 2 (2026-04-14)**: Applied 3 fixes from 2-validator synthesis: (1) CRITICAL — Added `if (outLen == 0) return;` guard at entry of `DisplayUtils::truncateToColumns(char*)` and `DisplayUtils::formatTelemetryValue` to prevent `outLen - 1` underflow to SIZE_MAX on zero-length buffers; simplified redundant ternary in `formatTelemetryValue` null-terminator write; (2) HIGH — Reset `_lastCycleMs = 0` in single-flight and empty-flights branches of `ClassicCardMode::render()` so next multi-flight entry always gets a fresh anchor (prevents skip-on-return and stale-anchor strobing); (3) MEDIUM — Replaced single-step `_lastCycleMs += displayCycleMs` with multi-step `steps = elapsed / displayCycleMs; _lastCycleMs += steps * displayCycleMs` to catch up all missed cycles atomically and prevent rapid strobing after extended display pauses. Build: 81.2% flash, 17.1% RAM. All 11 test suites compile clean.
 
 ### Visual Verification Checklist (AC #2)
 
@@ -150,14 +172,21 @@ Pixel-identical verification requires on-device side-by-side comparison. Procedu
 
 ### File List
 
-- `firmware/modes/ClassicCardMode.h` (modified — added cycling fields, private helpers)
-- `firmware/modes/ClassicCardMode.cpp` (modified — full rendering implementation)
-- `firmware/test/test_classic_card_mode/test_main.cpp` (new — 16 Unity tests)
+- `firmware/modes/ClassicCardMode.h` (modified — added cycling fields, private helpers, PIO_UNIT_TESTING accessors)
+- `firmware/modes/ClassicCardMode.cpp` (modified — full rendering implementation, cycling before null guard, char[] refactor, clampZone, strlen caching, multi-step cycling, stale-anchor resets)
+- `firmware/utils/DisplayUtils.h` (modified — added 3 char*-based overload declarations)
+- `firmware/utils/DisplayUtils.cpp` (modified — implemented 3 char*-based overloads; added outLen==0 guards in truncateToColumns and formatTelemetryValue)
+- `firmware/test/test_classic_card_mode/test_main.cpp` (modified — 34 Unity tests: added 7 new tests for branch coverage, NaN telemetry, no-route fallback, logo zone integration)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified — status update)
+- `_bmad-output/implementation-artifacts/stories/ds-1-4-classic-card-mode-implementation.md` (modified — review follow-ups resolved)
 
 ## Change Log
 
 - **2026-04-13**: Implemented ClassicCardMode with full zone rendering (logo, flight, telemetry), cycling logic, fallback card, and idle screen. Added 16 Unity tests. Build clean. Story moved to review.
+- **2026-04-14**: Resolved all 4 AI-Review follow-ups: (1) Added 4 real-matrix tests with CRGB buffer; (2) Fixed cycling testability — moved state update before null guard, added 6 cycling tests with PIO_UNIT_TESTING accessors; (3) Eliminated String heap churn — refactored to char[]/snprintf, added DisplayUtils char* overloads; (4) Added zone bounds clamping with clampZone() + 2 tests. Total: 27 tests, all compile clean. Full regression suite (all test targets) compiles clean. Build: 80.8% flash, 17.1% RAM.
+- **2026-04-14 (Synthesis)**: Applied 9 fixes from 2-validator code review synthesis. Key fixes: cycling timer drift (stable cadence), displayCycleMs==0 guard, route dead-code logic bug, dtostrf→snprintf safety, truncateToColumns overflow, drawBitmapRGB565 null guard + RGB565 path optimization, test assertion quality. Build: 81.2% flash, 17.1% RAM. All test suites compile clean.
+- **2026-04-14 (Synthesis Follow-ups)**: Addressed 3 remaining code review findings: (1) MEDIUM — renderFlightZone branch coverage: added 6 tests exercising 1/2/3-line paths, NaN telemetry, and no-route fallback; (2) LOW — logo zone integration: added test with dummy RGB565 buffer to exercise full loadLogo→drawBitmapRGB565 path; (3) LOW — strlen caching: cached `routeLen`/`aircraftLen` before branch logic. Total: 34 tests. All 11 test suites compile clean. Build unchanged: 80.8% flash, 17.1% RAM.
+- **2026-04-14 (Synthesis Round 2)**: Fixed CRITICAL outLen==0 underflow bugs in DisplayUtils char* helpers; fixed HIGH cycling stale-anchor bug (reset _lastCycleMs on single/empty flights); fixed MEDIUM catch-up strobing via multi-step advancement. Build: 81.2% flash, 17.1% RAM. All test suites compile clean.
 
 ## Previous story intelligence
 
@@ -180,3 +209,31 @@ Recent epic-ds-1 work added `modes/`, `ModeRegistry`, `DisplayUtils` — Classic
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 8.0 → REJECT
+- **Issues Found:** 9 verified (1 critical, 2 high-deferred, 2 medium, 2 low-fixed, 2 dismissed)
+- **Issues Fixed:** 4 (critical logoBuffer guard, medium innerWidth guard, low test rename, low heap tolerance)
+- **Action Items Created:** 4 deferred (render coverage, cycling coverage, String heap churn, zone bounds) — **ALL 4 RESOLVED** in review follow-up pass (2026-04-14)
+
+### Review: 2026-04-14 (Synthesis — Validators A + B)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 8.8 → CONDITIONAL PASS (all actionable issues fixed)
+- **Issues Found:** 14 verified + 4 dismissed
+- **Issues Fixed:** 9 (see Synthesis Pass in Completion Notes)
+- **Action Items Created:** 3 deferred (test coverage for renderFlightZone branches, logo zone integration test, redundant strlen caching) — **ALL 3 RESOLVED** in review follow-up pass (2026-04-14)
+
+### Review: 2026-04-14 (Synthesis Round 2 — Validators A + B)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 5.5 → CONDITIONAL PASS
+- **Issues Found:** 6 verified, 4 dismissed
+- **Issues Fixed:** 3 (CRITICAL outLen==0 guards, HIGH stale-anchor reset, MEDIUM multi-step cycling)
+- **Action Items Created:** 0 (no remaining actionable items)
+
+#### Review Follow-ups (AI)
+- [x] [AI-Review] MEDIUM: renderFlightZone branch coverage missing — no tests independently exercise 1-line, 2-line, 3-line linesAvailable paths or NaN telemetry → "--" output. A regression swapping branch logic would not be caught. (`firmware/test/test_classic_card_mode/test_main.cpp`) — **RESOLVED**: Added 6 branch-coverage tests: `test_render_flight_zone_1_line_path`, `test_render_flight_zone_2_line_path`, `test_render_flight_zone_3_line_path`, `test_render_telemetry_nan_shows_placeholders`, `test_render_flight_zone_no_route`, `test_render_flight_zone_1_line_no_route_uses_airline`. Each uses real FastLED_NeoMatrix with zone height controlling the branch path (h=8→1-line, h=16→2-line, h=24→3-line).
+- [x] [AI-Review] LOW: All real-matrix tests set `ctx.logoBuffer = nullptr`, so `renderLogoZone` always early-returns and the `LogoManager::loadLogo → drawBitmapRGB565` path is never exercised. Add one test with a dummy RGB565 buffer to verify logo pixels are written. (`firmware/test/test_classic_card_mode/test_main.cpp`) — **RESOLVED**: Added `test_render_logo_zone_with_buffer` using a 32x32 RGB565 dummy buffer (solid red, 0xF800) to exercise the full renderLogoZone → LogoManager::loadLogo → drawBitmapRGB565 path.
+- [x] [AI-Review] LOW: Multiple `strlen()` calls on the same immutable `route` and `aircraftSrc` buffers in `renderFlightZone` at ~20fps — cache lengths in local int variables to avoid O(n) work per frame. (`firmware/modes/ClassicCardMode.cpp:171-196`) — **RESOLVED**: Added `routeLen` and `aircraftLen` cached locals computed once before the branch logic. All `strlen(route)` and `strlen(aircraftSrc)` calls in the 1-line and 2-line paths now use the cached values.

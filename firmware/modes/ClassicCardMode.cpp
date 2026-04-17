@@ -5,11 +5,19 @@ Story ds-1.4: replaces ds-1.3 stub with real rendering via DisplayUtils + Render
 Sources: NeoMatrixDisplay::renderZoneFlight, displayFlights, displaySingleFlightCard,
          displayLoadingScreen — ported to use ctx.matrix, ctx.layout, ctx.textColor,
          ctx.logoBuffer, ctx.displayCycleMs instead of ConfigManager / private members.
+
+Review follow-ups addressed:
+- Cycling state moved before matrix null guard for testability
+- String temporaries replaced with char[] + snprintf (zero heap on hot path)
+- Zone bounds clamped against matrix dimensions before draw calls
 */
 
 #include "modes/ClassicCardMode.h"
 #include "utils/DisplayUtils.h"
 #include "core/LogoManager.h"
+
+#include <cstring>
+#include <cmath>
 
 // Zone descriptors for Mode Picker UI — reflect real LayoutEngine zones:
 // Logo (left strip), Flight (center-right, top portion), Telemetry (center-right, bottom)
@@ -29,6 +37,19 @@ const ModeZoneDescriptor ClassicCardMode::_descriptor = {
 static constexpr int CHAR_WIDTH = 6;
 static constexpr int CHAR_HEIGHT = 8;
 
+// Maximum buffer size for text lines (generous for any display width)
+static constexpr size_t LINE_BUF_SIZE = 48;
+
+// Clamp a zone rect to matrix dimensions — prevents out-of-bounds draw calls
+// from malformed RenderContext (review item ds-1.4 #4).
+static Rect clampZone(const Rect& zone, uint16_t matW, uint16_t matH) {
+    Rect c = zone;
+    if (c.x >= matW || c.y >= matH) { c.x = 0; c.y = 0; c.w = 0; c.h = 0; return c; }
+    if (c.x + c.w > matW) c.w = matW - c.x;
+    if (c.y + c.h > matH) c.h = matH - c.y;
+    return c;
+}
+
 bool ClassicCardMode::init(const RenderContext& ctx) {
     (void)ctx;
     _currentFlightIndex = 0;
@@ -43,27 +64,37 @@ void ClassicCardMode::teardown() {
 
 void ClassicCardMode::render(const RenderContext& ctx,
                               const std::vector<FlightInfo>& flights) {
+    // --- Cycling state update (pure logic, no matrix needed) ---
+    // Moved before matrix null guard so tests can verify cycling without hardware.
+    if (!flights.empty()) {
+        if (flights.size() > 1) {
+            const unsigned long now = millis();
+            if (_lastCycleMs == 0) {
+                // First render after init (or after returning from ≤1 flight) — anchor timer
+                _lastCycleMs = now;
+            }
+            if (ctx.displayCycleMs > 0 && now - _lastCycleMs >= ctx.displayCycleMs) {
+                // Multi-step advancement: catches up all missed cycles at once, preventing
+                // rapid strobing through flights after long pauses (OTA, WiFi reconnect).
+                const unsigned long steps =
+                    (now - _lastCycleMs) / (unsigned long)ctx.displayCycleMs;
+                _currentFlightIndex = (_currentFlightIndex + (size_t)steps) % flights.size();
+                _lastCycleMs += steps * (unsigned long)ctx.displayCycleMs;
+            }
+        } else {
+            _currentFlightIndex = 0;
+            _lastCycleMs = 0;  // Reset so next multi-flight entry gets a fresh anchor
+        }
+    } else {
+        _lastCycleMs = 0;  // Reset so returning flights don't strobe on first frames
+    }
+
+    // --- Matrix guard: all draw calls below require a valid matrix ---
     if (ctx.matrix == nullptr) return;
 
     ctx.matrix->fillScreen(0);
 
     if (!flights.empty()) {
-        // Cycling logic — ported from NeoMatrixDisplay::displayFlights
-        const unsigned long now = millis();
-
-        if (flights.size() > 1) {
-            if (_lastCycleMs == 0) {
-                // First render after init — anchor the cycle timer
-                _lastCycleMs = now;
-            }
-            if (now - _lastCycleMs >= ctx.displayCycleMs) {
-                _lastCycleMs = now;
-                _currentFlightIndex = (_currentFlightIndex + 1) % flights.size();
-            }
-        } else {
-            _currentFlightIndex = 0;
-        }
-
         const size_t index = _currentFlightIndex % flights.size();
 
         if (ctx.layout.valid) {
@@ -92,13 +123,22 @@ const ModeSettingsSchema* ClassicCardMode::getSettingsSchema() const {
 // --- Zone rendering (ported from NeoMatrixDisplay zone methods) ---
 
 void ClassicCardMode::renderZoneFlight(const RenderContext& ctx, const FlightInfo& f) {
-    renderLogoZone(ctx, f, ctx.layout.logoZone);
-    renderFlightZone(ctx, f, ctx.layout.flightZone);
-    renderTelemetryZone(ctx, f, ctx.layout.telemetryZone);
+    // Clamp zones against matrix dimensions (review item ds-1.4 #4)
+    uint16_t mw = ctx.layout.matrixWidth ? ctx.layout.matrixWidth : ctx.matrix->width();
+    uint16_t mh = ctx.layout.matrixHeight ? ctx.layout.matrixHeight : ctx.matrix->height();
+
+    Rect logo = clampZone(ctx.layout.logoZone, mw, mh);
+    Rect flight = clampZone(ctx.layout.flightZone, mw, mh);
+    Rect telemetry = clampZone(ctx.layout.telemetryZone, mw, mh);
+
+    if (logo.w > 0 && logo.h > 0) renderLogoZone(ctx, f, logo);
+    if (flight.w > 0 && flight.h > 0) renderFlightZone(ctx, f, flight);
+    if (telemetry.w > 0 && telemetry.h > 0) renderTelemetryZone(ctx, f, telemetry);
 }
 
 void ClassicCardMode::renderLogoZone(const RenderContext& ctx, const FlightInfo& f,
                                       const Rect& zone) {
+    if (ctx.logoBuffer == nullptr) return;  // No buffer supplied — skip logo zone silently
     // Load logo by operator ICAO; fallback sprite if not found
     LogoManager::loadLogo(f.operator_icao, ctx.logoBuffer);
     DisplayUtils::drawBitmapRGB565(ctx.matrix, zone.x, zone.y,
@@ -111,57 +151,74 @@ void ClassicCardMode::renderFlightZone(const RenderContext& ctx, const FlightInf
     const int maxCols = zone.w / CHAR_WIDTH;
     if (maxCols <= 0) return;
 
-    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
-                     : (f.operator_iata.length() ? f.operator_iata
-                     : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
-    String route = f.origin.code_icao + String(">") + f.destination.code_icao;
-    String aircraft = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short
-                                                              : f.aircraft_code;
-
     int linesAvailable = zone.h / CHAR_HEIGHT;
     if (linesAvailable <= 0) return;
 
-    String line1;
-    String line2;
-    String line3;
+    // Source strings from FlightInfo — read c_str() pointers (no heap alloc)
+    const char* airline = f.airline_display_name_full.length() ? f.airline_display_name_full.c_str()
+                          : (f.operator_iata.length() ? f.operator_iata.c_str()
+                          : (f.operator_icao.length() ? f.operator_icao.c_str()
+                          : f.operator_code.c_str()));
+
+    const char* aircraftSrc = f.aircraft_display_name_short.length()
+                              ? f.aircraft_display_name_short.c_str()
+                              : f.aircraft_code.c_str();
+
+    // Build route string in fixed buffer — only if at least one code is set.
+    // Initialise to "" so fallback logic works correctly for flights with no origin/dest.
+    char route[LINE_BUF_SIZE] = "";
+    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
+        snprintf(route, sizeof(route), "%s>%s",
+                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    }
+
+    // Cache lengths — avoid redundant O(n) strlen() per frame at ~20fps (review item ds-1.4 #3)
+    const int routeLen = (int)strlen(route);
+    const int aircraftLen = (int)strlen(aircraftSrc);
+
+    // Truncated line buffers
+    char line1[LINE_BUF_SIZE] = "";
+    char line2[LINE_BUF_SIZE] = "";
+    char line3[LINE_BUF_SIZE] = "";
     int linesToDraw = 1;
 
     if (linesAvailable == 1) {
         // Compact: route priority when only one row fits
-        String compactLine = route.length() ? route : airline;
-        if (compactLine.length() == 0) {
-            compactLine = aircraft;
-        }
-        line1 = DisplayUtils::truncateToColumns(compactLine, maxCols);
+        const char* compactSrc = (routeLen > 0) ? route : airline;
+        if (strlen(compactSrc) == 0) compactSrc = aircraftSrc;
+        DisplayUtils::truncateToColumns(compactSrc, maxCols, line1, sizeof(line1));
     } else if (linesAvailable == 2) {
         // Full: airline + route+aircraft compressed into row two
-        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
-        String detailLine = route;
-        if (aircraft.length() > 0) {
-            if (detailLine.length() > 0) {
-                detailLine += " ";
-            }
-            detailLine += aircraft;
+        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
+        char detailLine[LINE_BUF_SIZE];
+        if (aircraftLen > 0 && routeLen > 0) {
+            snprintf(detailLine, sizeof(detailLine), "%s %s", route, aircraftSrc);
+        } else if (aircraftLen > 0) {
+            strncpy(detailLine, aircraftSrc, sizeof(detailLine) - 1);
+            detailLine[sizeof(detailLine) - 1] = '\0';
+        } else {
+            strncpy(detailLine, route, sizeof(detailLine) - 1);
+            detailLine[sizeof(detailLine) - 1] = '\0';
         }
-        line2 = DisplayUtils::truncateToColumns(detailLine, maxCols);
-        linesToDraw = line2.length() > 0 ? 2 : 1;
+        DisplayUtils::truncateToColumns(detailLine, maxCols, line2, sizeof(line2));
+        linesToDraw = (strlen(line2) > 0) ? 2 : 1;
     } else {
         // Expanded: three separate lines
-        line1 = DisplayUtils::truncateToColumns(airline, maxCols);
-        line2 = DisplayUtils::truncateToColumns(route, maxCols);
-        line3 = DisplayUtils::truncateToColumns(aircraft, maxCols);
-        linesToDraw = line3.length() > 0 ? 3 : (line2.length() > 0 ? 2 : 1);
+        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
+        DisplayUtils::truncateToColumns(route, maxCols, line2, sizeof(line2));
+        DisplayUtils::truncateToColumns(aircraftSrc, maxCols, line3, sizeof(line3));
+        linesToDraw = (strlen(line3) > 0) ? 3 : ((strlen(line2) > 0) ? 2 : 1);
     }
 
     int totalTextH = linesToDraw * CHAR_HEIGHT;
     int16_t y = zone.y + (zone.h - totalTextH) / 2;
 
     DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line1, ctx.textColor);
-    if (linesToDraw >= 2 && line2.length() > 0) {
+    if (linesToDraw >= 2 && strlen(line2) > 0) {
         y += CHAR_HEIGHT;
         DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line2, ctx.textColor);
     }
-    if (linesToDraw >= 3 && line3.length() > 0) {
+    if (linesToDraw >= 3 && strlen(line3) > 0) {
         y += CHAR_HEIGHT;
         DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line3, ctx.textColor);
     }
@@ -175,27 +232,38 @@ void ClassicCardMode::renderTelemetryZone(const RenderContext& ctx, const Flight
     int linesAvailable = zone.h / CHAR_HEIGHT;
     if (linesAvailable <= 0) return;
 
-    String telLine1, telLine2;
+    char telLine1[LINE_BUF_SIZE] = "";
+    char telLine2[LINE_BUF_SIZE] = "";
 
     if (linesAvailable >= 2) {
         // Two-line: altitude+speed on line 1, track+vrate on line 2
-        String alt = DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1);
-        String spd = DisplayUtils::formatTelemetryValue(f.speed_mph, "mph");
-        telLine1 = DisplayUtils::truncateToColumns(alt + " " + spd, maxCols);
+        char alt[16], spd[16], trk[16], vr[16];
+        DisplayUtils::formatTelemetryValue(f.altitude_kft, "kft", 1, alt, sizeof(alt));
+        DisplayUtils::formatTelemetryValue(f.speed_mph, "mph", 0, spd, sizeof(spd));
 
-        String trk = DisplayUtils::formatTelemetryValue(f.track_deg, "d");
-        String vr = DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "fps");
-        telLine2 = DisplayUtils::truncateToColumns(trk + " " + vr, maxCols);
+        char combined[LINE_BUF_SIZE];
+        snprintf(combined, sizeof(combined), "%s %s", alt, spd);
+        DisplayUtils::truncateToColumns(combined, maxCols, telLine1, sizeof(telLine1));
+
+        DisplayUtils::formatTelemetryValue(f.track_deg, "d", 0, trk, sizeof(trk));
+        DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "fps", 0, vr, sizeof(vr));
+
+        snprintf(combined, sizeof(combined), "%s %s", trk, vr);
+        DisplayUtils::truncateToColumns(combined, maxCols, telLine2, sizeof(telLine2));
     } else {
         // Compact: abbreviated single row
-        String alt = String("A") + DisplayUtils::formatTelemetryValue(f.altitude_kft, "k", 0);
-        String spd = String("S") + DisplayUtils::formatTelemetryValue(f.speed_mph, "", 0);
-        String trk = String("T") + DisplayUtils::formatTelemetryValue(f.track_deg, "", 0);
-        String vr = String("V") + DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "", 0);
-        telLine1 = DisplayUtils::truncateToColumns(alt + " " + spd + " " + trk + " " + vr, maxCols);
+        char alt[16], spd[16], trk[16], vr[16];
+        DisplayUtils::formatTelemetryValue(f.altitude_kft, "k", 0, alt, sizeof(alt));
+        DisplayUtils::formatTelemetryValue(f.speed_mph, "", 0, spd, sizeof(spd));
+        DisplayUtils::formatTelemetryValue(f.track_deg, "", 0, trk, sizeof(trk));
+        DisplayUtils::formatTelemetryValue(f.vertical_rate_fps, "", 0, vr, sizeof(vr));
+
+        char combined[LINE_BUF_SIZE];
+        snprintf(combined, sizeof(combined), "A%s S%s T%s V%s", alt, spd, trk, vr);
+        DisplayUtils::truncateToColumns(combined, maxCols, telLine1, sizeof(telLine1));
     }
 
-    int linesToDraw = (linesAvailable >= 2 && telLine2.length() > 0) ? 2 : 1;
+    int linesToDraw = (linesAvailable >= 2) ? 2 : 1;  // telLine2 is always set when linesAvailable >= 2
     int totalTextH = linesToDraw * CHAR_HEIGHT;
     int16_t y = zone.y + (zone.h - totalTextH) / 2;
 
@@ -221,18 +289,30 @@ void ClassicCardMode::renderSingleFlightCard(const RenderContext& ctx, const Fli
     const int padding = 2;
     const int innerWidth = mw - 2 - (2 * padding);
     const int innerHeight = mh - 2 - (2 * padding);
+    if (innerWidth <= 0 || innerHeight <= 0) return;  // Matrix too small for bordered card
     const int maxCols = innerWidth / CHAR_WIDTH;
+    if (maxCols <= 0) return;
 
-    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
-                     : (f.operator_iata.length() ? f.operator_iata
-                     : (f.operator_icao.length() ? f.operator_icao : f.operator_code));
-    String line2 = f.origin.code_icao + String(">") + f.destination.code_icao;
-    String line3 = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short
-                                                           : f.aircraft_code;
+    // Build text in fixed buffers — zero heap allocation
+    const char* airlineSrc = f.airline_display_name_full.length() ? f.airline_display_name_full.c_str()
+                             : (f.operator_iata.length() ? f.operator_iata.c_str()
+                             : (f.operator_icao.length() ? f.operator_icao.c_str()
+                             : f.operator_code.c_str()));
 
-    String line1 = DisplayUtils::truncateToColumns(airline, maxCols);
-    line2 = DisplayUtils::truncateToColumns(line2, maxCols);
-    line3 = DisplayUtils::truncateToColumns(line3, maxCols);
+    char route[LINE_BUF_SIZE] = "";
+    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
+        snprintf(route, sizeof(route), "%s>%s",
+                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    }
+
+    const char* aircraftSrc = f.aircraft_display_name_short.length()
+                              ? f.aircraft_display_name_short.c_str()
+                              : f.aircraft_code.c_str();
+
+    char line1[LINE_BUF_SIZE], line2[LINE_BUF_SIZE], line3[LINE_BUF_SIZE];
+    DisplayUtils::truncateToColumns(airlineSrc, maxCols, line1, sizeof(line1));
+    DisplayUtils::truncateToColumns(route, maxCols, line2, sizeof(line2));
+    DisplayUtils::truncateToColumns(aircraftSrc, maxCols, line3, sizeof(line3));
 
     const int lineCount = 3;
     const int lineSpacing = 1;
@@ -262,11 +342,10 @@ void ClassicCardMode::renderLoadingScreen(const RenderContext& ctx) {
     ctx.matrix->drawRect(0, 0, mw, mh, borderColor);
 
     // Centered "..." text using user theme color
-    const char loadingText[] = "...";
     const int textWidth = 3 * CHAR_WIDTH;  // 3 chars
     const int16_t x = (mw - textWidth) / 2;
     const int16_t y = (mh - CHAR_HEIGHT) / 2 - 2;
 
-    DisplayUtils::drawTextLine(ctx.matrix, x, y, String(loadingText), ctx.textColor);
+    DisplayUtils::drawTextLine(ctx.matrix, x, y, "...", ctx.textColor);
     // No FastLED.show() — pipeline responsibility
 }

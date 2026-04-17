@@ -66,7 +66,34 @@ public:
     static SwitchState getSwitchState();
 
     /// Last error message (fixed char buffer, no heap).
+    /// NOTE: Returns raw pointer to mutable buffer — safe for single-threaded
+    /// test code. Prefer copyLastError() for cross-core (Core 1) callers.
     static const char* getLastError();
+
+    /// Thread-safer snapshot of the last error string into caller-supplied buffer.
+    /// Double-checks _errorUpdating before and after copy; discards result if a
+    /// write was in progress on Core 0. outBuf is always null-terminated.
+    static void copyLastError(char* outBuf, size_t maxLen);
+
+    /// Stable machine-readable code for the last error (nullptr when no error).
+    /// Points to a string literal — safe to read across cores without locking.
+    static const char* getLastErrorCode();
+
+    /// Prepare system for OTA flash write (Story dl-7.1, AC #2, #9).
+    /// Tears down the active DisplayMode, deletes it, sets SwitchState::SWITCHING
+    /// so tick() skips normal mode logic, and sets _otaMode flag.
+    /// Call from Core 1 OTA task or upload handler BEFORE Update.begin().
+    /// Returns true on success; false if no mode table or already in OTA mode.
+    static bool prepareForOTA();
+
+    /// Whether OTA mode is active (display task should show "Updating…").
+    static bool isOtaMode();
+
+    /// Complete an OTA attempt and restore normal operation (Story dl-7.2, AC #5).
+    /// On failure (success=false): clears OTA mode, resets switch state to IDLE,
+    /// and requests the default mode so flight rendering resumes without power cycle.
+    /// On success (success=true): no-op before reboot.
+    static void completeOTAAttempt(bool success);
 
     /// Zero-allocation callback enumeration (AC #4).
     /// Iterates all entries calling cb with (id, displayName, index, user).
@@ -77,12 +104,16 @@ private:
     static const ModeEntry* _table;
     static uint8_t _count;
     static DisplayMode* _activeMode;
-    static uint8_t _activeModeIndex;
+    static std::atomic<uint8_t> _activeModeIndex;  // written Core 0 (executeSwitch/prepareForOTA), read Core 1 (getActiveModeId)
     static std::atomic<uint8_t> _requestedIndex;   // cross-core: Core 1 writes, Core 0 reads
-    static SwitchState _switchState;
+    static std::atomic<SwitchState> _switchState;  // atomic: read by Core 1 (WebPortal); written by Core 1 (requestSwitch→REQUESTED) and Core 0 (tick/executeSwitch→IDLE/SWITCHING)
     static char _lastError[64];
+    static std::atomic<const char*> _lastErrorCode; // points to string literal — atomic pointer, no buffer race
+    static std::atomic<bool> _errorUpdating;        // guard: true while _lastError is being written on Core 0
     static bool _nvsWritePending;
     static unsigned long _lastSwitchMs;
+    static std::atomic<bool> _otaMode;  // Story dl-7.1: true after prepareForOTA() succeeds (atomic: Core 1 writes, Core 0 reads)
+    static bool _recoveryQueued;  // ds-3.2 AC #5: prevents infinite retry if table[0] also fails
 
     /// Find table index for a mode ID. Returns MODE_INDEX_NONE if not found.
     static uint8_t findIndex(const char* modeId);

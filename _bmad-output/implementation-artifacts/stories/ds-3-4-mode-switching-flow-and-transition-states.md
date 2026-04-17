@@ -1,6 +1,6 @@
 # Story ds-3.4: Mode Switching Flow & Transition States
 
-Status: review
+Status: complete
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -109,6 +109,10 @@ Claude Opus 4.6
 ### Change Log
 
 - 2026-04-14: Implemented ds-3.4 Mode Switching Flow & Transition States — full switchMode orchestration with polling, scoped errors, focus management, and CSS state classes
+- 2026-04-14: Code review synthesis (5 issues fixed): premature active removal on siblings (AC #3), bricked UI in finalizeModeSwitch on reload failure, race condition unlocking modeSwitchInFlight before loadDisplayModes resolves (3 paths), showCardError dismiss closure removing wrong element, prefers-reduced-motion opacity:1 (AC #5)
+- 2026-04-14: Verification pass — all 5 review fixes confirmed in source, gzip assets verified matching data-src originals, all 10 ACs validated against implementation. Status → complete.
+- 2026-04-14: Code review synthesis pass 2 (2 issues fixed): event bubbling from .mode-card-alert triggering accidental switchMode (HIGH — added stopPropagation on alert click); double-toast on network failure in AC #6 catch block (MEDIUM — removed redundant FW.showToast, loadDisplayModes covers it). Regenerated dashboard.js.gz.
+- 2026-04-14: Code review synthesis pass 3 (3 issues fixed): race condition in finalizeModeSwitch success path — modeSwitchInFlight=false now deferred inside loadDisplayModes().then() for the !skipReload branch (HIGH); missing CSS truncation on .mode-card-alert — added overflow:hidden;text-overflow:ellipsis;white-space:nowrap per AC #4 (LOW); visual jitter when active card transitions to switching — added .mode-card.switching[aria-current="true"] CSS rule to preserve 4px border-left and 9px padding (LOW). Regenerated dashboard.js.gz and style.css.gz.
 
 ### File List
 
@@ -132,3 +136,26 @@ Touches **`firmware/data-src/dashboard.js`**, **`style.css`**, possibly **`dashb
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-14
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 5.5 → REJECT (MAJOR REWORK)
+- **Issues Found:** 5
+- **Issues Fixed:** 5
+- **Action Items Created:** 0
+
+### Review: 2026-04-14 (Pass 2)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 3.1 → PASS WITH FIXES
+- **Issues Found:** 6 raised (2 verified, 4 dismissed)
+- **Issues Fixed:** 2
+- **Action Items Created:** 0
+
+### Review: 2026-04-14 (Pass 3)
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 1.6 → PASS WITH FIXES
+- **Issues Found:** 3 raised (3 verified, 0 dismissed) — Validator A non-functional
+- **Issues Fixed:** 3
+- **Action Items Created:** 0

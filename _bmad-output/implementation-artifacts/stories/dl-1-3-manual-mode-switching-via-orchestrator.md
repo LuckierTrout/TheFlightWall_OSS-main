@@ -1,6 +1,6 @@
 # Story dl-1.3: Manual Mode Switching via Orchestrator
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -75,8 +75,9 @@ No issues encountered during implementation.
 - **Task 1**: Added `ModeRegistry::requestSwitch(modeId)` call to `ModeOrchestrator::onManualSwitch()`. Logs warning if requestSwitch fails (AC #5 — orchestrator doesn't lie about failed switch).
 - **Task 2**: Replaced direct `ModeRegistry::requestSwitch` calls in `main.cpp` boot-mode-restore with `ModeOrchestrator::onManualSwitch(savedMode, bootModeName)`. Looks up display name from ModeRegistry mode table. Falls back to "classic_card" with NVS correction if saved mode is unknown.
 - **Task 3**: Rule-24 grep audit passed. Production `requestSwitch` calls are only in `ModeRegistry.cpp` (definition) and `ModeOrchestrator.cpp` (onManualSwitch, onIdleFallback, onFlightsRestored — all called from tick or via onManualSwitch). dl-1.2 idle hooks (`onIdleFallback`, `onFlightsRestored`) are in ModeOrchestrator.cpp — already compliant with Rule 24.
-- **Task 4**: NVS persistence decision: `ModeRegistry::tickNvsPersist()` is the sole NVS writer (debounced 2s). `onManualSwitch` does NOT write NVS directly — avoids double-write and respects debounce.
+- **Task 4**: NVS persistence decision: `ModeRegistry::tickNvsPersist()` is the sole NVS writer for **runtime** mode switches (debounced 2s). `onManualSwitch` does NOT write NVS directly — avoids double-write and respects debounce. **Exception**: The `main.cpp` boot path calls `ConfigManager::setDisplayMode()` directly in 3 cases (WDT recovery → clock, WDT recovery → classic_card fallback, unknown-mode correction → classic_card). These are intentional boot-time durability writes executed before any FreeRTOS tasks start; `tickNvsPersist` will write the same value again after 2 s but there is no conflict (same value, deterministic order). Runtime callers must not follow this boot-path pattern.
 - **Task 5**: Added 4 new tests to `test_mode_orchestrator`: `test_manual_switch_drives_registry`, `test_manual_switch_from_idle_fallback_drives_registry`, `test_manual_switch_unknown_mode_requestswitch_fails`, `test_boot_path_via_orchestrator`. Added `isNtpSynced()` stub for ClockMode linker dependency. Both `pio run` and test compilation pass cleanly.
+- **Post-Review (2026-04-16)**: Added redundant switch guard to `onManualSwitch()` to skip unnecessary registry work when switching to same mode in MANUAL state. Added schedule config cache (`s_cachedSchedule`) to avoid reading from NVS every second in `tick()`. Added `invalidateScheduleCache()` public method for config change notifications. Firmware builds at 81.0% flash.
 
 ### Implementation Plan
 
@@ -87,13 +88,15 @@ No issues encountered during implementation.
 
 ### File List
 
-- `firmware/core/ModeOrchestrator.cpp` — Modified: added `requestSwitch` call in `onManualSwitch`
+- `firmware/core/ModeOrchestrator.cpp` — Modified: added `requestSwitch` call in `onManualSwitch`, redundant switch guard, schedule cache optimization
+- `firmware/core/ModeOrchestrator.h` — Modified: added `invalidateScheduleCache()` public method
 - `firmware/src/main.cpp` — Modified: boot mode restore now routes through `ModeOrchestrator::onManualSwitch` instead of direct `ModeRegistry::requestSwitch`
 - `firmware/test/test_mode_orchestrator/test_main.cpp` — Modified: added 4 dl-1.3 tests + `isNtpSynced` stub
 
 ## Change Log
 
 - 2026-04-14: Implemented dl-1.3 — Manual Mode Switching via Orchestrator. `onManualSwitch` now calls `requestSwitch`, boot path routed through orchestrator, Rule-24 audit passed, NVS debounce alignment documented, 4 new tests added.
+- 2026-04-15: Post-review verification pass — all 8 ACs validated, Rule-24 grep audit confirmed, all 7 test suites compile clean, firmware builds at 81.0% flash. Status → done.
 
 ## Previous story intelligence
 
@@ -110,3 +113,19 @@ Touches **`ModeOrchestrator.cpp`**, **`main.cpp`**, **`WebPortal.cpp`** (verify 
 ## Story completion status
 
 Ultimate context engine analysis completed — comprehensive developer guide created.
+
+## Senior Developer Review (AI)
+
+### Review: 2026-04-15
+- **Reviewer:** AI Code Review Synthesis
+- **Evidence Score:** 0.5 → PASS
+- **Issues Found:** 1 (low — documentation inconsistency in Task 4 completion note; clarified in-place)
+- **Issues Fixed:** 1 (test enhancement: added `getActiveModeName()` + `getActiveModeId()` assertions to `test_manual_switch_drives_registry`)
+- **Action Items Created:** 0
+
+### Review: 2026-04-16
+- **Reviewer:** AI Code Review Synthesis (Post-Implementation)
+- **Evidence Score:** Validator A: 0.1 (EXEMPLARY), Validator B: 7.6 (REJECT)
+- **Issues Found:** 2 verified medium-priority performance/quality issues
+- **Issues Fixed:** 2 (redundant switch guard, schedule cache optimization)
+- **Action Items Created:** 0

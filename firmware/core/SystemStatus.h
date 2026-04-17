@@ -12,7 +12,8 @@ enum class Subsystem : uint8_t {
     NVS,
     LITTLEFS,
     OTA,
-    NTP
+    NTP,
+    OTA_PULL   // Story dl-7.2, AC #6: pull-OTA download/verify status (distinct from push OTA)
 };
 
 enum class StatusLevel : uint8_t {
@@ -52,7 +53,7 @@ public:
     static const char* levelName(StatusLevel level);
 
 private:
-    static const uint8_t SUBSYSTEM_COUNT = 8;
+    static const uint8_t SUBSYSTEM_COUNT = 9;
     static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
     static SemaphoreHandle_t _mutex;
     static const char* subsystemName(Subsystem sys);

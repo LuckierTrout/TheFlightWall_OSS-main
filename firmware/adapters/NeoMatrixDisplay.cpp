@@ -151,11 +151,10 @@ bool NeoMatrixDisplay::rebuildMatrix(const HardwareConfig &hw, const DisplayConf
     _matrix->setTextWrap(false);
     _matrix->setTextSize(1);
     _matrix->setBrightness(disp.brightness);
+    _activeBrightness = disp.brightness;
 
     _layout = LayoutEngine::compute(hw);
     _hardware = hw;
-    _currentFlightIndex = 0;
-    _lastCycleMs = millis();
     clear();
     return true;
 }
@@ -206,38 +205,6 @@ void NeoMatrixDisplay::clear()
     }
 }
 
-String NeoMatrixDisplay::makeFlightLine(const FlightInfo &f)
-{
-    String airline = f.airline_display_name_full.length() ? f.airline_display_name_full
-                                                          : (f.operator_iata.length() ? f.operator_iata : f.operator_icao);
-    if (airline.length() == 0)
-    {
-        airline = f.operator_code;
-    }
-    String origin = f.origin.code_icao;
-    String dest = f.destination.code_icao;
-    String route = origin + "-" + dest;
-    String type = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short : f.aircraft_code;
-    String ident = f.ident.length() ? f.ident : f.ident_icao;
-    String line = airline;
-    if (ident.length())
-    {
-        line += " ";
-        line += ident;
-    }
-    if (type.length())
-    {
-        line += " ";
-        line += type;
-    }
-    if (route.length() > 1)
-    {
-        line += " ";
-        line += route;
-    }
-    return line;
-}
-
 // --- Legacy full-screen card (kept for fallback if layout is invalid) ---
 
 void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
@@ -262,7 +229,10 @@ void NeoMatrixDisplay::displaySingleFlightCard(const FlightInfo &f)
 
     String origin = f.origin.code_icao;
     String dest = f.destination.code_icao;
-    String line2 = origin + String(">") + dest;
+    // Only include ">" separator when at least one route code is present (mirrors ClassicCardMode fix)
+    String line2 = (origin.length() > 0 || dest.length() > 0)
+        ? (origin + String(">") + dest)
+        : String("");
 
     String line3 = f.aircraft_display_name_short.length() ? f.aircraft_display_name_short : f.aircraft_code;
 
@@ -491,6 +461,7 @@ void NeoMatrixDisplay::updateBrightness(uint8_t brightness)
     {
         _matrix->setBrightness(brightness);
     }
+    _activeBrightness = brightness;  // Track actual brightness for buildRenderContext()
 }
 
 // --- Calibration mode (Story 4.2) ---
@@ -669,27 +640,6 @@ void NeoMatrixDisplay::renderPositioningPattern()
 
 }
 
-void NeoMatrixDisplay::renderFlight(const std::vector<FlightInfo> &flights, size_t index)
-{
-    if (_matrix == nullptr)
-        return;
-
-    _matrix->fillScreen(0);
-
-    if (!flights.empty() && index < flights.size())
-    {
-        if (_layout.valid) {
-            renderZoneFlight(flights[index]);
-        } else {
-            displaySingleFlightCard(flights[index]);
-        }
-    }
-    else
-    {
-        displayLoadingScreen();
-    }
-}
-
 // --- Display pipeline API (Story ds-1.5, Architecture D3) ---
 
 RenderContext NeoMatrixDisplay::buildRenderContext() const
@@ -707,7 +657,9 @@ RenderContext NeoMatrixDisplay::buildRenderContext() const
     } else {
         ctx.textColor = 0;
     }
-    ctx.brightness = disp.brightness;
+    // Use _activeBrightness (kept in sync by updateBrightness()) so scheduler dim override
+    // is reflected in context, not just the static NVS value.
+    ctx.brightness = _activeBrightness;
 
     TimingConfig timing = ConfigManager::getTiming();
     ctx.displayCycleMs = timing.display_cycle * 1000;
@@ -729,11 +681,9 @@ void NeoMatrixDisplay::displayFallbackCard(const std::vector<FlightInfo> &flight
 
     if (!flights.empty())
     {
-        if (_layout.valid) {
-            renderZoneFlight(flights[0]);
-        } else {
-            displaySingleFlightCard(flights[0]);
-        }
+        // AC #1: reuse displaySingleFlightCard draw logic per D3 (NeoMatrixDisplay owns hardware
+        // and frame commit only). Zone rendering lives in ClassicCardMode / Story 3.3 modes.
+        displaySingleFlightCard(flights[0]);
     }
     else
     {

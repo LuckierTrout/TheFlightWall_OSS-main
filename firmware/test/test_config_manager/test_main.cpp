@@ -650,14 +650,16 @@ void test_set_mode_setting_persists_and_reads_back() {
     TEST_ASSERT_EQUAL_INT32(1, val);
 }
 
-void test_set_mode_setting_validates_clock_format_range() {
-    // Only 0 or 1 is valid for clock/format
+void test_set_mode_setting_storage_only_no_validation() {
+    // ConfigManager is storage-only; validation happens at API layer via ModeSettingsSchema.
+    // This test verifies that ConfigManager itself does NOT enforce mode-specific validation.
     clearNvs();
     ConfigManager::init();
     TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 0));
     TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 1));
-    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", 2));
-    TEST_ASSERT_FALSE(ConfigManager::setModeSetting("clock", "format", -1));
+    // Out-of-range values should be accepted by ConfigManager (API layer validates)
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", 2));
+    TEST_ASSERT_TRUE(ConfigManager::setModeSetting("clock", "format", -1));
 }
 
 void test_mode_setting_key_length_within_nvs_limit() {
@@ -746,7 +748,7 @@ void setup() {
     // Per-mode NVS settings tests (Story dl-1.1)
     RUN_TEST(test_get_mode_setting_missing_key_returns_default);
     RUN_TEST(test_set_mode_setting_persists_and_reads_back);
-    RUN_TEST(test_set_mode_setting_validates_clock_format_range);
+    RUN_TEST(test_set_mode_setting_storage_only_no_validation);
     RUN_TEST(test_mode_setting_key_length_within_nvs_limit);
     RUN_TEST(test_mode_setting_key_too_long_rejected);
 

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook for TheFlightWall_OSS
+#
+# Enforces per-story commit discipline (Story TD-4).
+# Rejects commits whose subject line does not begin with a valid story-ID prefix.
+#
+# Valid prefixes (case-insensitive; '.' or '-' accepted between version numbers):
+#   td-N           tech debt (e.g. td-1, td-4)
+#   le-X.Y         Layout Editor epic (e.g. le-1.1, le-1.9)
+#   fn-X.Y         fn epic (e.g. fn-1.4)
+#   dl-X.Y         dl epic (e.g. dl-7.3)
+#   ds-X.Y         ds epic (e.g. ds-3.1)
+#
+# Merge / revert auto-generated messages are exempt.
+# Empty commit messages are rejected.
+#
+# Install via: bash scripts/install-hooks.sh
+
+set -u
+
+msg_file="$1"
+
+# Extract the first non-empty, non-comment line as the subject.
+subject=$(grep -v '^#' "$msg_file" | sed -n '/./{p;q;}')
+
+# Reject empty messages.
+if [ -z "$subject" ]; then
+    cat >&2 <<'EOF'
+[commit-msg] Commit message is empty.
+Write a subject like:
+    td-1: brief description
+    le-1.2: brief description
+See AGENTS.md for the full convention.
+EOF
+    exit 1
+fi
+
+# Exempt merge and revert auto-messages.
+case "$subject" in
+    "Merge "*|"Revert "*)
+        exit 0
+        ;;
+esac
+
+# Validate story-ID prefix (case-insensitive).
+shopt -s nocasematch
+pattern='^(td-[0-9]+|le-[0-9]+[.-][0-9]+|fn-[0-9]+[.-][0-9]+|dl-[0-9]+[.-][0-9]+|ds-[0-9]+[.-][0-9]+):[[:space:]]+.+'
+if ! [[ "$subject" =~ $pattern ]]; then
+    cat >&2 <<EOF
+[commit-msg] Commit subject must start with a story ID prefix:
+    td-N: <summary>        (tech debt; e.g. td-1: atomic calibration flag)
+    le-X.Y: <summary>      (Layout Editor; e.g. le-1.1: layout store)
+    fn-X.Y: <summary>      (fn epic)
+    dl-X.Y: <summary>      (dl epic)
+    ds-X.Y: <summary>      (ds epic)
+
+Either '.' or '-' accepted between version numbers. Case-insensitive.
+See AGENTS.md for the full convention and rationale.
+
+Received: $subject
+EOF
+    exit 1
+fi
+
+exit 0

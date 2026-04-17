@@ -22,6 +22,7 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "esp_ota_ops.h"
 #include "esp_sntp.h"
 #include "utils/Log.h"
+#include "utils/TimeUtils.h"
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
 #include "adapters/OpenSkyFetcher.h"
@@ -33,15 +34,28 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "core/LayoutEngine.h"
 #include "core/LogoManager.h"
 #include "core/ModeOrchestrator.h"
+#include "core/OTAUpdater.h"
 #include "core/ModeRegistry.h"
 #include "modes/ClassicCardMode.h"
 #include "modes/LiveFlightCardMode.h"
 #include "modes/ClockMode.h"
 #include "modes/DeparturesBoardMode.h"
+#ifdef LE_V0_SPIKE
+#include "modes/CustomLayoutMode.h"
+#endif
 
 // Firmware version defined in platformio.ini build_flags
 #ifndef FW_VERSION
 #define FW_VERSION "0.0.0-dev"  // Fallback for IDE/testing
+#endif
+
+// GitHub repo coordinates for OTA version check (Story dl-6.1, AC #8).
+// Defined via -D build_flags in platformio.ini so forks can override without editing .cpp.
+#ifndef GITHUB_REPO_OWNER
+#define GITHUB_REPO_OWNER "LuckierTrout"
+#endif
+#ifndef GITHUB_REPO_NAME
+#define GITHUB_REPO_NAME "TheFlightWall_OSS-main"
 #endif
 
 #ifndef PIO_UNIT_TESTING
@@ -58,12 +72,19 @@ static uint32_t classicCardMemReq() { return ClassicCardMode::MEMORY_REQUIREMENT
 static uint32_t liveFlightCardMemReq() { return LiveFlightCardMode::MEMORY_REQUIREMENT; }
 static uint32_t clockMemReq() { return ClockMode::MEMORY_REQUIREMENT; }
 static uint32_t departuresBoardMemReq() { return DeparturesBoardMode::MEMORY_REQUIREMENT; }
+#ifdef LE_V0_SPIKE
+static DisplayMode* customLayoutFactory() { return new CustomLayoutMode(); }
+static uint32_t customLayoutMemReq() { return CustomLayoutMode::MEMORY_REQUIREMENT; }
+#endif
 
 static const ModeEntry MODE_TABLE[] = {
     { "classic_card",      "Classic Card",       classicCardFactory,      classicCardMemReq,      0, &ClassicCardMode::_descriptor,         nullptr },
     { "live_flight",       "Live Flight Card",   liveFlightCardFactory,   liveFlightCardMemReq,   1, &LiveFlightCardMode::_descriptor,      nullptr },
     { "clock",             "Clock",              clockFactory,            clockMemReq,            2, &ClockMode::_descriptor,               &CLOCK_SCHEMA },
     { "departures_board",  "Departures Board",   departuresBoardFactory,  departuresBoardMemReq,  3, &DeparturesBoardMode::_descriptor,     &DEPBD_SCHEMA },
+#ifdef LE_V0_SPIKE
+    { "custom_layout",     "Custom Layout (V0)", customLayoutFactory,     customLayoutMemReq,     4, &CustomLayoutMode::_descriptor,        nullptr },
+#endif
 };
 static constexpr uint8_t MODE_COUNT = sizeof(MODE_TABLE) / sizeof(MODE_TABLE[0]);
 
@@ -319,7 +340,10 @@ static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfi
            lhs.display_pin != rhs.display_pin ||
            lhs.origin_corner != rhs.origin_corner ||
            lhs.scan_dir != rhs.scan_dir ||
-           lhs.zigzag != rhs.zigzag;
+           lhs.zigzag != rhs.zigzag ||
+           lhs.zone_logo_pct != rhs.zone_logo_pct ||     // ds-3.2 synthesis: hot-reload zone layout
+           lhs.zone_split_pct != rhs.zone_split_pct ||
+           lhs.zone_layout != rhs.zone_layout;
 }
 
 static bool hardwareGeometryChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
@@ -334,10 +358,70 @@ static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConf
 {
     return lhs.origin_corner != rhs.origin_corner ||
            lhs.scan_dir != rhs.scan_dir ||
-           lhs.zigzag != rhs.zigzag;
+           lhs.zigzag != rhs.zigzag ||
+           lhs.zone_logo_pct != rhs.zone_logo_pct ||     // ds-3.2 synthesis: zone changes update _layout via reconfigureFromConfig()
+           lhs.zone_split_pct != rhs.zone_split_pct ||
+           lhs.zone_layout != rhs.zone_layout;
 }
 
 // --- Display task (Task 2) ---
+
+#ifdef LE_V0_METRICS
+// Layout-editor V0 feasibility spike instrumentation.
+// Compiled only when -DLE_V0_METRICS is set (via [env:esp32dev_le_baseline]
+// and [env:esp32dev_le_spike] in platformio.ini). Measures ModeRegistry::tick()
+// cost (which wraps the active mode's render()) and logs stats + heap every 10s.
+// See story le-0-1-layout-editor-v0-feasibility-spike.md.
+static constexpr size_t LE_V0_RING_SIZE = 128;
+static uint32_t s_leSamples[LE_V0_RING_SIZE];
+static size_t   s_leCount = 0;
+static size_t   s_leIdx = 0;
+static unsigned long s_leLastStatsMs = 0;
+
+static uint32_t s_leRecordCalls = 0;  // diagnostic: confirms record() is invoked
+static void le_v0_record(uint32_t us) {
+    s_leSamples[s_leIdx] = us;
+    s_leIdx = (s_leIdx + 1) % LE_V0_RING_SIZE;
+    if (s_leCount < LE_V0_RING_SIZE) s_leCount++;
+    s_leRecordCalls++;
+    // Fire an early sanity log so we know the instrumented path is being hit.
+    if (s_leRecordCalls == 1 || s_leRecordCalls == 20 || s_leRecordCalls == 100) {
+        Serial.printf("[LE-V0] record-hit #%u (first sample us=%u)\n",
+                      (unsigned)s_leRecordCalls, (unsigned)us);
+    }
+}
+
+static void le_v0_maybe_log(unsigned long nowMs) {
+    if (s_leLastStatsMs == 0) { s_leLastStatsMs = nowMs; return; }
+    // Shortened to 2s for spike debugging — produces data faster if the device
+    // reset-loops before the original 10s cadence can fire.
+    if (nowMs - s_leLastStatsMs < 2000UL) return;
+    s_leLastStatsMs = nowMs;
+    if (s_leCount == 0) return;
+
+    uint32_t tmp[LE_V0_RING_SIZE];
+    size_t n = s_leCount;
+    memcpy(tmp, s_leSamples, n * sizeof(uint32_t));
+    // Insertion sort (n<=128, fine at 0.1Hz log cadence).
+    for (size_t i = 1; i < n; ++i) {
+        uint32_t k = tmp[i];
+        size_t j = i;
+        while (j > 0 && tmp[j-1] > k) { tmp[j] = tmp[j-1]; --j; }
+        tmp[j] = k;
+    }
+    size_t p50 = n / 2;
+    size_t p95 = (n * 95) / 100; if (p95 >= n) p95 = n - 1;
+    uint64_t sum = 0; for (size_t i = 0; i < n; ++i) sum += tmp[i];
+    uint32_t mean = (uint32_t)(sum / n);
+    const char* modeId = ModeRegistry::getActiveModeId();
+    if (modeId == nullptr) modeId = "none";
+
+    Serial.printf("[LE-V0] mode=%s n=%u min=%uus mean=%uus p50=%uus p95=%uus max=%uus "
+                  "heap_free=%u heap_min=%u\n",
+                  modeId, (unsigned)n, tmp[0], mean, tmp[p50], tmp[p95], tmp[n-1],
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+}
+#endif // LE_V0_METRICS
 
 void displayTask(void *pvParameters)
 {
@@ -354,7 +438,9 @@ void displayTask(void *pvParameters)
     bool ctxInitialized = false;
 
     bool statusMessageVisible = false;
-    unsigned long statusMessageUntilMs = 0;
+    unsigned long statusMessageStartMs = 0;   // millis() when message was queued
+    unsigned long statusMessageDurationMs = 0; // 0 = indefinite; overflow-safe via subtraction
+    char lastStatusText[64] = {0};  // Stores last status message for redraw after rebuildMatrix
 
     // Empty flight vector for frames when queue has no data (AC #6)
     static std::vector<FlightInfo> emptyFlights;
@@ -391,6 +477,12 @@ void displayTask(void *pvParameters)
                     if (g_display.reconfigureFromConfig())
                     {
                         LOG_I("DisplayTask", "Applied matrix mapping change without reboot");
+                        // rebuildMatrix() → clear() erases the framebuffer. If a status
+                        // message was visible, redraw it so it's not silently lost.
+                        if (statusMessageVisible && lastStatusText[0] != '\0') {
+                            g_display.displayMessage(String(lastStatusText));
+                            g_display.show();
+                        }
                     }
                     else
                     {
@@ -448,28 +540,59 @@ void displayTask(void *pvParameters)
             continue;
         }
 
+#ifdef LE_V0_METRICS
+        // V0 spike measurement hack: bypass persistent startup status messages
+        // so the mode render path (and instrumented ModeRegistry::tick) runs
+        // from the first frame. The device still receives status messages but
+        // they never persist across loop iterations in the spike build. This
+        // lets us measure render cost without waiting for network fetch.
+        statusMessageVisible = false;
+#endif
+
         DisplayStatusMessage statusMessage = {};
         if (g_displayMessageQueue != nullptr &&
             xQueueReceive(g_displayMessageQueue, &statusMessage, 0) == pdTRUE)
         {
             statusMessageVisible = true;
-            statusMessageUntilMs = statusMessage.durationMs == 0
-                ? 0
-                : millis() + statusMessage.durationMs;
+            statusMessageStartMs = millis();
+            statusMessageDurationMs = statusMessage.durationMs; // 0 = indefinite
+            strncpy(lastStatusText, statusMessage.text, sizeof(lastStatusText) - 1);
+            lastStatusText[sizeof(lastStatusText) - 1] = '\0';
             g_display.displayMessage(String(statusMessage.text));
             g_display.show();
         }
 
         if (statusMessageVisible)
         {
-            if (statusMessageUntilMs == 0 || millis() < statusMessageUntilMs)
+            // Overflow-safe: unsigned subtraction wraps correctly at the 49-day millis() rollover.
+            if (statusMessageDurationMs == 0 || (millis() - statusMessageStartMs) < statusMessageDurationMs)
             {
+                // Commit any hardware-state changes (e.g. scheduler brightness update) that
+                // occurred this iteration but would otherwise be skipped by the continue below.
+                // Without this show(), a brightness change from the night scheduler won't reach
+                // the LEDs until the status message clears (which could be minutes for AP setup).
+                g_display.show();
                 esp_task_wdt_reset();
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
 
             statusMessageVisible = false;
+        }
+
+        // Story dl-7.1, AC #2 / dl-7.2, AC #8: During OTA, mode is torn down —
+        // show static message instead of calling tick() which would dereference null.
+        // When OTA fails, show distinct "Update failed" visual before pipeline resumes.
+        if (ModeRegistry::isOtaMode()) {
+            if (OTAUpdater::getState() == OTAState::ERROR) {
+                g_display.displayMessage(String("Update failed"));
+            } else {
+                g_display.displayMessage(String("Updating..."));
+            }
+            g_display.show();
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
         }
 
         // Flight pipeline: ModeRegistry::tick draws via active mode (Story ds-1.5, AC #2/#3/#5/#6)
@@ -482,7 +605,14 @@ void displayTask(void *pvParameters)
         }
 
         // Mode system renders; fallback if no active mode (AC #5)
+#ifdef LE_V0_METRICS
+        uint32_t _leT0 = micros();
+#endif
         ModeRegistry::tick(cachedCtx, *flightsPtr);
+#ifdef LE_V0_METRICS
+        le_v0_record(micros() - _leT0);
+        le_v0_maybe_log(millis());
+#endif
         if (ModeRegistry::getActiveMode() == nullptr) {
             g_display.displayFallbackCard(*flightsPtr);
         }
@@ -692,6 +822,7 @@ void setup()
 
     ConfigManager::init();
     SystemStatus::init();
+    OTAUpdater::init(GITHUB_REPO_OWNER, GITHUB_REPO_NAME);
     ModeOrchestrator::init();
 
     // ModeRegistry init (Story ds-1.3, AC #2)
@@ -745,6 +876,31 @@ void setup()
             return nullptr;
         };
 
+#ifdef LE_V0_METRICS
+        // V0 spike: force a deterministic mode per build variant so baseline vs
+        // spike measurements compare apples-to-apples. Calls ModeRegistry::requestSwitch
+        // directly — bypasses ModeOrchestrator's same-mode guard (which would skip
+        // the registry activation when the orchestrator's initial _activeModeId
+        // already matches the target).
+        (void)findModeName;
+        #ifdef LE_V0_SPIKE
+            if (!ModeRegistry::requestSwitch("custom_layout")) {
+                Serial.println("[LE-V0] Boot override FAILED: custom_layout not registered");
+            } else {
+                ModeOrchestrator::onManualSwitch("custom_layout", "Custom Layout (V0)");
+                ConfigManager::setDisplayMode("custom_layout");
+                Serial.println("[LE-V0] Boot override: forced mode = custom_layout");
+            }
+        #else
+            if (!ModeRegistry::requestSwitch("classic_card")) {
+                Serial.println("[LE-V0] Boot override FAILED: classic_card not registered");
+            } else {
+                ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
+                ConfigManager::setDisplayMode("classic_card");
+                Serial.println("[LE-V0] Boot override: forced mode = classic_card");
+            }
+        #endif
+#else
         if (g_wdtRecoveryBoot) {
             // dl-1.4, AC #1: WDT recovery — force clock unconditionally
             const char* clockName = findModeName("clock");
@@ -767,19 +923,13 @@ void setup()
                 // AC #2: valid saved mode on normal boot — restore it
                 ModeOrchestrator::onManualSwitch(savedMode.c_str(), bootModeName);
             } else {
-                // AC #3: unknown mode ID — try "clock", then "classic_card"
-                const char* clockName = findModeName("clock");
-                if (clockName) {
-                    LOG_W("Main", "Saved display mode invalid, correcting NVS to clock");
-                    ModeOrchestrator::onManualSwitch("clock", clockName);
-                    ConfigManager::setDisplayMode("clock");
-                } else {
-                    LOG_W("Main", "Saved display mode invalid, correcting NVS to classic_card");
-                    ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
-                    ConfigManager::setDisplayMode("classic_card");
-                }
+                // AC #3: unknown mode ID — fall back directly to "classic_card" and correct NVS
+                LOG_W("Main", "Saved display mode invalid, correcting NVS to classic_card");
+                ModeOrchestrator::onManualSwitch("classic_card", "Classic Card");
+                ConfigManager::setDisplayMode("classic_card");
             }
         }
+#endif
     }
 
     g_display.showLoading();
@@ -980,10 +1130,13 @@ static bool tickStartupProgress()
             }
             else if (elapsed < 4000)
             {
-                // Show IP address for discovery (use phase time to gate, not a flag)
-                if (elapsed >= 2000 && elapsed < 2100)
+                // Show IP address for discovery — guard with static flag so loop() running at
+                // thousands of iterations/second does not spam snprintf + xQueueOverwrite
+                static bool ipShown = false;
+                if (!ipShown && elapsed >= 2000)
                 {
                     queueDisplayMessage(String("IP: ") + g_wifiManager.getLocalIP(), 2000);
+                    ipShown = true;
                 }
             }
             else
@@ -1065,16 +1218,10 @@ static void tickNightScheduler() {
 
     // Convert to minutes since midnight (Rule #15)
     uint16_t nowMinutes = (uint16_t)(timeinfo.tm_hour * 60 + timeinfo.tm_min);
-    uint16_t dimStart = sched.sched_dim_start;
-    uint16_t dimEnd = sched.sched_dim_end;
 
     // Determine if current time is within the dim window
-    bool inDimWindow;
-    if (dimStart <= dimEnd) {
-        inDimWindow = (nowMinutes >= dimStart && nowMinutes < dimEnd);
-    } else {
-        inDimWindow = (nowMinutes >= dimStart || nowMinutes < dimEnd);
-    }
+    // Uses shared minutesInWindow() (Story dl-4.1, AC #8) — same convention for both schedulers
+    bool inDimWindow = minutesInWindow(nowMinutes, sched.sched_dim_start, sched.sched_dim_end);
 
     // Signal only on state transitions — not every tick.
     // AC #6 re-override is handled by display task's config-change handler:
@@ -1105,15 +1252,29 @@ void loop()
     // Night mode brightness scheduler (Story fn-2.2)
     tickNightScheduler();
 
-    // Periodic orchestrator tick for idle fallback (Story dl-1.2, AC #4)
+    // Periodic orchestrator tick for idle fallback + mode schedule (Story dl-1.2, dl-4.1)
     // Runs ~1/sec independent of fetch interval so boot + zero flights transitions
     // within ~1s, not only on the next 10+ minute fetch.
+    // Story dl-4.1, AC #3: evaluate schedule rules each ~1s tick when NTP synced.
     {
         static unsigned long s_lastOrchMs = 0;
         const unsigned long nowOrch = millis();
         if (nowOrch - s_lastOrchMs >= 1000) {
             s_lastOrchMs = nowOrch;
-            ModeOrchestrator::tick(g_flightCount.load());
+
+            // Compute NTP-gated current time for schedule evaluation (AC #3)
+            bool orchNtpSynced = g_ntpSynced.load();
+            uint16_t orchNowMin = 0;
+            if (orchNtpSynced) {
+                struct tm orchTimeinfo;
+                if (getLocalTime(&orchTimeinfo, 0)) {
+                    orchNowMin = (uint16_t)(orchTimeinfo.tm_hour * 60 + orchTimeinfo.tm_min);
+                } else {
+                    orchNtpSynced = false;  // getLocalTime failed — skip schedule this tick
+                }
+            }
+
+            ModeOrchestrator::tick(g_flightCount.load(), orchNtpSynced, orchNowMin);
         }
     }
 
@@ -1252,7 +1413,7 @@ void loop()
             else
             {
                 // No flights available — fall back to normal loading screen
-                // (display task will show showLoading() when flight list is empty)
+                // (display task calls displayFallbackCard(emptyFlights) → displayLoadingScreen)
                 queueDisplayMessage(String(""), 1);
                 LOG_I("Main", "Startup complete: no flights yet, showing loading");
             }

@@ -2712,14 +2712,6 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   var SWITCH_POLL_INTERVAL = 200;  // ms between GET polls during switch
   var SWITCH_POLL_TIMEOUT = 2000;  // max ms to poll before treating as failure
   var ERROR_DISMISS_MS = 5000;     // auto-dismiss scoped error after 5s
-  var modePickerHeading = document.getElementById('mode-picker-heading');
-
-  /** Focus the Mode Picker heading — shared hook for ds-3.6 banner dismiss (AC #4) */
-  function focusModePickerHeading() {
-    if (modePickerHeading) modePickerHeading.focus({ preventScroll: false });
-  }
-  window.focusModePickerHeading = focusModePickerHeading;
-
   // Keyboard support: Enter/Space on mode cards triggers switchMode (ds-3.5 AC #2)
   if (modeCardsList) {
     modeCardsList.addEventListener('keydown', function(e) {
@@ -2732,6 +2724,14 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       }
     });
   }
+
+  // Exposed for ds-3.6 banner dismiss — moves focus to the mode picker section heading (AC #4)
+  window.focusModePickerHeading = function() {
+    var heading = document.getElementById('mode-picker-heading');
+    if (heading && typeof heading.focus === 'function') {
+      heading.focus({ preventScroll: true });
+    }
+  };
 
   function updateModeStatus(data) {
     var activeMode = null;
@@ -2747,7 +2747,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       modeStatusName.textContent = activeMode.name;
     }
     if (modeStatusReason) {
-      modeStatusReason.textContent = data.state_reason || 'unknown';
+      // Wrap reason in parens only when non-empty; avoids orphaned "()" on screen
+      var reason = data.state_reason || '';
+      modeStatusReason.textContent = reason ? '(' + reason + ')' : '';
     }
     // Update mode cards (active state + subtitle + aria-current + tabindex)
     if (modeCardsList) {
@@ -2759,11 +2761,13 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
           cards[j].classList.add('active');
           cards[j].setAttribute('aria-current', 'true');
           cards[j].setAttribute('tabindex', '-1');
+          cards[j].removeAttribute('role'); // active cards are not actionable button targets
           if (subtitle) subtitle.textContent = data.state_reason || '';
         } else {
           cards[j].classList.remove('active');
           cards[j].removeAttribute('aria-current');
           cards[j].setAttribute('tabindex', '0');
+          cards[j].setAttribute('role', 'button'); // idle cards are keyboard-activatable (AC #1)
           if (subtitle) subtitle.textContent = '';
         }
         cards[j].classList.remove('switching');
@@ -2806,8 +2810,16 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       clearTimeout(timer);
       if (modePicker) modePicker.removeEventListener('click', dismiss);
       if (modePicker) modePicker.removeEventListener('keydown', dismiss);
-      clearCardError(card);
+      // Remove only this specific alert element — avoids clearing a newer error
+      // injected by a subsequent showCardError call on the same card.
+      if (alert.parentNode) alert.parentNode.removeChild(alert);
     }
+    // Stop click propagation on the alert itself so that clicking the error message
+    // does not bubble to the parent .mode-card and accidentally re-trigger switchMode.
+    alert.addEventListener('click', function(e) {
+      e.stopPropagation();
+      dismiss();
+    });
     var timer = setTimeout(dismiss, ERROR_DISMISS_MS);
     if (modePicker) {
       modePicker.addEventListener('click', dismiss, { once: true });
@@ -2824,17 +2836,28 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       cards[i].classList.remove('disabled');
       cards[i].removeAttribute('aria-busy');
       cards[i].removeAttribute('aria-disabled');
-      // Restore tabindex: active card gets -1, idle gets 0
+      // Restore tabindex and role: active card gets tabindex=-1 (no role); idle gets tabindex=0 + role=button
       var isActive = cards[i].classList.contains('active');
       cards[i].setAttribute('tabindex', isActive ? '-1' : '0');
+      if (isActive) {
+        cards[i].removeAttribute('role');
+      } else {
+        cards[i].setAttribute('role', 'button');
+      }
       var sub = cards[i].querySelector('.mode-card-subtitle');
-      if (sub && sub.textContent === 'Switching...') sub.textContent = '';
+      if (sub && sub.textContent === 'Switching...') {
+        // Restore the subtitle that was shown before the switch was initiated;
+        // if the device goes offline mid-failure the original state_reason is preserved.
+        sub.textContent = sub.getAttribute('data-prev-text') || '';
+        sub.removeAttribute('data-prev-text');
+      }
     }
   }
 
   function buildSchematic(zoneLayout, modeName) {
     var wrap = document.createElement('div');
     wrap.className = 'mode-schematic';
+    wrap.setAttribute('role', 'img');
     wrap.setAttribute('aria-label', 'Schematic preview of zone layout for ' + modeName);
     if (!zoneLayout || !zoneLayout.length) return wrap;
     for (var i = 0; i < zoneLayout.length; i++) {
@@ -2843,9 +2866,12 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       var cell = document.createElement('div');
       cell.className = 'mode-schematic-zone';
       cell.setAttribute('aria-hidden', 'true');
-      var cs = Math.max(1, z.relX + 1);
+      // Guard relX/relY: undefined (e.g. JSON omitting 0-value fields) → 0
+      var rx = (z.relX !== undefined && z.relX !== null) ? z.relX : 0;
+      var ry = (z.relY !== undefined && z.relY !== null) ? z.relY : 0;
+      var cs = Math.max(1, rx + 1);
       var ce = Math.min(101, cs + z.relW);
-      var rs = Math.max(1, z.relY + 1);
+      var rs = Math.max(1, ry + 1);
       var re = Math.min(101, rs + z.relH);
       cell.style.gridColumn = cs + ' / ' + ce;
       cell.style.gridRow = rs + ' / ' + re;
@@ -2857,6 +2883,147 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     return wrap;
   }
 
+  /**
+   * Build a settings panel for a mode card (Story dl-5.1, AC #3)
+   * @param {object} mode - Mode object from GET /api/display/modes
+   * @returns {HTMLElement|null} - Settings panel element or null if no settings
+   *
+   * Control types:
+   * - enum → <select> (options from enumOptions split on comma, trimmed)
+   * - uint8/uint16 → number input with min/max
+   * - bool → checkbox (value 0/1 for JSON)
+   */
+  function buildModeSettingsPanel(mode) {
+    // AC #3: Empty settings / null → no settings block
+    if (!mode.settings || !mode.settings.length) return null;
+
+    var panel = document.createElement('div');
+    panel.className = 'mode-settings-panel';
+
+    // Stop click propagation so clicking settings doesn't trigger mode switch
+    panel.addEventListener('click', function(e) {
+      e.stopPropagation();
+    });
+
+    // Track setting values for Apply button
+    var settingValues = {};
+
+    for (var i = 0; i < mode.settings.length; i++) {
+      var setting = mode.settings[i];
+      var row = document.createElement('div');
+      row.className = 'mode-setting-row';
+
+      var label = document.createElement('label');
+      label.className = 'mode-setting-label';
+      label.textContent = setting.label;
+
+      var control;
+
+      if (setting.type === 'enum') {
+        // AC #3: enum → <select> with options from enumOptions split on comma
+        control = document.createElement('select');
+        control.className = 'mode-setting-input mode-setting-select';
+        if (setting.enumOptions) {
+          var options = setting.enumOptions.split(',');
+          for (var j = 0; j < options.length; j++) {
+            var opt = document.createElement('option');
+            opt.value = j;  // Numeric value for JSON
+            opt.textContent = options[j].trim();
+            if (j === setting.value) opt.selected = true;
+            control.appendChild(opt);
+          }
+        }
+        settingValues[setting.key] = setting.value;
+        control.addEventListener('change', (function(key) {
+          return function(e) {
+            settingValues[key] = parseInt(e.target.value, 10);
+          };
+        })(setting.key));
+
+      } else if (setting.type === 'bool') {
+        // AC #3: bool → checkbox (values 0/1)
+        control = document.createElement('input');
+        control.type = 'checkbox';
+        control.className = 'mode-setting-checkbox';
+        control.checked = setting.value === 1;
+        settingValues[setting.key] = setting.value;
+        control.addEventListener('change', (function(key) {
+          return function(e) {
+            settingValues[key] = e.target.checked ? 1 : 0;
+          };
+        })(setting.key));
+
+      } else {
+        // AC #3: uint8/uint16 → number input with min/max
+        control = document.createElement('input');
+        control.type = 'number';
+        control.className = 'mode-setting-input mode-setting-number';
+        control.min = setting.min;
+        control.max = setting.max;
+        control.value = setting.value;
+        settingValues[setting.key] = setting.value;
+        control.addEventListener('change', (function(key, min, max) {
+          return function(e) {
+            var val = parseInt(e.target.value, 10);
+            if (isNaN(val)) val = min;
+            if (val < min) val = min;
+            if (val > max) val = max;
+            e.target.value = val;
+            settingValues[key] = val;
+          };
+        })(setting.key, setting.min, setting.max));
+      }
+
+      // Associate label with control
+      var controlId = 'mode-setting-' + mode.id + '-' + setting.key;
+      control.id = controlId;
+      label.setAttribute('for', controlId);
+
+      row.appendChild(label);
+      row.appendChild(control);
+      panel.appendChild(row);
+    }
+
+    // Apply button (AC #4: POST { mode, settings })
+    var actionsRow = document.createElement('div');
+    actionsRow.className = 'mode-setting-actions';
+
+    var applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'mode-setting-apply';
+    applyBtn.textContent = 'Apply';
+
+    applyBtn.addEventListener('click', function() {
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Applying...';
+
+      // AC #4: POST /api/display/mode with { mode, settings }
+      FW.post('/api/display/mode', {
+        mode: mode.id,
+        settings: settingValues
+      }).then(function(res) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply';
+        if (res.body.ok) {
+          FW.showToast('Settings applied', 'success');
+          // Reload modes to refresh current values
+          loadDisplayModes();
+        } else {
+          FW.showToast(res.body.error || 'Failed to apply settings', 'error');
+        }
+      }).catch(function() {
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply';
+        FW.showToast('Network error', 'error');
+      });
+    });
+
+    actionsRow.appendChild(applyBtn);
+    panel.appendChild(actionsRow);
+
+    return panel;
+  }
+
   function renderModeCards(data) {
     if (!modeCardsList || !data.modes) return;
     modeCardsList.innerHTML = '';
@@ -2866,11 +3033,13 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       var card = document.createElement('div');
       card.className = 'mode-card' + (isActive ? ' active' : '');
       card.setAttribute('data-mode-id', mode.id);
-      card.setAttribute('role', 'button');
       // Active card: tabindex="-1" (not in tab order as actionable); idle: tabindex="0"
       card.setAttribute('tabindex', isActive ? '-1' : '0');
       if (isActive) {
         card.setAttribute('aria-current', 'true');
+      } else {
+        // Idle cards expose role="button" so screen readers announce them as interactive (AC #1)
+        card.setAttribute('role', 'button');
       }
       var headerRow = document.createElement('div');
       headerRow.className = 'mode-card-header';
@@ -2893,8 +3062,17 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       subtitleEl.textContent = isActive ? (data.state_reason || '') : '';
       card.appendChild(subtitleEl);
       card.appendChild(buildSchematic(mode.zone_layout, mode.name));
+
+      // Story dl-5.1, AC #3: Per-mode settings panel
+      var settingsPanel = buildModeSettingsPanel(mode);
+      if (settingsPanel) {
+        card.appendChild(settingsPanel);
+      }
+
       card.addEventListener('click', (function(modeId) {
-        return function() { switchMode(modeId); };
+        return function() {
+          switchMode(modeId);
+        };
       })(mode.id));
       modeCardsList.appendChild(card);
     }
@@ -2918,11 +3096,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       if (cards[i].classList.contains('active')) {
         previousActiveId = cards[i].getAttribute('data-mode-id');
       }
-      // Don't switch to the already-active mode
-      if (cards[i].getAttribute('data-mode-id') === modeId && cards[i].classList.contains('active')) {
-        modeSwitchInFlight = false;
-        return;
-      }
+      // NOTE: Do NOT short-circuit for the already-active mode. The orchestrator
+      // may be in IDLE_FALLBACK or SCHEDULED state; the user clicking the active
+      // card must trigger a POST so the orchestrator transitions to MANUAL.
+      // (See ANTIPATTERNS ds-3.1: "Orchestrator bypassed when user re-selects
+      // the currently active mode".)
     }
 
     // Apply switching state to target, disabled to all others (AC #1, #2)
@@ -2934,10 +3112,15 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         cards[j].setAttribute('aria-busy', 'true');
         cards[j].setAttribute('tabindex', '-1');
         var sub = cards[j].querySelector('.mode-card-subtitle');
-        if (sub) sub.textContent = 'Switching...';
+        if (sub) {
+          // Store original subtitle so clearSwitchingStates can restore it on failure
+          sub.setAttribute('data-prev-text', sub.textContent);
+          sub.textContent = 'Switching...';
+        }
       } else {
         cards[j].classList.add('disabled');
-        cards[j].classList.remove('active');
+        // Do NOT remove .active here — per AC #3 the previously active card retains
+        // its active chrome until the firmware confirms success (UX-DR1).
         cards[j].setAttribute('aria-disabled', 'true');
         cards[j].setAttribute('tabindex', '-1');
       }
@@ -2947,26 +3130,43 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     FW.post('/api/display/mode', { mode: modeId }).then(function(res) {
       // HTTP error from firmware (AC #8)
       if (!res.body || !res.body.ok) {
-        modeSwitchInFlight = false;
         clearSwitchingStates();
         var errMsg = (res.body && res.body.error) ? res.body.error : 'Mode switch failed';
-        var targetCard = getModeCard(modeId);
-        showCardError(targetCard, errMsg);
-        // Reload to restore correct active state
-        loadDisplayModes();
+        // Keep modeSwitchInFlight=true until reload completes so a concurrent switch
+        // cannot race with the DOM rebuild (renderModeCards wipes switching/disabled classes).
+        loadDisplayModes().then(function() {
+          modeSwitchInFlight = false;
+          var errCard = getModeCard(modeId);
+          showCardError(errCard, errMsg);
+          if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+        }, function() {
+          modeSwitchInFlight = false;
+          var errCard = getModeCard(modeId);
+          showCardError(errCard, errMsg);
+          if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+        });
         return;
       }
 
       // Check response for immediate registry error
       var respData = res.body.data || res.body;
       if (respData.registry_error) {
-        modeSwitchInFlight = false;
         clearSwitchingStates();
         var heapMsg = (respData.registry_error.indexOf('HEAP') !== -1 || respData.registry_error.indexOf('heap') !== -1)
           ? 'Not enough memory to activate this mode. Current mode restored.'
           : respData.registry_error;
-        showCardError(getModeCard(modeId), heapMsg);
-        loadDisplayModes();
+        // Keep modeSwitchInFlight=true until reload completes to prevent concurrent switch races.
+        loadDisplayModes().then(function() {
+          modeSwitchInFlight = false;
+          var errCard = getModeCard(modeId);
+          showCardError(errCard, heapMsg);
+          if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+        }, function() {
+          modeSwitchInFlight = false;
+          var errCard = getModeCard(modeId);
+          showCardError(errCard, heapMsg);
+          if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+        });
         return;
       }
 
@@ -2978,14 +3178,26 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       }
 
       // Start polling GET /api/display/modes until settled (AC #7)
-      var pollStart = Date.now();
+      // Use attempt counter instead of Date.now() diff so background-tab
+      // setTimeout throttling (≥1000ms) does not falsely trigger timeout.
+      var pollAttempts = 0;
+      var maxPollAttempts = Math.ceil(SWITCH_POLL_TIMEOUT / SWITCH_POLL_INTERVAL);
       function pollSwitch() {
-        if (Date.now() - pollStart > SWITCH_POLL_TIMEOUT) {
+        if (pollAttempts++ >= maxPollAttempts) {
           // Timeout — treat as failure
-          modeSwitchInFlight = false;
           clearSwitchingStates();
-          showCardError(getModeCard(modeId), 'Mode switch timed out. Current mode restored.');
-          loadDisplayModes();
+          // Keep modeSwitchInFlight=true until reload completes to prevent concurrent switch races.
+          loadDisplayModes().then(function() {
+            modeSwitchInFlight = false;
+            var errCard = getModeCard(modeId);
+            showCardError(errCard, 'Mode switch timed out. Current mode restored.');
+            if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+          }, function() {
+            modeSwitchInFlight = false;
+            var errCard = getModeCard(modeId);
+            showCardError(errCard, 'Mode switch timed out. Current mode restored.');
+            if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
+          });
           return;
         }
         FW.get('/api/display/modes').then(function(pollRes) {
@@ -3004,9 +3216,13 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
             var msg = (d.registry_error.indexOf('HEAP') !== -1 || d.registry_error.indexOf('heap') !== -1)
               ? 'Not enough memory to activate this mode. Current mode restored.'
               : d.registry_error;
-            showCardError(getModeCard(modeId), msg);
+            // Render cards first (rebuilds DOM), then attach error to freshly rendered card
             renderModeCards(d);
             updateModeStatus(d);
+            var errCard = getModeCard(modeId);
+            showCardError(errCard, msg);
+            // Restore keyboard focus to the affected card so users can read the inline error (ds-3.5)
+            if (errCard && typeof errCard.focus === 'function') errCard.focus({ preventScroll: true });
             return;
           }
 
@@ -3014,7 +3230,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
           if (ss === 'idle' && d.active === modeId) {
             renderModeCards(d);
             updateModeStatus(d);
-            finalizeModeSwitch(modeId, previousActiveId);
+            finalizeModeSwitch(modeId, previousActiveId, true); // cards already rendered
             return;
           }
 
@@ -3022,9 +3238,13 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
           if (ss === 'idle' && d.active !== modeId) {
             modeSwitchInFlight = false;
             clearSwitchingStates();
-            showCardError(getModeCard(modeId), 'Mode switch failed. Current mode restored.');
+            // Render cards first (rebuilds DOM), then attach error to freshly rendered card
             renderModeCards(d);
             updateModeStatus(d);
+            var errCard2 = getModeCard(modeId);
+            showCardError(errCard2, 'Mode switch failed. Current mode restored.');
+            // Restore keyboard focus to the affected card so users can read the inline error (ds-3.5)
+            if (errCard2 && typeof errCard2.focus === 'function') errCard2.focus({ preventScroll: true });
             return;
           }
 
@@ -3038,165 +3258,152 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
 
     }).catch(function() {
-      // Network failure (AC #6) — clear states, reload, toast
+      // Network failure (AC #6) — clear states, reload.
+      // loadDisplayModes() shows its own connectivity toast on failure, so we do
+      // not emit a separate toast here to avoid double-toasting when the device
+      // is unreachable.
       modeSwitchInFlight = false;
       clearSwitchingStates();
-      FW.showToast('Cannot reach device. Check connection.', 'error');
       loadDisplayModes();
     });
   }
 
-  /** Finalize a successful mode switch — update UI, move focus (AC #3, UX-DR6) */
-  function finalizeModeSwitch(newActiveId, previousActiveId) {
-    modeSwitchInFlight = false;
-    // Reload full card state to get correct active chrome
-    loadDisplayModes().then(function() {
-      // Focus management (UX-DR6): move focus to the previously-active (now idle) card
-      if (previousActiveId) {
-        var prevCard = getModeCard(previousActiveId);
-        if (prevCard && typeof prevCard.focus === 'function') {
-          prevCard.focus({ preventScroll: true });
+  /** Finalize a successful mode switch — update UI, move focus (AC #3, UX-DR6).
+   *  @param {boolean} [skipReload] Pass true when cards were already re-rendered
+   *    by the caller (poll-success path) to avoid a redundant GET /api/display/modes. */
+  function finalizeModeSwitch(newActiveId, previousActiveId, skipReload) {
+    function doFocus() {
+      // Focus the newly activated card so keyboard users land on the confirmed
+      // active selection. (Focusing previousActiveId was a logic error — the
+      // previous card is no longer the relevant target after a successful switch.)
+      if (newActiveId) {
+        var newCard = getModeCard(newActiveId);
+        if (newCard && typeof newCard.focus === 'function') {
+          newCard.focus({ preventScroll: true });
         }
       }
-    });
+    }
+    if (skipReload) {
+      // DOM already rebuilt by the poll success path — safe to unlock immediately.
+      modeSwitchInFlight = false;
+      doFocus();
+    } else {
+      // Keep modeSwitchInFlight=true until the DOM rebuild completes so a
+      // concurrent switch cannot race with the loadDisplayModes() GET response
+      // and overwrite the new switching/disabled visual state mid-render.
+      clearSwitchingStates();
+      loadDisplayModes().then(function() {
+        modeSwitchInFlight = false;
+        doFocus();
+      }, function() {
+        modeSwitchInFlight = false;
+      });
+    }
   }
 
   // --- Upgrade Notification Banner (Story ds-3.6) ---
-  var upgradeBannerHost = document.getElementById('mode-upgrade-banner-host');
-  var upgradeBannerShown = false;
-  var lastModesData = null; // cache for banner Try action
 
-  /**
-   * dismissAndClearUpgrade — shared dismiss pipeline (AC #4)
-   * 1. localStorage.setItem("mode_notif_seen", "true")
-   * 2. POST /api/display/notification/dismiss
-   * 3. Remove banner from DOM
-   */
   function dismissAndClearUpgrade() {
     localStorage.setItem('mode_notif_seen', 'true');
-    FW.post('/api/display/notification/dismiss', {}).catch(function() {
-      // best-effort — localStorage already set, banner already gone
-    });
-    if (upgradeBannerHost) {
-      upgradeBannerHost.innerHTML = '';
+    FW.post('/api/display/notification/dismiss', {}).catch(function() {});
+    var host = document.getElementById('mode-upgrade-banner-host');
+    if (host) {
+      var banner = host.querySelector('.banner-info');
+      if (banner) banner.parentNode.removeChild(banner);
     }
-    upgradeBannerShown = false;
   }
 
-  /**
-   * maybeShowModeUpgradeBanner(data) — show one-time upgrade banner (AC #1–#10)
-   * Called from loadDisplayModes success path after data validated.
-   */
   function maybeShowModeUpgradeBanner(data) {
-    // AC #3: don't show if flag is false or already dismissed
-    if (!data.upgrade_notification) return;
+    if (!data || !data.upgrade_notification) return;
+    // Check both current key and legacy key (D7 documented 'flightwall_mode_notif_seen')
     if (localStorage.getItem('mode_notif_seen') === 'true') return;
-    // Only show once per page load
-    if (upgradeBannerShown) return;
-    if (!upgradeBannerHost) return;
+    if (localStorage.getItem('flightwall_mode_notif_seen') === 'true') return;
+    var host = document.getElementById('mode-upgrade-banner-host');
+    if (!host) return;
+    // Clear any stale banner before inserting a fresh one
+    host.innerHTML = '';
 
-    upgradeBannerShown = true;
-    lastModesData = data;
-
-    // Build banner (AC #9, #10)
     var banner = document.createElement('div');
     banner.className = 'banner-info';
     banner.setAttribute('role', 'region');
     banner.setAttribute('aria-labelledby', 'mode-upgrade-banner-title');
 
-    var bannerContent = document.createElement('div');
-    bannerContent.className = 'banner-info-content';
-
-    var title = document.createElement('strong');
+    var title = document.createElement('span');
     title.id = 'mode-upgrade-banner-title';
     title.textContent = 'New display modes available';
-    bannerContent.appendChild(title);
 
     var actions = document.createElement('div');
-    actions.className = 'banner-info-actions';
+    actions.className = 'banner-actions';
 
-    // Primary: "Try Live Flight Card" (AC #6)
-    var btnTry = document.createElement('button');
-    btnTry.type = 'button';
-    btnTry.className = 'apply-btn banner-info-btn-primary';
-    btnTry.textContent = 'Try Live Flight Card';
-    btnTry.addEventListener('click', function() {
-      // Check if live_flight is in data.modes (AC #7 — unregistered guard)
-      var modeAvailable = false;
-      if (lastModesData && lastModesData.modes) {
-        for (var i = 0; i < lastModesData.modes.length; i++) {
-          if (lastModesData.modes[i].id === 'live_flight') {
-            modeAvailable = true;
-            break;
-          }
-        }
-      }
-      if (!modeAvailable) {
-        // Mode not registered — dismiss + toast (AC #7)
-        dismissAndClearUpgrade();
+    // Primary action — Try Live Flight Card (AC #6, #7)
+    // Delegates to switchMode() to reuse ds-3.4 polling, in-flight locking,
+    // error handling, and focus management (Synthesis fix: avoid duplication)
+    var tryBtn = document.createElement('button');
+    tryBtn.type = 'button';
+    tryBtn.className = 'btn-primary-inline';
+    tryBtn.textContent = 'Try Live Flight Card';
+    tryBtn.addEventListener('click', function() {
+      var hasLiveFlight = data.modes && data.modes.some(function(m) { return m.id === 'live_flight'; });
+      if (!hasLiveFlight) {
+        // Mode not registered in last GET — dismiss + toast (AC #7)
         FW.showToast('Mode not available', 'error');
+        dismissAndClearUpgrade();
         return;
       }
-      // Use the same code path as Mode Picker (AC #6)
+      // Dismiss banner immediately before initiating switch (AC #4, #7)
+      // The switchMode() orchestrator handles all error feedback via mode picker
       dismissAndClearUpgrade();
-      FW.post('/api/display/mode', { mode: 'live_flight' }).then(function(res) {
-        if (!res.body || !res.body.ok) {
-          FW.showToast('Mode not available', 'error');
-          loadDisplayModes();
-          return;
-        }
-        loadDisplayModes();
-      }).catch(function() {
-        FW.showToast('Mode not available', 'error');
-        loadDisplayModes();
-      });
+      // Delegate to switchMode() — reuses ds-3.4 polling, timeout handling,
+      // in-flight guard, registry_error detection, and focus choreography
+      switchMode('live_flight');
     });
-    actions.appendChild(btnTry);
 
-    // "Browse Modes" (AC #2, #8)
-    var btnBrowse = document.createElement('button');
-    btnBrowse.type = 'button';
-    btnBrowse.className = 'link-btn';
-    btnBrowse.textContent = 'Browse Modes';
-    btnBrowse.addEventListener('click', function() {
-      var target = document.getElementById('mode-picker') || document.getElementById('mode-picker-heading');
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Secondary action — Browse Modes (AC #8)
+    var browseBtn = document.createElement('button');
+    browseBtn.type = 'button';
+    browseBtn.className = 'link-btn';
+    browseBtn.textContent = 'Browse Modes';
+    browseBtn.addEventListener('click', function() {
+      var picker = document.getElementById('mode-picker');
+      if (picker) picker.scrollIntoView({ behavior: 'smooth', block: 'start' });
       dismissAndClearUpgrade();
     });
-    actions.appendChild(btnBrowse);
 
-    bannerContent.appendChild(actions);
-    banner.appendChild(bannerContent);
-
-    // Dismiss (X) button (AC #2, #5)
-    var btnDismiss = document.createElement('button');
-    btnDismiss.type = 'button';
-    btnDismiss.className = 'dismiss-btn';
-    btnDismiss.setAttribute('aria-label', 'Dismiss new display modes notification');
-    btnDismiss.innerHTML = '&times;';
-    btnDismiss.addEventListener('click', function() {
+    // Dismiss control — × (AC #4, #5)
+    var dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'dismiss-btn';
+    dismissBtn.setAttribute('aria-label', 'Dismiss new display modes notification');
+    dismissBtn.innerHTML = '&times;';
+    dismissBtn.addEventListener('click', function() {
       dismissAndClearUpgrade();
-      // AC #5: move focus to mode-picker-heading after dismiss
-      focusModePickerHeading();
+      // Move focus to #mode-picker-heading per AC #5 / UX-DR6
+      var heading = document.getElementById('mode-picker-heading');
+      if (heading) heading.focus();
     });
-    banner.appendChild(btnDismiss);
 
-    upgradeBannerHost.innerHTML = '';
-    upgradeBannerHost.appendChild(banner);
+    actions.appendChild(tryBtn);
+    actions.appendChild(browseBtn);
+    banner.appendChild(title);
+    banner.appendChild(actions);
+    banner.appendChild(dismissBtn);
+    host.appendChild(banner);
   }
 
   function loadDisplayModes() {
     return FW.get('/api/display/modes').then(function(res) {
       if (!res.body || !res.body.ok || !res.body.data) {
         FW.showToast('Failed to load display modes', 'error');
-        return;
+        return null;
       }
       var data = res.body.data;
       renderModeCards(data);
       updateModeStatus(data);
-      maybeShowModeUpgradeBanner(data);
+      maybeShowModeUpgradeBanner(data); // AC #1 — show banner on first eligible load
+      return data; // expose data so callers can reuse modes list (e.g. loadScheduleRules)
     }).catch(function() {
       FW.showToast('Cannot reach device to load display modes. Check connection.', 'error');
+      return null;
     });
   }
 
@@ -3488,6 +3695,265 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     poll();
   }
 
+  // --- OTA Update Check (Story dl-6.2) ---
+  var btnCheckUpdate = document.getElementById('btn-check-update');
+  var otaUpdateBanner = document.getElementById('ota-update-banner');
+  var otaUpdateText = document.getElementById('ota-update-text');
+  var btnToggleNotes = document.getElementById('btn-toggle-notes');
+  var otaReleaseNotes = document.getElementById('ota-release-notes');
+  var otaNotesContent = document.getElementById('ota-notes-content');
+  var btnUpdateNow = document.getElementById('btn-update-now');
+  var otaUptodate = document.getElementById('ota-uptodate');
+  var otaUptodateText = document.getElementById('ota-uptodate-text');
+
+  function hideOtaResults() {
+    otaUpdateBanner.style.display = 'none';
+    otaUptodate.style.display = 'none';
+    otaReleaseNotes.style.display = 'none';
+    if (btnToggleNotes) {
+      btnToggleNotes.setAttribute('aria-expanded', 'false');
+      btnToggleNotes.textContent = 'View Release Notes';
+    }
+  }
+
+  if (btnCheckUpdate) {
+    btnCheckUpdate.addEventListener('click', function() {
+      btnCheckUpdate.disabled = true;
+      btnCheckUpdate.textContent = 'Checking\u2026';
+      hideOtaResults();
+
+      FW.get('/api/ota/check').then(function(res) {
+        btnCheckUpdate.disabled = false;
+        btnCheckUpdate.textContent = 'Check for Updates';
+
+        if (!res.body || !res.body.ok || !res.body.data) {
+          FW.showToast('Update check failed', 'error');
+          return;
+        }
+
+        var d = res.body.data;
+
+        if (d.error) {
+          // AC #7: check failed — show error toast, no banner
+          FW.showToast(d.error, 'error');
+          return;
+        }
+
+        if (d.available) {
+          // AC #5: update available — show banner
+          otaUpdateText.textContent = 'Firmware ' + d.version + ' available \u2014 you\u2019re running ' + d.current_version;
+          if (d.release_notes) {
+            otaNotesContent.textContent = d.release_notes;
+            btnToggleNotes.style.display = '';
+          } else {
+            btnToggleNotes.style.display = 'none';
+          }
+          otaUpdateBanner.style.display = '';
+          otaUptodate.style.display = 'none';
+        } else {
+          // AC #6: up to date
+          otaUptodateText.textContent = 'Firmware is up to date (v' + d.current_version + ')';
+          otaUptodate.style.display = '';
+          otaUpdateBanner.style.display = 'none';
+        }
+      }).catch(function() {
+        btnCheckUpdate.disabled = false;
+        btnCheckUpdate.textContent = 'Check for Updates';
+        FW.showToast('Cannot reach device', 'error');
+      });
+    });
+  }
+
+  // Release notes expand/collapse (AC #8)
+  if (btnToggleNotes) {
+    btnToggleNotes.addEventListener('click', function() {
+      var expanded = btnToggleNotes.getAttribute('aria-expanded') === 'true';
+      btnToggleNotes.setAttribute('aria-expanded', String(!expanded));
+      otaReleaseNotes.style.display = expanded ? 'none' : '';
+      btnToggleNotes.textContent = expanded ? 'View Release Notes' : 'Hide Release Notes';
+    });
+    btnToggleNotes.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        btnToggleNotes.click();
+      }
+    });
+  }
+
+  // --- OTA Pull Download (Story dl-7.3, AC #4–#9) ---
+  var otaPullProgress = document.getElementById('ota-pull-progress');
+  var otaPullStatus = document.getElementById('ota-pull-status');
+  var otaPullBarWrap = document.getElementById('ota-pull-bar-wrap');
+  var otaPullBar = document.getElementById('ota-pull-bar');
+  var otaPullPct = document.getElementById('ota-pull-pct');
+  var otaPullError = document.getElementById('ota-pull-error');
+  var btnOtaRetry = document.getElementById('btn-ota-retry');
+  var OTA_POLL_INTERVAL = 500; // AC #4: 500ms poll interval
+  var otaPollTimer = null;
+
+  function resetOtaPullState() {
+    if (otaPollTimer) { clearInterval(otaPollTimer); otaPollTimer = null; }
+    otaPullProgress.style.display = 'none';
+    otaPullBar.style.width = '0%';
+    otaPullBarWrap.setAttribute('aria-valuenow', '0');
+    otaPullBarWrap.classList.remove('indeterminate');
+    otaPullPct.textContent = '0%';
+    otaPullStatus.textContent = '';
+    otaPullError.style.display = 'none';
+    otaPullError.textContent = '';
+    btnOtaRetry.style.display = 'none';
+  }
+
+  function startOtaPull() {
+    resetOtaPullState();
+    otaPullProgress.style.display = '';
+    otaPullStatus.textContent = 'Starting download\u2026';
+    otaUpdateBanner.style.display = 'none';
+    if (btnUpdateNow) btnUpdateNow.disabled = true;
+
+    FW.post('/api/ota/pull', {}).then(function(res) {
+      if (!res.body || !res.body.ok) {
+        var errMsg = (res.body && res.body.error) ? res.body.error : 'Could not start download';
+        otaPullStatus.textContent = '';
+        otaPullError.textContent = errMsg;
+        otaPullError.style.display = '';
+        if (btnUpdateNow) btnUpdateNow.disabled = false;
+        return;
+      }
+      // Download started — begin polling (AC #4)
+      startOtaPollLoop();
+    }).catch(function() {
+      otaPullStatus.textContent = '';
+      otaPullError.textContent = 'Cannot reach device \u2014 check connection';
+      otaPullError.style.display = '';
+      if (btnUpdateNow) btnUpdateNow.disabled = false;
+    });
+  }
+
+  function startOtaPollLoop() {
+    if (otaPollTimer) clearTimeout(otaPollTimer);
+    otaPollTimer = null;
+    pollOtaStatus(); // Start first poll immediately
+  }
+
+  function pollOtaStatus() {
+    FW.get('/api/ota/status').then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) return;
+      var d = res.body.data;
+
+      if (d.state === 'downloading') {
+        // AC #5: progress bar 0–100
+        var pct = (d.progress != null) ? d.progress : 0;
+        otaPullBar.style.width = pct + '%';
+        otaPullBarWrap.setAttribute('aria-valuenow', String(pct));
+        otaPullBarWrap.classList.remove('indeterminate');
+        otaPullPct.textContent = pct + '%';
+        otaPullStatus.textContent = 'Downloading firmware\u2026';
+        otaPullError.style.display = 'none';
+        btnOtaRetry.style.display = 'none';
+        // Schedule next poll (recursive setTimeout pattern)
+        otaPollTimer = setTimeout(pollOtaStatus, OTA_POLL_INTERVAL);
+
+      } else if (d.state === 'verifying') {
+        // AC #6: indeterminate verification phase
+        otaPullBarWrap.classList.add('indeterminate');
+        otaPullPct.textContent = 'Verifying\u2026';
+        otaPullStatus.textContent = 'Verifying firmware integrity\u2026';
+        otaPullError.style.display = 'none';
+        btnOtaRetry.style.display = 'none';
+        // Continue polling during verification
+        otaPollTimer = setTimeout(pollOtaStatus, OTA_POLL_INTERVAL);
+
+      } else if (d.state === 'rebooting') {
+        // AC #7: stop polling, show rebooting message
+        if (otaPollTimer) { clearTimeout(otaPollTimer); otaPollTimer = null; }
+        otaPullBarWrap.classList.remove('indeterminate');
+        otaPullBar.style.width = '100%';
+        otaPullPct.textContent = '100%';
+        otaPullStatus.textContent = 'Rebooting\u2026';
+        // Grace period then poll for device return (reuse existing reboot polling)
+        setTimeout(function() {
+          otaPullStatus.textContent = 'Waiting for device\u2026';
+          startOtaPullRebootPolling();
+        }, 3000);
+
+      } else if (d.state === 'error') {
+        // AC #8: error with optional retry
+        if (otaPollTimer) { clearTimeout(otaPollTimer); otaPollTimer = null; }
+        otaPullBarWrap.classList.remove('indeterminate');
+        otaPullStatus.textContent = 'Update failed';
+        otaPullError.textContent = d.error || 'Download failed';
+        otaPullError.style.display = '';
+        // Show retry if retriable (AC #8)
+        if (d.retriable) {
+          btnOtaRetry.style.display = '';
+        }
+        if (btnUpdateNow) btnUpdateNow.disabled = false;
+
+      } else if (d.state === 'idle' || d.state === 'available') {
+        // Terminal idle after success or no-op — stop polling
+        if (otaPollTimer) { clearTimeout(otaPollTimer); otaPollTimer = null; }
+        if (btnUpdateNow) btnUpdateNow.disabled = false;
+      }
+    }).catch(function() {
+      // Fetch failure during poll — may be device rebooting (AC #7)
+      if (otaPollTimer) { clearTimeout(otaPollTimer); otaPollTimer = null; }
+      otaPullStatus.textContent = 'Device disconnected \u2014 may be rebooting\u2026';
+      setTimeout(function() {
+        startOtaPullRebootPolling();
+      }, 2000);
+    });
+  }
+
+  function startOtaPullRebootPolling() {
+    var attempts = 0;
+    var maxAttempts = 20;
+    var done = false;
+    function poll() {
+      if (done) return;
+      if (attempts >= maxAttempts) {
+        done = true;
+        otaPullStatus.textContent = 'Device unreachable \u2014 try refreshing.';
+        otaPullStatus.style.color = getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#d29922';
+        if (btnUpdateNow) btnUpdateNow.disabled = false;
+        return;
+      }
+      attempts++;
+      FW.get('/api/status?_=' + Date.now()).then(function(res) {
+        if (done) return;
+        if (res.body && res.body.ok && res.body.data) {
+          done = true;
+          // AC #9: new firmware version, hide update banner
+          var newVersion = res.body.data.firmware_version || '';
+          FW.showToast('Updated to v' + newVersion, 'success');
+          fwVersion.textContent = 'Version: v' + newVersion;
+          resetOtaPullState();
+          hideOtaResults();
+          if (btnUpdateNow) btnUpdateNow.disabled = false;
+        } else {
+          setTimeout(poll, 3000);
+        }
+      }).catch(function() {
+        if (!done) setTimeout(poll, 3000);
+      });
+    }
+    poll();
+  }
+
+  // "Update Now" triggers OTA pull download (AC #4)
+  if (btnUpdateNow) {
+    btnUpdateNow.addEventListener('click', function() {
+      startOtaPull();
+    });
+  }
+
+  // Retry button (AC #8)
+  if (btnOtaRetry) {
+    btnOtaRetry.addEventListener('click', function() {
+      startOtaPull();
+    });
+  }
+
   // --- Settings Export (Story fn-1.6) ---
   var btnExportSettings = document.getElementById('btn-export-settings');
   if (btnExportSettings) {
@@ -3554,6 +4020,215 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   // Kick off initial status poll; subsequent polls are scheduled recursively.
   updateNmStatus();
 
+  // --- Mode Schedule card (Story dl-4.2) ---
+  var schedRulesList = document.getElementById('sched-rules-list');
+  var schedEmptyState = document.getElementById('sched-empty-state');
+  var schedOrchBadge = document.getElementById('sched-orch-badge');
+  var btnAddRule = document.getElementById('btn-add-rule');
+  var schedModes = [];      // populated from /api/display/modes
+  var schedRulesData = [];  // current schedule rules from API
+  var schedActiveIdx = -1;
+  var schedOrchState = 'manual';
+
+  /** Load schedule rules. Pass pre-loaded modesData to skip duplicate GET /api/display/modes. */
+  function loadScheduleRules(modesData) {
+    // Reuse caller-supplied modes list if available; otherwise fetch independently
+    var modesStep;
+    if (modesData && modesData.modes) {
+      schedModes = modesData.modes;
+      modesStep = Promise.resolve();
+    } else {
+      modesStep = FW.get('/api/display/modes').then(function(modesRes) {
+        if (modesRes.body && modesRes.body.ok && modesRes.body.data && modesRes.body.data.modes) {
+          schedModes = modesRes.body.data.modes;
+        }
+      });
+    }
+    return modesStep.then(function() {
+      return FW.get('/api/schedule');
+    }).then(function(res) {
+      if (!res.body || !res.body.ok || !res.body.data) {
+        FW.showToast('Failed to load schedule', 'error');
+        return;
+      }
+      var d = res.body.data;
+      schedRulesData = d.rules || [];
+      schedActiveIdx = typeof d.active_rule_index === 'number' ? d.active_rule_index : -1;
+      schedOrchState = d.orchestrator_state || 'manual';
+      renderScheduleUI();
+    }).catch(function() {
+      FW.showToast('Cannot load schedule', 'error');
+    });
+  }
+
+  function renderScheduleUI() {
+    // Update orchestrator badge
+    if (schedOrchBadge) {
+      if (schedOrchState === 'scheduled') {
+        schedOrchBadge.textContent = 'Scheduled';
+        schedOrchBadge.className = 'sched-orch-badge sched-orch-scheduled';
+      } else {
+        schedOrchBadge.textContent = 'State: ' + schedOrchState.replace(/_/g, ' ');
+        schedOrchBadge.className = 'sched-orch-badge sched-orch-manual';
+      }
+    }
+
+    // Clear existing rows (keep empty state element)
+    var rows = schedRulesList.querySelectorAll('.sched-rule-row');
+    for (var i = 0; i < rows.length; i++) rows[i].remove();
+
+    if (schedRulesData.length === 0) {
+      if (schedEmptyState) schedEmptyState.style.display = '';
+      return;
+    }
+    if (schedEmptyState) schedEmptyState.style.display = 'none';
+
+    for (var r = 0; r < schedRulesData.length; r++) {
+      schedRulesList.appendChild(buildRuleRow(r, schedRulesData[r]));
+    }
+  }
+
+  function buildRuleRow(idx, rule) {
+    var row = document.createElement('div');
+    row.className = 'sched-rule-row';
+    if (schedOrchState === 'scheduled' && idx === schedActiveIdx) {
+      row.className += ' sched-rule-active';
+    }
+
+    // Start time
+    var times = document.createElement('div');
+    times.className = 'sched-rule-times';
+    var startInput = document.createElement('input');
+    startInput.type = 'time';
+    startInput.value = minutesToTime(rule.start_min);
+    startInput.setAttribute('data-idx', idx);
+    startInput.setAttribute('data-field', 'start_min');
+    startInput.addEventListener('change', onScheduleRuleChange);
+    var sep = document.createElement('span');
+    sep.textContent = '\u2013';
+    var endInput = document.createElement('input');
+    endInput.type = 'time';
+    endInput.value = minutesToTime(rule.end_min);
+    endInput.setAttribute('data-idx', idx);
+    endInput.setAttribute('data-field', 'end_min');
+    endInput.addEventListener('change', onScheduleRuleChange);
+    times.appendChild(startInput);
+    times.appendChild(sep);
+    times.appendChild(endInput);
+
+    // Mode dropdown
+    var modeWrap = document.createElement('div');
+    modeWrap.className = 'sched-rule-mode';
+    var modeSelect = document.createElement('select');
+    for (var m = 0; m < schedModes.length; m++) {
+      var opt = document.createElement('option');
+      opt.value = schedModes[m].id;
+      opt.textContent = schedModes[m].name;
+      if (schedModes[m].id === rule.mode_id) opt.selected = true;
+      modeSelect.appendChild(opt);
+    }
+    modeSelect.setAttribute('data-idx', idx);
+    modeSelect.setAttribute('data-field', 'mode_id');
+    modeSelect.addEventListener('change', onScheduleRuleChange);
+    modeWrap.appendChild(modeSelect);
+
+    // Enabled toggle
+    var toggleWrap = document.createElement('div');
+    toggleWrap.className = 'sched-rule-toggle';
+    var enabledCb = document.createElement('input');
+    enabledCb.type = 'checkbox';
+    enabledCb.checked = rule.enabled === 1;
+    enabledCb.setAttribute('data-idx', idx);
+    enabledCb.setAttribute('data-field', 'enabled');
+    enabledCb.addEventListener('change', onScheduleRuleChange);
+    var enabledLabel = document.createElement('span');
+    enabledLabel.textContent = 'On';
+    enabledLabel.style.fontSize = '0.8125rem';
+    toggleWrap.appendChild(enabledCb);
+    toggleWrap.appendChild(enabledLabel);
+
+    // Delete button
+    var delBtn = document.createElement('button');
+    delBtn.className = 'sched-rule-del';
+    delBtn.textContent = '\u00d7';
+    delBtn.title = 'Delete rule';
+    delBtn.setAttribute('data-idx', idx);
+    delBtn.addEventListener('click', onScheduleRuleDelete);
+
+    row.appendChild(times);
+    row.appendChild(modeWrap);
+    row.appendChild(toggleWrap);
+    row.appendChild(delBtn);
+    return row;
+  }
+
+  function onScheduleRuleChange(e) {
+    var idx = parseInt(e.target.getAttribute('data-idx'), 10);
+    var field = e.target.getAttribute('data-field');
+    if (idx < 0 || idx >= schedRulesData.length) return;
+
+    if (field === 'start_min') {
+      schedRulesData[idx].start_min = timeToMinutes(e.target.value);
+    } else if (field === 'end_min') {
+      schedRulesData[idx].end_min = timeToMinutes(e.target.value);
+    } else if (field === 'mode_id') {
+      schedRulesData[idx].mode_id = e.target.value;
+    } else if (field === 'enabled') {
+      schedRulesData[idx].enabled = e.target.checked ? 1 : 0;
+    }
+    saveScheduleRules();
+  }
+
+  function onScheduleRuleDelete(e) {
+    var idx = parseInt(e.target.getAttribute('data-idx'), 10);
+    if (idx < 0 || idx >= schedRulesData.length) return;
+    schedRulesData.splice(idx, 1);
+    saveScheduleRules();
+  }
+
+  function saveScheduleRules() {
+    // Build compacted rules payload (AC #5: no gaps, full replacement)
+    var payload = { rules: [] };
+    for (var i = 0; i < schedRulesData.length; i++) {
+      var r = schedRulesData[i];
+      payload.rules.push({
+        start_min: r.start_min,
+        end_min: r.end_min,
+        mode_id: r.mode_id,
+        enabled: r.enabled
+      });
+    }
+    FW.post('/api/schedule', payload).then(function(res) {
+      if (res.body && res.body.ok) {
+        FW.showToast('Schedule saved', 'success');
+        // Re-fetch to get updated active_rule_index / orchestrator_state
+        loadScheduleRules();
+      } else {
+        FW.showToast(res.body.error || 'Failed to save schedule', 'error');
+      }
+    }).catch(function() {
+      FW.showToast('Network error saving schedule', 'error');
+    });
+  }
+
+  if (btnAddRule) {
+    btnAddRule.addEventListener('click', function() {
+      if (schedRulesData.length >= 8) {
+        FW.showToast('Maximum 8 rules allowed', 'error');
+        return;
+      }
+      // Default new rule: 08:00–17:00, first available mode, enabled
+      var defaultModeId = schedModes.length > 0 ? schedModes[0].id : 'classic_card';
+      schedRulesData.push({
+        start_min: 480,
+        end_min: 1020,
+        mode_id: defaultModeId,
+        enabled: 1
+      });
+      saveScheduleRules();
+    });
+  }
+
   // --- Init ---
   var settingsPromise = loadSettings();
 
@@ -3562,6 +4237,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
 
   // Load display modes on page load (Story dl-1.5)
   loadDisplayModes();
+
+  // Load schedule rules on page load (Story dl-4.2)
+  loadScheduleRules();
 
   // Load the logo list on page load
   loadLogoList();

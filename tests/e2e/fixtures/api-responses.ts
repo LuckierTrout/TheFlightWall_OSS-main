@@ -122,6 +122,22 @@ export interface LogosData {
   };
 }
 
+// Display modes types (ds-3.3, ds-3.4, ds-3.6)
+export interface DisplayMode {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+}
+
+export interface DisplayModesData {
+  modes: DisplayMode[];
+  active_mode: string;
+  switch_state: 'idle' | 'switching';
+  upgrade_notification: boolean;
+  registry_error?: string;
+}
+
 // ============================================================================
 // Default Mock Responses
 // ============================================================================
@@ -266,6 +282,45 @@ export const LOGOS_DATA: LogosData = {
     total: 1900000,
     logo_count: 4,
   },
+};
+
+/**
+ * Default display modes (ds-3.3, ds-3.4, ds-3.6).
+ * Includes classic_card (active), live_flight, and minimal modes.
+ */
+export const DEFAULT_DISPLAY_MODES: DisplayModesData = {
+  modes: [
+    {
+      id: 'classic_card',
+      name: 'Classic Card',
+      description: 'Traditional flight card display',
+      active: true,
+    },
+    {
+      id: 'live_flight',
+      name: 'Live Flight Card',
+      description: 'Real-time flight tracking with live updates',
+      active: false,
+    },
+    {
+      id: 'minimal',
+      name: 'Minimal',
+      description: 'Clean, minimal display',
+      active: false,
+    },
+  ],
+  active_mode: 'classic_card',
+  switch_state: 'idle',
+  upgrade_notification: false,
+};
+
+/**
+ * Display modes with upgrade notification enabled (ds-3.6).
+ * Use for testing the upgrade banner visibility.
+ */
+export const DISPLAY_MODES_WITH_UPGRADE: DisplayModesData = {
+  ...DEFAULT_DISPLAY_MODES,
+  upgrade_notification: true,
 };
 
 // ============================================================================

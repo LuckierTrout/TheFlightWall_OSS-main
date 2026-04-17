@@ -36,6 +36,13 @@ const MODE = (args.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'sta')
 // Mock Device State
 // ============================================================================
 
+interface DisplayMode {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+}
+
 interface DeviceState {
   settings: {
     brightness: number;
@@ -75,6 +82,14 @@ interface DeviceState {
   wifiNetworks: Array<{ ssid: string; rssi: number; encryption: number; channel: number }>;
   logos: Array<{ name: string; size: number }>;
   isScanning: boolean;
+  // Display modes state (ds-3.3, ds-3.4, ds-3.6)
+  displayModes: {
+    modes: DisplayMode[];
+    active_mode: string;
+    switch_state: 'idle' | 'switching';
+    upgrade_notification: boolean;
+    registry_error?: string;
+  };
 }
 
 const state: DeviceState = {
@@ -145,6 +160,17 @@ const state: DeviceState = {
     { name: 'SWA', size: 2048 },
   ],
   isScanning: false,
+  // Display modes (ds-3.3, ds-3.4, ds-3.6)
+  displayModes: {
+    modes: [
+      { id: 'classic_card', name: 'Classic Card', description: 'Traditional flight card display', active: true },
+      { id: 'live_flight', name: 'Live Flight Card', description: 'Real-time flight tracking with live updates', active: false },
+      { id: 'minimal', name: 'Minimal', description: 'Clean, minimal display', active: false },
+    ],
+    active_mode: 'classic_card',
+    switch_state: 'idle',
+    upgrade_notification: false,
+  },
 };
 
 // ============================================================================
@@ -376,6 +402,72 @@ async function handleApiRoute(
   // POST /api/calibration
   if (pathname === '/api/calibration' && method === 'POST') {
     sendJson(res, { ok: true, message: 'Calibration mode toggled' });
+    return;
+  }
+
+  // GET /api/display/modes (ds-3.3, ds-3.6)
+  if (pathname === '/api/display/modes' && method === 'GET') {
+    const dm = state.displayModes;
+    sendJson(res, {
+      ok: true,
+      data: {
+        modes: dm.modes,
+        active_mode: dm.active_mode,
+        switch_state: dm.switch_state,
+        upgrade_notification: dm.upgrade_notification,
+        ...(dm.registry_error ? { registry_error: dm.registry_error } : {}),
+      },
+    });
+    return;
+  }
+
+  // POST /api/display/mode (ds-3.4)
+  if (pathname === '/api/display/mode' && method === 'POST') {
+    const body = await readBody(req);
+    let data: { mode?: string };
+    try {
+      data = JSON.parse(body);
+    } catch {
+      sendError(res, 'Invalid JSON', 'INVALID_JSON');
+      return;
+    }
+
+    const modeId = data.mode;
+    if (!modeId) {
+      sendError(res, 'Missing mode field', 'MISSING_MODE');
+      return;
+    }
+
+    const modeExists = state.displayModes.modes.some((m) => m.id === modeId);
+    if (!modeExists) {
+      sendError(res, 'Mode not found', 'MODE_NOT_FOUND', 404);
+      return;
+    }
+
+    // Check for simulated registry error (set via test fixture)
+    if (state.displayModes.registry_error) {
+      sendJson(res, {
+        ok: true,
+        data: { registry_error: state.displayModes.registry_error },
+      });
+      return;
+    }
+
+    // Simulate mode switch
+    state.displayModes.modes.forEach((m) => {
+      m.active = m.id === modeId;
+    });
+    state.displayModes.active_mode = modeId;
+    state.displayModes.switch_state = 'idle';
+
+    sendJson(res, { ok: true, data: { active_mode: modeId } });
+    return;
+  }
+
+  // POST /api/display/notification/dismiss (ds-3.6)
+  if (pathname === '/api/display/notification/dismiss' && method === 'POST') {
+    state.displayModes.upgrade_notification = false;
+    sendJson(res, { ok: true });
     return;
   }
 

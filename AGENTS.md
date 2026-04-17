@@ -17,3 +17,47 @@
 - On macOS, use `/dev/cu.*` (not `tty.*`) for PlatformIO `--port` / `--upload-port`. Only one process may hold the serial device—exit `pio device monitor` (Ctrl+C) before `upload` or filesystem upload.
 - On **macOS**, Python **subprocess `fork`** from a **multi-threaded** process (common under **Cursor** with certain interpreters) can **SIGSEGV** in Apple’s Network stack (`multi-threaded process forked` / `crashed on child side of fork pre-exec`). A frequent dev mitigation is `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` in the environment; using a **stable** interpreter (for example Python 3.12) for editor tooling instead of a very new Homebrew Python reduces how often this appears.
 - The web portal is served by the ESP32 (flash both app and LittleFS from `firmware/`, e.g. `pio run -e esp32dev -t upload` and `-t uploadfs`). First-time setup: join AP `FlightWall-Setup`, open `http://192.168.4.1/`; on the home network use `http://flightwall.local/` or the device’s LAN IP.
+
+## Commit Discipline (Story TD-4)
+
+This repository enforces a per-story commit convention to keep diffs
+reviewable and prevent cross-story bleed (see the 2026-04-13 fn-1.6 / dl-1.5
+mixed-diff incident).
+
+**Install the local hooks once per clone:**
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This sets `core.hooksPath=.githooks` and installs `commit-msg`, which rejects
+any commit whose subject does not begin with a valid story-ID prefix.
+
+**Valid subject prefixes** (case-insensitive; `.` or `-` accepted between
+version numbers):
+
+| Prefix | Example | Scope |
+| --- | --- | --- |
+| `td-N:` | `td-1: atomic calibration flag` | Tech debt |
+| `le-X.Y:` | `le-1.1: layout store CRUD` | Layout Editor epic |
+| `fn-X.Y:` | `fn-1.4: OTA self-check` | fn epic |
+| `dl-X.Y:` | `dl-7.3: OTA pull dashboard` | dl epic |
+| `ds-X.Y:` | `ds-3.1: display mode API` | ds epic |
+
+Merge and revert auto-messages are exempt. Empty messages are rejected.
+
+**Story frontmatter is required.** Every new story file in
+`_bmad-output/implementation-artifacts/stories/` carries `branch:` and
+`zone:` fields (see `stories/_template.md`). The `zone:` field is the
+source of truth reviewers use to check that a PR stays within the story's
+declared scope — see `_bmad-output/implementation-artifacts/review-checklist.md`
+item #1.
+
+**PR reviewers** should run through the full checklist at
+`_bmad-output/implementation-artifacts/review-checklist.md` before approving.
+The first four items (scope, correctness, safety) are required; remaining items
+are advisory.
+
+**Known limitation:** git hooks are local-only and are bypassed on force-push or
+when a contributor has not run `install-hooks.sh`. PR review is the second layer;
+the review-checklist codifies that layer.
