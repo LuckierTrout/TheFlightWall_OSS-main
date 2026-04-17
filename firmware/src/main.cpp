@@ -992,10 +992,12 @@ void setup()
     }
 
     // Enroll loop() task in TWDT for Core 1 stall detection (Story dl-1.4, AC #5).
-    // Default timeout 5s (meets NFR10). esp_task_wdt_reset() called at top of loop()
-    // and around blocking HTTP fetches to avoid false positives.
+    // 10s timeout (NFR10 ceiling). The per-iteration pet in FlightDataFetcher
+    // covers multi-call enrichment batches; the 10s window is sized to absorb
+    // a single slow HTTPS call (AeroAPI rate-limited retries, etc.).
+    esp_task_wdt_init(10, true);
     esp_task_wdt_add(NULL);
-    LOG_I("Main", "Loop task enrolled in TWDT (5s timeout)");
+    LOG_I("Main", "Loop task enrolled in TWDT (10s timeout)");
 
     // Heap baseline measurement (Story ds-1.1, AR1)
     // Logged after all Foundation init to establish the mode memory budget.

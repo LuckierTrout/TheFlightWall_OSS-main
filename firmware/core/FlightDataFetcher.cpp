@@ -10,6 +10,7 @@ Output: Returns count of enriched flights and fills outStates/outFlights.
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
 #include "adapters/FlightWallFetcher.h"
+#include <esp_task_wdt.h>
 
 FlightDataFetcher::FlightDataFetcher(BaseStateVectorFetcher *stateFetcher,
                                      BaseFlightFetcher *flightFetcher)
@@ -40,8 +41,21 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
     size_t aeroOk = 0, aeroFail = 0;
     size_t cdnOk = 0, cdnFail = 0;
 
+    // Hard cap on enrichment: with 60+ flights in busy airspace, fetching all of
+    // them causes heap exhaustion (ArduinoJson NoMemory) and AeroAPI rate-limit
+    // (HTTP 429) cascades. 20 is well within the ~160KB free heap and leaves
+    // headroom for the display pipeline.
+    constexpr size_t MAX_ENRICH = 20;
+
     for (const StateVector &s : outStates)
     {
+        // Each iteration makes up to 3 sequential HTTPS calls (AeroAPI + two
+        // FlightWall CDN lookups). Reset the loop-task watchdog per iteration
+        // so a large state-vector batch doesn't trip the TWDT.
+        esp_task_wdt_reset();
+        if (enriched >= MAX_ENRICH) {
+            break;
+        }
         if (s.callsign.length() == 0)
         {
             continue;
