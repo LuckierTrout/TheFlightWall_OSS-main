@@ -216,6 +216,8 @@ Nine stories. Size T-shirts: S = ~0.5 day, M = ~1 day, L = ~2 days.
 | LE-1.8  | `flight_field` and `metric` widgets                          | M    | Two new widget types; telemetry field bindings; `metric` format-string support.                          |
 | LE-1.9  | Golden-frame regression tests + binary/heap budget gate     | S    | Byte-equal frame comparison for canonical layouts; CI gate on flash % and heap margin.                   |
 
+**BMAD / bmad-assist:** Story IDs (`le-1.1` … `le-1.9`) are declared in the sharded epic [`epics/epic-le-1.md`](epics/epic-le-1.md) (`### Story le-1.x:` headings). This file keeps the roadmap table; full acceptance criteria live in per-story files under `_bmad-output/implementation-artifacts/stories/`.
+
 **LE-1.1 includes the V0 spike cleanup as a subtask** — see "V0 Spike Cleanup" below for the exact revert list.
 
 ---

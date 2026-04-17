@@ -1,0 +1,35 @@
+cli_args:
+- run
+- --project
+- .
+- --no-interactive
+cli_args_masked:
+- run
+- --project
+- .
+- --no-interactive
+current_phase:
+  model: claude-opus-4-7
+  phase: CREATE_STORY
+  provider: claude
+  started_at: '2026-04-17T16:32:18.734925Z'
+ended_at: null
+epic: le-1
+phase_events:
+- duration_ms: null
+  epic: le-1
+  error_type: null
+  event_type: started
+  model: claude-opus-4-7
+  phase: CREATE_STORY
+  provider: claude
+  status: null
+  story: le-1.1
+  termination_metadata: null
+  timestamp: '2026-04-17T16:32:18.734925Z'
+phases: []
+project_path: /Users/christianlee/App-Development/TheFlightWall_OSS-main
+run_id: 115e7fb6
+started_at: '2026-04-17T16:32:18.707805Z'
+status: running
+story: le-1.1
