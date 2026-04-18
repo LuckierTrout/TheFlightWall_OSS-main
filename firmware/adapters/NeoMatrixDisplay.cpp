@@ -468,12 +468,12 @@ void NeoMatrixDisplay::updateBrightness(uint8_t brightness)
 
 void NeoMatrixDisplay::setCalibrationMode(bool enabled)
 {
-    _calibrationMode = enabled;
+    _calibrationMode.store(enabled, std::memory_order_release);
 }
 
 bool NeoMatrixDisplay::isCalibrationMode() const
 {
-    return _calibrationMode;
+    return _calibrationMode.load(std::memory_order_acquire);
 }
 
 void NeoMatrixDisplay::renderCalibrationPattern()
@@ -543,12 +543,12 @@ void NeoMatrixDisplay::renderCalibrationPattern()
 
 void NeoMatrixDisplay::setPositioningMode(bool enabled)
 {
-    _positioningMode = enabled;
+    _positioningMode.store(enabled, std::memory_order_release);
 }
 
 bool NeoMatrixDisplay::isPositioningMode() const
 {
-    return _positioningMode;
+    return _positioningMode.load(std::memory_order_acquire);
 }
 
 void NeoMatrixDisplay::renderPositioningPattern()

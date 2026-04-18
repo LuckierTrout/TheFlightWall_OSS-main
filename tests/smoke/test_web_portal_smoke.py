@@ -350,6 +350,73 @@ class FlightWallSmokeTests(unittest.TestCase):
         self.assertFalse(payload.get("ok"))
         self.assertEqual("EMPTY_PAYLOAD", payload.get("code"))
 
+    def test_mode_switch_during_calibration_succeeds(self) -> None:
+        """BF-1 AC #7: a mode switch issued while calibration is active must complete
+        without timing out. Before the auto-yield fix, the Core-0 display task skipped
+        ModeRegistry::tick() while calibration was running, so /api/display/mode would
+        sit in REQUESTED state until the dashboard polled itself out at the timeout.
+        """
+        # Capture the active mode so we can restore it in teardown.
+        modes_before = self.assert_json_object(self.client.request("GET", "/api/display/modes"))
+        original_active = modes_before.get("data", {}).get("active")
+        self.assertIsInstance(original_active, str, msg="device must report an active mode")
+
+        # Pick a target mode different from the current one so the switch is non-trivial.
+        modes_list = modes_before.get("data", {}).get("modes", [])
+        self.assertGreater(len(modes_list), 1, msg="device must expose at least two modes for this test")
+        target = next((m for m in modes_list if m.get("id") != original_active), None)
+        self.assertIsNotNone(target, msg="could not find a non-active mode to switch to")
+        target_id = target["id"]
+
+        start = self.client.request("POST", "/api/calibration/start", json_body={})
+        # Endpoint is optional in some legacy builds; skip rather than fail to keep
+        # the suite portable across firmware revisions.
+        if start.status == 404:
+            self.skipTest("/api/calibration/start not available on this device")
+        self.assert_status(start, 200)
+
+        try:
+            switch = self.client.request(
+                "POST", "/api/display/mode", json_body={"mode": target_id}
+            )
+            self.assert_status(switch, 200)
+            switch_payload = switch.json()
+            self.assertTrue(switch_payload.get("ok"), msg=switch.text)
+
+            # Poll /api/display/modes for terminal IDLE with the requested mode active.
+            # Budget: 8s — same envelope the dashboard uses (SWITCH_POLL_TIMEOUT).
+            import time
+            deadline = time.time() + 8.0
+            last_payload: dict[str, Any] = {}
+            while time.time() < deadline:
+                poll = self.assert_json_object(self.client.request("GET", "/api/display/modes"))
+                data = poll.get("data", {})
+                last_payload = data
+                state = data.get("switch_state", "idle")
+                if state == "idle" and data.get("active") == target_id:
+                    # AC #4: if calibration was preempted, the response should advertise it.
+                    self.assertEqual(
+                        "calibration",
+                        data.get("preempted"),
+                        msg=f"expected preempted=calibration in {data!r}",
+                    )
+                    break
+                if state == "failed":
+                    self.fail(f"mode switch reported failed state during calibration: {data!r}")
+                time.sleep(0.25)
+            else:
+                self.fail(
+                    f"mode switch did not settle within 8s while calibration was active. "
+                    f"last poll payload: {last_payload!r}"
+                )
+        finally:
+            # Belt-and-suspenders: server-side preemption already cleared calibration,
+            # but stop again so this test never leaves the device showing a test pattern.
+            self.client.request("POST", "/api/calibration/stop", json_body={})
+            # Restore the original mode if we changed it.
+            if original_active and original_active != target_id:
+                self.client.request("POST", "/api/display/mode", json_body={"mode": original_active})
+
     def test_optional_brightness_write_roundtrip(self) -> None:
         if not self.args.write_roundtrip:
             self.skipTest("Pass --write-roundtrip to enable settings mutation checks.")

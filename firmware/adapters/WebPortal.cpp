@@ -47,6 +47,8 @@ extern bool isScheduleDimming();
 #include "core/LayoutStore.h"
 #include "core/ModeOrchestrator.h"
 #include "core/ModeRegistry.h"
+#include "widgets/FlightFieldWidget.h"
+#include "widgets/MetricWidget.h"
 
 namespace {
 struct PendingRequestBody {
@@ -141,6 +143,7 @@ const char* switchStateToString(SwitchState ss) {
     switch (ss) {
         case SwitchState::REQUESTED: return "requested";
         case SwitchState::SWITCHING: return "switching";
+        case SwitchState::FAILED:    return "failed";  // BF-1 AC #5
         default:                     return "idle";
     }
 }
@@ -1127,6 +1130,11 @@ void WebPortal::_handleGetWifiScan(AsyncWebServerRequest* request) {
 }
 
 void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
+    // BF-1 AC #5: lazy stall watchdog — promote a stuck REQUESTED to FAILED before
+    // we read switch state below, so the dashboard sees the failure on this poll
+    // instead of timing out client-side.
+    ModeRegistry::pollAndAdvanceStall();
+
     // Capacity: ~256 base + ~200 per mode (with zone_layout) — 3 modes ≈ 900 bytes
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
@@ -1211,6 +1219,27 @@ void WebPortal::_handleGetDisplayModes(AsyncWebServerRequest* request) {
     ModeRegistry::copyLastError(regErrBuf, sizeof(regErrBuf));
     if (regErrBuf[0] != '\0') {
         data["registry_error"] = regErrBuf;
+    }
+
+    // BF-1 AC #4: surface preemption source so the dashboard can show "Calibration
+    // stopped. Switched to <mode>" toast once per click. Sticky until next requestSwitch().
+    const char* preemptedSource = ModeRegistry::getLastPreemptionSource();
+    if (preemptedSource != nullptr) {
+        data["preempted"] = preemptedSource;
+    }
+
+    // BF-1 AC #5: stall watchdog error envelope. When pollAndAdvanceStall() above
+    // promoted state to FAILED, surface the stable error code so the client can
+    // render a "mode switch stalled" message instead of polling forever.
+    if (ModeRegistry::getSwitchState() == SwitchState::FAILED) {
+        const char* code = ModeRegistry::getLastErrorCode();
+        if (code != nullptr) {
+            data["switch_error_code"] = code;
+            // Reuse top-level "error" / "ok" envelope: ok stays true (this is an
+            // observation, not a request failure) but error gives a human string.
+            root["error"] = "Mode switch stalled";
+            root["code"] = code;
+        }
     }
 
     // Upgrade notification NVS flag (AC #10; ds-3.2, AC #4)
@@ -1883,6 +1912,47 @@ void WebPortal::_handleGetLayoutById(AsyncWebServerRequest* request) {
     request->send(200, "application/json", output);
 }
 
+// LE-1.10 — reject widget payloads whose `content` field id is not in the
+// owning widget's catalog. Single helper shared by POST and PUT. Returns true
+// when the layout is ok, false after sending the 400 response itself.
+//
+// Strictness: we reject only when a widget of type `flight_field` or `metric`
+// carries a `content` string that is non-empty AND not in the widget's
+// catalog. Missing/empty `content` is allowed (renderer falls back to
+// kCatalog[0]) — rejecting it here would break the "drop a fresh widget"
+// flow where the editor POSTs before the user picks a field.
+static bool validateLayoutFieldIds(JsonDocument& doc,
+                                   AsyncWebServerRequest* request) {
+    JsonVariantConst widgets = doc["widgets"];
+    if (!widgets.is<JsonArrayConst>()) return true;  // schema-check handles shape
+    for (JsonVariantConst wv : widgets.as<JsonArrayConst>()) {
+        const char* type = wv["type"] | (const char*)nullptr;
+        if (type == nullptr) continue;
+        const char* content = wv["content"] | (const char*)nullptr;
+        if (content == nullptr || content[0] == '\0') continue;
+
+        bool isFlightField = (strcmp(type, "flight_field") == 0);
+        bool isMetric      = (strcmp(type, "metric")       == 0);
+        if (!isFlightField && !isMetric) continue;
+
+        bool ok = isFlightField
+            ? FlightFieldWidgetCatalog::isKnownFieldId(content)
+            : MetricWidgetCatalog::isKnownFieldId(content);
+        if (ok) continue;
+
+        JsonDocument errDoc;
+        JsonObject root = errDoc.to<JsonObject>();
+        root["ok"]    = false;
+        root["error"] = "Unknown field_id";
+        root["code"]  = "UNKNOWN_FIELD_ID";
+        String output;
+        serializeJson(errDoc, output);
+        request->send(400, "application/json", output);
+        return false;
+    }
+    return true;
+}
+
 void WebPortal::_handlePostLayout(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, data, len);
@@ -1902,6 +1972,9 @@ void WebPortal::_handlePostLayout(AsyncWebServerRequest* request, uint8_t* data,
     if (!LayoutStore::isSafeLayoutId(id)) {
         _sendJsonError(request, 400, "Invalid layout id", "LAYOUT_INVALID");
         return;
+    }
+    if (!validateLayoutFieldIds(doc, request)) {
+        return;  // helper already sent the 400 response.
     }
     String jsonStr;
     serializeJson(doc, jsonStr);
@@ -1972,6 +2045,9 @@ void WebPortal::_handlePutLayout(AsyncWebServerRequest* request, uint8_t* data, 
     if (strcmp(docId, id.c_str()) != 0) {
         _sendJsonError(request, 400, "Body id does not match URL id", "LAYOUT_INVALID");
         return;
+    }
+    if (!validateLayoutFieldIds(doc, request)) {
+        return;  // helper already sent the 400 response.
     }
     String jsonStr;
     serializeJson(doc, jsonStr);
@@ -2149,44 +2225,69 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         addField(fields, "h", "int", nullptr, 16, true, nullptr, 0);
     }
     // ── flight_field ─────────────────────────────────────────────────────
-    // LE-1.8 — wired through to FlightFieldWidget. `content` is now a
-    // dropdown of supported field keys; the renderer resolves them against
-    // RenderContext.currentFlight and falls back to "--" when missing.
+    // LE-1.8 + LE-1.10 — dropdown of field ids owned by FlightFieldWidget's
+    // kCatalog (single source of truth). `field_options` carries {id, label}
+    // pairs so the editor can render human-readable dropdown text; `options`
+    // on the content `fields` entry continues to carry the id strings for
+    // the pre-LE-1.10 select plumbing and to seed the content default.
     {
         JsonObject obj = data.add<JsonObject>();
         obj["type"] = "flight_field";
         obj["label"] = "Flight Field";
+        size_t ffCount = 0;
+        const FieldDescriptor* ffCat = FlightFieldWidgetCatalog::catalog(ffCount);
         JsonArray fields = obj["fields"].to<JsonArray>();
-        static const char* const flightFieldOptions[] = {
-            "airline", "ident", "origin_icao", "dest_icao", "aircraft"
-        };
-        addField(fields, "content", "select", "airline", 0, false,
-                 flightFieldOptions, 5);
+        // Build the legacy string-array options from the catalog so the
+        // existing select plumbing keeps working, then override the default
+        // to kCatalog[0].id.
+        std::vector<const char*> ffOptions;
+        ffOptions.reserve(ffCount);
+        for (size_t i = 0; i < ffCount; ++i) ffOptions.push_back(ffCat[i].id);
+        addField(fields, "content", "select", ffCount > 0 ? ffCat[0].id : "", 0, false,
+                 ffOptions.empty() ? nullptr : ffOptions.data(), ffOptions.size());
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
         addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+        // LE-1.10 — catalog with human labels, consumed by the editor's
+        // property-panel field picker. A sibling key to avoid colliding with
+        // the existing `fields[]` property schema.
+        JsonArray fieldOptions = obj["field_options"].to<JsonArray>();
+        for (size_t i = 0; i < ffCount; ++i) {
+            JsonObject fo = fieldOptions.add<JsonObject>();
+            fo["id"]    = ffCat[i].id;
+            fo["label"] = ffCat[i].label;
+        }
     }
     // ── metric ───────────────────────────────────────────────────────────
-    // LE-1.8 — wired through to MetricWidget. `content` is now a dropdown
-    // of supported telemetry keys. NAN values and unknown keys fall back
-    // to a "--" placeholder at render time.
+    // LE-1.8 + LE-1.10 — dropdown of telemetry ids owned by MetricWidget's
+    // kCatalog. Same pattern as flight_field above; catalog entries include
+    // a `unit` string for the editor dropdown.
     {
         JsonObject obj = data.add<JsonObject>();
         obj["type"] = "metric";
         obj["label"] = "Metric";
+        size_t mCount = 0;
+        const FieldDescriptor* mCat = MetricWidgetCatalog::catalog(mCount);
         JsonArray fields = obj["fields"].to<JsonArray>();
-        static const char* const metricOptions[] = {
-            "alt", "speed", "track", "vsi"
-        };
-        addField(fields, "content", "select", "alt", 0, false,
-                 metricOptions, 4);
+        std::vector<const char*> mOptions;
+        mOptions.reserve(mCount);
+        for (size_t i = 0; i < mCount; ++i) mOptions.push_back(mCat[i].id);
+        addField(fields, "content", "select", mCount > 0 ? mCat[0].id : "", 0, false,
+                 mOptions.empty() ? nullptr : mOptions.data(), mOptions.size());
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
         addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+        JsonArray fieldOptions = obj["field_options"].to<JsonArray>();
+        for (size_t i = 0; i < mCount; ++i) {
+            JsonObject fo = fieldOptions.add<JsonObject>();
+            fo["id"]    = mCat[i].id;
+            fo["label"] = mCat[i].label;
+            if (mCat[i].unit != nullptr) fo["unit"] = mCat[i].unit;
+        }
     }
 
     String output;

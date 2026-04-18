@@ -102,7 +102,7 @@ void test_dispatch_metric_returns_true() {
     // contract as FlightField — no currentFlight → "--" placeholder,
     // true return.
     RenderContext ctx = makeCtx();
-    WidgetSpec spec = makeSpec(WidgetType::Metric, 0, 0, 40, 8, "alt");
+    WidgetSpec spec = makeSpec(WidgetType::Metric, 0, 0, 40, 8, "altitude_ft");
     TEST_ASSERT_TRUE(WidgetRegistry::dispatch(WidgetType::Metric, spec, ctx));
 }
 

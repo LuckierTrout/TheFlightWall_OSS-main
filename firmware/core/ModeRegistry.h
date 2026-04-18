@@ -24,8 +24,16 @@ static constexpr uint8_t MODE_INDEX_NONE = 0xFF;
 enum class SwitchState : uint8_t {
     IDLE,
     REQUESTED,
-    SWITCHING
+    SWITCHING,
+    FAILED  // BF-1 AC #5: REQUESTED-stall watchdog terminal state
 };
+
+// BF-1 AC #5: budget for REQUESTED → SWITCHING progress, in ms. If the dashboard
+// polls /api/display/mode/status after this budget without observing progress, the
+// status getter advances state to FAILED with code REQUESTED_STALL. Insurance
+// against future variants of "tick() never runs" (the auto-yield in main.cpp
+// already removes the only known cause).
+static constexpr uint32_t kRequestedStallLimitMs = 500;
 
 struct ModeEntry {
     const char* id;                           // e.g., "classic_card"
@@ -73,6 +81,36 @@ public:
 
     /// Current switch state.
     static SwitchState getSwitchState();
+
+    /// BF-1 AC #1, #2: cross-core check used by the Core-0 display task
+    /// auto-yield path. Returns true while a mode-switch request is queued but
+    /// not yet processed (state == REQUESTED). Atomic load — safe from any core.
+    static bool hasPendingRequest();
+
+    /// BF-1 AC #3: id of the mode currently sitting in REQUESTED state, or
+    /// nullptr if no pending request / index out of range. Used to name the
+    /// preemption log line in main.cpp.
+    static const char* getRequestedModeId();
+
+    /// BF-1 AC #3: called from the Core-0 display task immediately before
+    /// yielding a test pattern in favor of an incoming mode switch. Source must
+    /// be a string literal ("calibration" or "positioning") — stored as an
+    /// atomic pointer, no copy. Cleared on the next requestSwitch().
+    static void markPreempted(const char* source);
+
+    /// BF-1 AC #4: source of the most recent test-pattern preemption, or
+    /// nullptr if the last transition was a plain mode switch. Cleared when a
+    /// fresh requestSwitch() arrives.
+    static const char* getLastPreemptionSource();
+
+    /// BF-1 AC #5: lazy stall watchdog. Call from /api/display/mode/status
+    /// before reading switch state. If state has been REQUESTED for longer
+    /// than kRequestedStallLimitMs, advances state to FAILED with code
+    /// REQUESTED_STALL, logs once at LOG_W, and clears the pending request so
+    /// the dashboard stops polling. The previous active mode index is
+    /// untouched (executeSwitch never ran), so getActiveModeId() continues
+    /// to return the prior mode.
+    static void pollAndAdvanceStall();
 
     /// Last error message (fixed char buffer, no heap).
     /// NOTE: Returns raw pointer to mutable buffer — safe for single-threaded
@@ -123,6 +161,11 @@ private:
     static unsigned long _lastSwitchMs;
     static std::atomic<bool> _otaMode;  // Story dl-7.1: true after prepareForOTA() succeeds (atomic: Core 1 writes, Core 0 reads)
     static bool _recoveryQueued;  // ds-3.2 AC #5: prevents infinite retry if table[0] also fails
+
+    // BF-1: stall watchdog + preemption tracking
+    static std::atomic<uint32_t> _requestedAtMs;       // millis() when latest requestSwitch fired
+    static std::atomic<const char*> _preemptionSource; // literal "calibration"|"positioning"|nullptr
+    static std::atomic<bool> _stallReported;           // debounce: log REQUESTED_STALL once per stall
 
     /// Find table index for a mode ID. Returns MODE_INDEX_NONE if not found.
     static uint8_t findIndex(const char* modeId);

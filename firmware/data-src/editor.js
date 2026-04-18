@@ -232,8 +232,9 @@
       defaultW: 32, defaultH: 8, defaultColor: '#FFFFFF',
       defaultContent: '', defaultAlign: 'left',
       minW: 6, minH: 6,
-      contentKind: 'string',  /* 'string' | 'select' — drives the props panel */
-      contentOptions: null    /* array of option strings when contentKind==='select' */
+      contentKind: 'string',   /* 'string' | 'select' — drives the props panel */
+      contentOptions: null,    /* [ {value, label} ] when contentKind==='select' */
+      contentLabel: 'Value'    /* props-panel label override (LE-1.10) */
     };
     if (entry.fields) {
       for (var i = 0; i < entry.fields.length; i++) {
@@ -250,11 +251,35 @@
           if (f.kind === 'select' && f.options && f.options.length) {
             meta.contentOptions = [];
             for (var oi = 0; oi < f.options.length; oi++) {
-              meta.contentOptions.push(f.options[oi]);
+              meta.contentOptions.push({
+                value: f.options[oi],
+                label: f.options[oi]
+              });
             }
           }
         }
         if (f.key === 'align')   meta.defaultAlign = f['default'] || 'left';
+      }
+    }
+    /* LE-1.10: prefer entry.field_options [{id,label,unit?}] when present —
+       it carries human-readable labels for the field-picker dropdown.
+       Overrides the raw string options from the content schema. */
+    if (entry.field_options && entry.field_options.length) {
+      meta.contentOptions = [];
+      for (var fi = 0; fi < entry.field_options.length; fi++) {
+        var fo = entry.field_options[fi];
+        if (!fo || !fo.id) {
+          continue;
+        }
+        if (!fo || !fo.id) continue;
+        var labelText = fo.label || fo.id;
+        if (fo.unit) labelText = labelText + ' (' + fo.unit + ')';
+        meta.contentOptions.push({ value: fo.id, label: labelText });
+      }
+      meta.contentKind = 'select';
+      meta.contentLabel = 'Field';
+      if (!meta.defaultContent && meta.contentOptions.length) {
+        meta.defaultContent = meta.contentOptions[0].value;
       }
     }
     /* Min floors: firmware enforces w<8||h<8 early-return; use h.default as floor */
@@ -399,26 +424,29 @@
       if (useSelect && contentSelect) {
         /* Rebuild options when the widget type changes. Each call clears
            any previously-injected options so switching widgets never leaks
-           stale entries (ES5 — no Array.from/forEach). */
+           stale entries (ES5 — no Array.from/forEach). Options are now
+           {value,label} pairs (LE-1.10 field_options) so the dropdown shows
+           a human label while persisting the catalog id. */
         while (contentSelect.firstChild) {
           contentSelect.removeChild(contentSelect.firstChild);
         }
         for (var ci = 0; ci < meta.contentOptions.length; ci++) {
+          var optEntry = meta.contentOptions[ci];
           var opt = document.createElement('option');
-          opt.value = meta.contentOptions[ci];
-          opt.textContent = meta.contentOptions[ci];
+          opt.value = optEntry.value;
+          opt.textContent = optEntry.label;
           contentSelect.appendChild(opt);
         }
         var desired = w.content || meta.defaultContent ||
-                       meta.contentOptions[0];
+                       meta.contentOptions[0].value;
         /* If the widget's current content value is not in the option set
-           (e.g. imported from an older layout), fall back to the default
-           so the <select> always has a valid selection. */
+           (e.g. imported from an older layout with pre-LE-1.10 keys), fall
+           back to the default so the <select> always has a valid selection. */
         var found = false;
         for (var mi = 0; mi < meta.contentOptions.length; mi++) {
-          if (meta.contentOptions[mi] === desired) { found = true; break; }
+          if (meta.contentOptions[mi].value === desired) { found = true; break; }
         }
-        var coerced = found ? desired : meta.contentOptions[0];
+        var coerced = found ? desired : meta.contentOptions[0].value;
         contentSelect.value = coerced;
         /* Sync in-memory widget if the content value was coerced to a valid
            option (stale/invalid keys from older layouts). Without this, save
@@ -431,6 +459,12 @@
         }
       } else if (contentInput) {
         contentInput.value = w.content || '';
+      }
+      /* LE-1.10: override the content-field label when the widget exposes a
+         field catalog — "Field" reads better than "Value" for the picker. */
+      var contentLabelEl = contentField.querySelector('label');
+      if (contentLabelEl && meta && meta.contentLabel) {
+        contentLabelEl.textContent = meta.contentLabel;
       }
     }
 

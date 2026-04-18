@@ -31,6 +31,9 @@ bool ModeRegistry::_nvsWritePending = false;
 unsigned long ModeRegistry::_lastSwitchMs = 0;
 std::atomic<bool> ModeRegistry::_otaMode(false);
 bool ModeRegistry::_recoveryQueued = false;
+std::atomic<uint32_t> ModeRegistry::_requestedAtMs(0);
+std::atomic<const char*> ModeRegistry::_preemptionSource(nullptr);
+std::atomic<bool> ModeRegistry::_stallReported(false);
 
 void ModeRegistry::init(const ModeEntry* table, uint8_t count) {
     _table = table;
@@ -45,6 +48,9 @@ void ModeRegistry::init(const ModeEntry* table, uint8_t count) {
     _nvsWritePending = false;
     _lastSwitchMs = 0;
     _otaMode.store(false);
+    _requestedAtMs.store(0);
+    _preemptionSource.store(nullptr);
+    _stallReported.store(false);
 
     LOG_I("ModeRegistry", "Initialized");
 #if LOG_LEVEL >= 2
@@ -81,6 +87,10 @@ bool ModeRegistry::requestSwitch(const char* modeId) {
     // the POST response before tick() runs on Core 0 (ds-3.1 AC #7 async strategy).
     // _switchState is atomic — safe to write from Core 1 here.
     _switchState.store(SwitchState::REQUESTED);
+    // BF-1: reset preemption + stall tracking for this fresh request.
+    _requestedAtMs.store((uint32_t)millis());
+    _preemptionSource.store(nullptr);
+    _stallReported.store(false);
     LOG_I("ModeRegistry", "Switch requested");
 #if LOG_LEVEL >= 2
     Serial.printf("[ModeRegistry] Target: %s (index %d)\n", modeId, (int)idx);
@@ -108,6 +118,10 @@ bool ModeRegistry::requestForceReload(const char* modeId) {
     _activeModeIndex.store(MODE_INDEX_NONE);
     _requestedIndex.store(idx);
     _switchState.store(SwitchState::REQUESTED);
+    // BF-1: same fresh-request semantics as requestSwitch().
+    _requestedAtMs.store((uint32_t)millis());
+    _preemptionSource.store(nullptr);
+    _stallReported.store(false);
     LOG_I("ModeRegistry", "Force-reload requested");
 #if LOG_LEVEL >= 2
     Serial.printf("[ModeRegistry] Force-reload target: %s (index %d)\n", modeId, (int)idx);
@@ -560,6 +574,58 @@ void ModeRegistry::completeOTAAttempt(bool success) {
         LOG_I("ModeRegistry", "completeOTAAttempt: restored default mode via orchestrator after OTA failure");
     } else {
         LOG_W("ModeRegistry", "completeOTAAttempt: no mode table — display will be idle");
+    }
+}
+
+// BF-1 AC #1, #2: cross-core check used by Core-0 display task auto-yield.
+bool ModeRegistry::hasPendingRequest() {
+    return _switchState.load() == SwitchState::REQUESTED;
+}
+
+// BF-1 AC #3: name the requested mode for the preemption log line.
+const char* ModeRegistry::getRequestedModeId() {
+    uint8_t idx = _requestedIndex.load();
+    if (idx == MODE_INDEX_NONE || _table == nullptr || idx >= _count) {
+        return nullptr;
+    }
+    return _table[idx].id;
+}
+
+// BF-1 AC #3: record which test pattern yielded for the next mode switch.
+// Source must be a string literal (stored as atomic pointer, no copy).
+void ModeRegistry::markPreempted(const char* source) {
+    _preemptionSource.store(source);
+}
+
+// BF-1 AC #4: source of the most recent preemption (sticky until next requestSwitch).
+const char* ModeRegistry::getLastPreemptionSource() {
+    return _preemptionSource.load();
+}
+
+// BF-1 AC #5: lazy stall watchdog — invoked by /api/display/mode/status
+// before reading switch state. If REQUESTED has persisted past the budget,
+// promote to FAILED + REQUESTED_STALL so the dashboard can render an error
+// instead of polling forever.
+void ModeRegistry::pollAndAdvanceStall() {
+    if (_switchState.load() != SwitchState::REQUESTED) return;
+
+    uint32_t now = (uint32_t)millis();
+    uint32_t requestedAt = _requestedAtMs.load();
+    // millis() is unsigned, so subtraction wraps correctly on the 49-day rollover.
+    if ((now - requestedAt) <= kRequestedStallLimitMs) return;
+
+    // Advance to FAILED. Active mode index is untouched — executeSwitch never
+    // ran, so getActiveModeId() still returns the prior mode (consistent with
+    // AC #5 "previous active mode is restored" — it was never replaced).
+    _switchState.store(SwitchState::FAILED);
+    _requestedIndex.store(MODE_INDEX_NONE);  // stop tick() from later picking up the stale request
+
+    if (!_stallReported.exchange(true)) {
+        _lastErrorCode.store("REQUESTED_STALL");
+        _errorUpdating.store(true);
+        snprintf(_lastError, sizeof(_lastError), "Mode switch stalled in REQUESTED");
+        _errorUpdating.store(false);
+        LOG_W("ModeRegistry", "REQUESTED_STALL — display task not consuming switch request");
     }
 }
 

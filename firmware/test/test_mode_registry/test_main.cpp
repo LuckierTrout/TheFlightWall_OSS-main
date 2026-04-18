@@ -1125,6 +1125,50 @@ void test_settings_reject_unknown_mode_key() {
 }
 
 // ============================================================================
+// Test: BF-1 watchdog regression (REQUESTED_STALL)
+// ============================================================================
+
+void test_requested_stall_watchdog_fires() {
+    // BF-1 AC #5: when nothing calls tick() while a request is pending, the
+    // status endpoint's pollAndAdvanceStall() must promote state to FAILED so
+    // the dashboard surfaces the failure instead of timing out client-side.
+    initTestRegistry();
+    ModeRegistry::requestSwitch("mock_mode_b");
+
+    // Don't call tick — simulate Core 0 wedged in some early-return path.
+    delay(kRequestedStallLimitMs + 75);
+    ModeRegistry::pollAndAdvanceStall();
+
+    TEST_ASSERT_EQUAL(SwitchState::FAILED, ModeRegistry::getSwitchState());
+    TEST_ASSERT_EQUAL_STRING("REQUESTED_STALL", ModeRegistry::getLastErrorCode());
+    // mock_mode_a remains the active mode — executeSwitch never ran.
+    TEST_ASSERT_EQUAL_STRING("mock_mode_a", ModeRegistry::getActiveModeId());
+}
+
+void test_requested_counter_resets_on_progress() {
+    // BF-1 AC #5: a fresh requestSwitch resets the stall budget so a prior
+    // FAILED state does not poison the next attempt.
+    initTestRegistry();
+    ModeRegistry::requestSwitch("mock_mode_b");
+    delay(kRequestedStallLimitMs + 75);
+    ModeRegistry::pollAndAdvanceStall();
+    TEST_ASSERT_EQUAL(SwitchState::FAILED, ModeRegistry::getSwitchState());
+
+    // New request must clear FAILED and start a fresh budget.
+    ModeRegistry::requestSwitch("mock_mode_b");
+    TEST_ASSERT_EQUAL(SwitchState::REQUESTED, ModeRegistry::getSwitchState());
+    ModeRegistry::pollAndAdvanceStall();
+    TEST_ASSERT_EQUAL(SwitchState::REQUESTED, ModeRegistry::getSwitchState());
+
+    // tick() should now drive the switch to completion normally.
+    RenderContext ctx = makeTestCtx();
+    std::vector<FlightInfo> empty;
+    ModeRegistry::tick(ctx, empty);
+    TEST_ASSERT_EQUAL(SwitchState::IDLE, ModeRegistry::getSwitchState());
+    TEST_ASSERT_EQUAL_STRING("mock_mode_b", ModeRegistry::getActiveModeId());
+}
+
+// ============================================================================
 // Test Runner
 // ============================================================================
 
@@ -1225,6 +1269,10 @@ void setup() {
     RUN_TEST(test_set_mode_setting_fires_callbacks);
     RUN_TEST(test_settings_get_returns_persisted_value);
     RUN_TEST(test_settings_reject_unknown_mode_key);
+
+    // BF-1 watchdog regression
+    RUN_TEST(test_requested_stall_watchdog_fires);
+    RUN_TEST(test_requested_counter_resets_on_progress);
 
     // Cleanup
     clearModeNvs();

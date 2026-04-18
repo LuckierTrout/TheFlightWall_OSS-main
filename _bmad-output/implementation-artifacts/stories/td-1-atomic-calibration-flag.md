@@ -5,7 +5,9 @@ zone:
   - firmware/adapters/NeoMatrixDisplay.*
   - firmware/test/test_neomatrix_display/**
 
-Status: draft
+Status: superseded-by-bf-1
+
+> **Superseded 2026-04-18.** Folded into BF-1 (`bf-1-mode-switch-auto-yield-preempts-test-patterns`) as Task 10 / AC #12. Both `_calibrationMode` and `_positioningMode` were converted to `std::atomic<bool>` with explicit `memory_order_acquire` / `memory_order_release` ordering as part of the auto-yield work — the auto-yield path reads `isCalibrationMode()` from Core 0 while Core 1 toggles it, so fixing the atomic was a hard prerequisite for that story rather than independent tech debt.
 
 ## Story
 

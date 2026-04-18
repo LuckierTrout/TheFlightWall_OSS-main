@@ -37,6 +37,9 @@ Run with:
 #include "core/ConfigManager.h"
 #include "core/LayoutStore.h"
 #include "core/ModeOrchestrator.h"
+#include "widgets/FieldDescriptor.h"
+#include "widgets/FlightFieldWidget.h"
+#include "widgets/MetricWidget.h"
 
 // --- AC #9 (a): WebPortal instantiation compiles with LE-1.4 handlers ---
 
@@ -97,6 +100,30 @@ void test_widget_types_compiles() {
     TEST_PASS();
 }
 
+// --- LE-1.10: widget catalog accessors visible from WebPortal's TU ---
+// Catalog arrays are read by _handleGetWidgetTypes (for field_options[])
+// and the save-time whitelist in _handlePostLayout / _handlePutLayout.
+// Exercising the accessors here guarantees the widget.h files stay reachable
+// from this translation unit and the symbols are linker-visible.
+
+void test_flight_field_catalog_accessor_visible() {
+    size_t count = 0;
+    const FieldDescriptor* cat = FlightFieldWidgetCatalog::catalog(count);
+    TEST_ASSERT_NOT_NULL(cat);
+    TEST_ASSERT_EQUAL_UINT(6u, (unsigned)count);
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("callsign"));
+    TEST_ASSERT_FALSE(FlightFieldWidgetCatalog::isKnownFieldId("not_a_field"));
+}
+
+void test_metric_catalog_accessor_visible() {
+    size_t count = 0;
+    const FieldDescriptor* cat = MetricWidgetCatalog::catalog(count);
+    TEST_ASSERT_NOT_NULL(cat);
+    TEST_ASSERT_EQUAL_UINT(6u, (unsigned)count);
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("altitude_ft"));
+    TEST_ASSERT_FALSE(MetricWidgetCatalog::isKnownFieldId("alt"));  // pre-LE-1.10 key
+}
+
 // --- Unity driver ---------------------------------------------------------
 
 void setup() {
@@ -117,6 +144,8 @@ void setup() {
     RUN_TEST(test_delete_active_guard_path);
     RUN_TEST(test_activate_orchestrator_handoff_compiles);
     RUN_TEST(test_widget_types_compiles);
+    RUN_TEST(test_flight_field_catalog_accessor_visible);
+    RUN_TEST(test_metric_catalog_accessor_visible);
     UNITY_END();
 }
 

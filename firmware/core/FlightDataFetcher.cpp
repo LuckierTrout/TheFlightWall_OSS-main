@@ -108,6 +108,12 @@ size_t FlightDataFetcher::fetchFlights(std::vector<StateVector> &outStates,
             if (!isnan(s.vertical_rate)) {
                 info.vertical_rate_fps = s.vertical_rate * 3.28084;
             }
+            if (!isnan(s.distance_km)) {
+                info.distance_km = s.distance_km;
+            }
+            if (!isnan(s.bearing_deg)) {
+                info.bearing_deg = s.bearing_deg;
+            }
 
             outFlights.push_back(info);
             enriched++;

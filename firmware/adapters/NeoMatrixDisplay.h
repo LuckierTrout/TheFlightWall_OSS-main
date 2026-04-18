@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <stdint.h>
 #include <vector>
 #include "interfaces/BaseDisplay.h"
@@ -55,11 +56,13 @@ private:
     // Reusable logo buffer (avoids heap churn per frame)
     uint16_t _logoBuffer[1024]; // 32x32 RGB565
 
-    // Calibration mode (Story 4.2)
-    volatile bool _calibrationMode = false;
+    // Calibration mode (Story 4.2; BF-1 / TD-1: atomic for cross-core safety —
+    // Core 0 reader (display task) vs Core 1 writer (WebPortal calibration toggle).
+    // volatile alone is not a concurrency primitive on Xtensa.)
+    std::atomic<bool> _calibrationMode{false};
 
-    // Positioning mode — independent from calibration
-    volatile bool _positioningMode = false;
+    // Positioning mode — independent from calibration; same Core 0/Core 1 split.
+    std::atomic<bool> _positioningMode{false};
 
     void displaySingleFlightCard(const FlightInfo &f);
     void displayLoadingScreen();

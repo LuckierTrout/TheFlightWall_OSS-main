@@ -33,4 +33,7 @@ struct FlightInfo
     double speed_mph = NAN;          // Ground speed in miles per hour
     double track_deg = NAN;          // Track heading in degrees (0-359)
     double vertical_rate_fps = NAN;  // Vertical rate in feet per second
+    // Ground reference from state vector (LE-1.10 metric catalog: distance_nm, bearing_deg)
+    double distance_km = NAN;        // Great-circle distance to aircraft
+    double bearing_deg = NAN;        // Bearing to aircraft (degrees, 0-359)
 };

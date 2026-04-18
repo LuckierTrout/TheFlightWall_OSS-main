@@ -469,27 +469,57 @@ void displayTask(void *pvParameters)
             ctxInitialized = true;
         }
 
-        // Calibration mode (Story 4.2): render test pattern instead of flights
-        // Checked before status messages so test patterns override persistent banners
+        // Calibration mode (Story 4.2): render test pattern instead of flights.
+        // Checked before status messages so test patterns override persistent banners.
+        // BF-1 AC #1, #3: auto-yield to a pending mode-switch request — without this,
+        // ModeRegistry::tick() below is unreachable while calibration is active and
+        // /api/display/mode requests stall in REQUESTED until the dashboard times out.
         if (g_display.isCalibrationMode())
         {
-            statusMessageVisible = false;
-            g_display.renderCalibrationPattern();
-            g_display.show();
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
+            if (ModeRegistry::hasPendingRequest())
+            {
+                const char* targetId = ModeRegistry::getRequestedModeId();
+                LOG_IPF("ModeRegistry", "test pattern calibration preempted by mode switch to %s\n",
+                        targetId ? targetId : "<unknown>");
+                g_display.setCalibrationMode(false);
+                ModeRegistry::markPreempted("calibration");
+                statusMessageVisible = false;
+                // Fall through — let tick() below consume the request this frame.
+            }
+            else
+            {
+                statusMessageVisible = false;
+                g_display.renderCalibrationPattern();
+                g_display.show();
+                esp_task_wdt_reset();
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
         }
 
-        // Positioning mode: render panel position guide instead of flights
+        // Positioning mode: render panel position guide instead of flights.
+        // BF-1 AC #2, #3: same auto-yield contract as calibration.
         if (g_display.isPositioningMode())
         {
-            statusMessageVisible = false;
-            g_display.renderPositioningPattern();
-            g_display.show();
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
+            if (ModeRegistry::hasPendingRequest())
+            {
+                const char* targetId = ModeRegistry::getRequestedModeId();
+                LOG_IPF("ModeRegistry", "test pattern positioning preempted by mode switch to %s\n",
+                        targetId ? targetId : "<unknown>");
+                g_display.setPositioningMode(false);
+                ModeRegistry::markPreempted("positioning");
+                statusMessageVisible = false;
+                // Fall through — let tick() below consume the request this frame.
+            }
+            else
+            {
+                statusMessageVisible = false;
+                g_display.renderPositioningPattern();
+                g_display.show();
+                esp_task_wdt_reset();
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
         }
 
         DisplayStatusMessage statusMessage = {};
@@ -866,7 +896,7 @@ void setup()
     // s_lastAppliedTz inside the lambda (default ""), which mismatched the default
     // "UTC0", causing configTzTime() to fire unnecessarily on the very first write.
     static String s_lastAppliedTz = ConfigManager::getSchedule().timezone;
-    ConfigManager::onChange([&s_lastAppliedTz]() {
+    ConfigManager::onChange([]() {
         g_configChanged.store(true);
         g_layout = LayoutEngine::compute(ConfigManager::getHardware());
 

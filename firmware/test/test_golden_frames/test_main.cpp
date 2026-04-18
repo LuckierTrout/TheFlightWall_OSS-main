@@ -233,15 +233,15 @@ void test_golden_b_flight_field_resolves_airline() {
     TEST_ASSERT_TRUE(renderFlightField(spec, ctx));
 }
 
-// Metric resolution integration smoke — "alt" against known flight.
-void test_golden_b_metric_resolves_alt() {
+// Metric resolution integration smoke — LE-1.10 altitude_ft against known flight.
+void test_golden_b_metric_resolves_altitude_ft() {
     FlightInfo f = makeKnownFlight();
     WidgetSpec spec{};
     spec.type  = WidgetType::Metric;
     spec.x = 64; spec.y = 0; spec.w = 36; spec.h = 8;
     spec.color = 0xFFFF;
     strncpy(spec.id, "b5", sizeof(spec.id) - 1);
-    strncpy(spec.content, "alt", sizeof(spec.content) - 1);
+    strncpy(spec.content, "altitude_ft", sizeof(spec.content) - 1);
     RenderContext ctx = makeCtx();
     ctx.currentFlight = &f;
     TEST_ASSERT_TRUE(renderMetric(spec, ctx));
@@ -323,7 +323,7 @@ void setup() {
     RUN_TEST(test_golden_b_parse_and_widget_count);
     RUN_TEST(test_golden_b_render_with_flight_does_not_crash);
     RUN_TEST(test_golden_b_flight_field_resolves_airline);
-    RUN_TEST(test_golden_b_metric_resolves_alt);
+    RUN_TEST(test_golden_b_metric_resolves_altitude_ft);
 
     RUN_TEST(test_golden_c_parse_and_widget_count);
     RUN_TEST(test_golden_c_render_does_not_crash);

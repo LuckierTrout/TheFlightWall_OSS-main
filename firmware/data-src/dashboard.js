@@ -1890,9 +1890,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   }
 
   function stopCalibrationMode() {
-    if (!calibrationActive) return;
+    if (!calibrationActive) return Promise.resolve();
     calibrationActive = false;
-    FW.post('/api/calibration/stop', {}).catch(function() {});
+    return FW.post('/api/calibration/stop', {}).catch(function() {});
   }
 
   function startPositioningMode() {
@@ -1910,9 +1910,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   }
 
   function stopPositioningMode() {
-    if (!positioningActive) return;
+    if (!positioningActive) return Promise.resolve();
     positioningActive = false;
-    FW.post('/api/positioning/stop', {}).catch(function() {});
+    return FW.post('/api/positioning/stop', {}).catch(function() {});
   }
 
   function activatePattern() {
@@ -1926,8 +1926,10 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   }
 
   function stopAllTestPatterns() {
-    stopCalibrationMode();
-    stopPositioningMode();
+    return Promise.all([
+      stopCalibrationMode(),
+      stopPositioningMode()
+    ]);
   }
 
   function setCalibrationOpen(shouldOpen) {
@@ -3078,6 +3080,32 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     }
   }
 
+  function syncPreemptedTestPattern(data, modeId, showToast) {
+    if (!data || (data.preempted !== 'calibration' && data.preempted !== 'positioning')) {
+      return false;
+    }
+
+    // Only one test pattern can be active at a time; after a preempting mode switch,
+    // both client-side mirrors should be considered inactive.
+    calibrationActive = false;
+    positioningActive = false;
+
+    if (!showToast) return true;
+
+    var preemptedLabel = modeId;
+    if (data.modes && data.modes.length) {
+      for (var i = 0; i < data.modes.length; i++) {
+        if (data.modes[i].id === modeId) {
+          preemptedLabel = data.modes[i].name || modeId;
+          break;
+        }
+      }
+    }
+    var srcLabel = (data.preempted === 'calibration') ? 'Calibration' : 'Positioning';
+    FW.showToast(srcLabel + ' stopped. Switched to ' + preemptedLabel, 'info');
+    return true;
+  }
+
   /**
    * switchMode — full orchestration (ds-3.4)
    * 1. Track previousActiveId, apply switching + disabled states
@@ -3126,7 +3154,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       }
     }
 
-    // POST mode switch request (AC #1)
+    // BF-1: POST mode switch request directly. Firmware now auto-yields any active
+    // calibration/positioning test pattern (main.cpp displayTask), so the client
+    // no longer needs to stop test patterns before issuing the switch.
     FW.post('/api/display/mode', { mode: modeId }).then(function(res) {
       // HTTP error from firmware (AC #8)
       if (!res.body || !res.body.ok) {
@@ -3170,12 +3200,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         return;
       }
 
-      // Check switch_state — if already idle and active matches target, finalize now
+      // Even when POST already reports the target mode as active, poll the terminal
+      // status once so the dashboard consumes the normalized envelope (`preempted`,
+      // failed state, current mode list) from GET /api/display/modes.
       var switchState = respData.switch_state || 'idle';
-      if (switchState === 'idle' && respData.active === modeId) {
-        finalizeModeSwitch(modeId, previousActiveId);
-        return;
-      }
+      var immediateTerminalIdle = (switchState === 'idle' && respData.active === modeId);
 
       // Start polling GET /api/display/modes until settled (AC #7)
       // Use attempt counter instead of Date.now() diff so background-tab
@@ -3226,10 +3255,28 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
             return;
           }
 
+          // BF-1 AC #5: stall watchdog fired — surface as a clear failure rather than
+          // continuing to poll until the SWITCH_POLL_TIMEOUT.
+          if (ss === 'failed') {
+            modeSwitchInFlight = false;
+            clearSwitchingStates();
+            syncPreemptedTestPattern(d, modeId, false);
+            renderModeCards(d);
+            updateModeStatus(d);
+            var stallCard = getModeCard(modeId);
+            var stallMsg = (d.switch_error_code === 'REQUESTED_STALL')
+              ? 'Mode switch stalled — display task did not respond. Current mode kept.'
+              : 'Mode switch failed. Current mode restored.';
+            showCardError(stallCard, stallMsg);
+            if (stallCard && typeof stallCard.focus === 'function') stallCard.focus({ preventScroll: true });
+            return;
+          }
+
           // Success: switch_state is idle AND active matches target
           if (ss === 'idle' && d.active === modeId) {
             renderModeCards(d);
             updateModeStatus(d);
+            syncPreemptedTestPattern(d, modeId, true);
             finalizeModeSwitch(modeId, previousActiveId, true); // cards already rendered
             return;
           }
@@ -3238,6 +3285,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
           if (ss === 'idle' && d.active !== modeId) {
             modeSwitchInFlight = false;
             clearSwitchingStates();
+            syncPreemptedTestPattern(d, modeId, false);
             // Render cards first (rebuilds DOM), then attach error to freshly rendered card
             renderModeCards(d);
             updateModeStatus(d);
@@ -3255,7 +3303,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
           setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
         });
       }
-      setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+      if (immediateTerminalIdle) {
+        pollSwitch();
+      } else {
+        setTimeout(pollSwitch, SWITCH_POLL_INTERVAL);
+      }
 
     }).catch(function() {
       // Network failure (AC #6) — clear states, reload.
