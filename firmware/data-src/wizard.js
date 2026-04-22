@@ -109,9 +109,8 @@ function getTimezoneConfig() {
   var state = {
     wifi_ssid: '',
     wifi_password: '',
-    os_client_id: '',
-    os_client_sec: '',
-    aeroapi_key: '',
+    agg_url: '',
+    agg_token: '',
     center_lat: '',
     center_lon: '',
     radius_km: '',
@@ -131,7 +130,7 @@ function getTimezoneConfig() {
   // Keys that map to wizard form fields (16 keys)
   var WIZARD_KEYS = [
     'wifi_ssid', 'wifi_password',
-    'os_client_id', 'os_client_sec', 'aeroapi_key',
+    'agg_url', 'agg_token',
     'center_lat', 'center_lon', 'radius_km', 'timezone',
     'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin',
     'origin_corner', 'scan_dir', 'zigzag'
@@ -140,7 +139,7 @@ function getTimezoneConfig() {
   // Non-wizard config keys preserved in POST payload
   var KNOWN_EXTRA_KEYS = [
     'brightness', 'text_color_r', 'text_color_g', 'text_color_b',
-    'zone_logo_pct', 'zone_split_pct', 'zone_layout',
+    'zone_logo_pct', 'zone_split_pct', 'zone_layout', 'zone_pad_x',
     'fetch_interval', 'display_cycle',
     'sched_enabled', 'sched_dim_start', 'sched_dim_end', 'sched_dim_brt'
   ];
@@ -171,9 +170,8 @@ function getTimezoneConfig() {
   var wifiSsid = document.getElementById('wifi-ssid');
   var wifiPass = document.getElementById('wifi-pass');
   var wifiErr = document.getElementById('wifi-err');
-  var osClientId = document.getElementById('os-client-id');
-  var osClientSec = document.getElementById('os-client-sec');
-  var aeroKey = document.getElementById('aeroapi-key');
+  var aggUrl = document.getElementById('agg-url');
+  var aggToken = document.getElementById('agg-token');
   var apiErr = document.getElementById('api-err');
 
   // DOM references — Step 3
@@ -411,10 +409,9 @@ function getTimezoneConfig() {
         { label: 'Network', value: state.wifi_ssid },
         { label: 'Password', value: state.wifi_password ? '\u2022'.repeat(Math.min(state.wifi_password.length, 12)) : '' }
       ]},
-      { title: 'API Keys', step: 2, items: [
-        { label: 'OpenSky Client ID', value: maskKey(state.os_client_id) },
-        { label: 'OpenSky Secret', value: maskKey(state.os_client_sec) },
-        { label: 'AeroAPI Key', value: maskKey(state.aeroapi_key) }
+      { title: 'Aggregator', step: 2, items: [
+        { label: 'URL', value: state.agg_url },
+        { label: 'Token', value: maskKey(state.agg_token) }
       ]},
       { title: 'Location', step: 3, items: [
         { label: 'Latitude', value: state.center_lat },
@@ -492,11 +489,10 @@ function getTimezoneConfig() {
       clearInputErrors([wifiSsid, wifiPass]);
     }
     if (n === 2) {
-      osClientId.value = state.os_client_id;
-      osClientSec.value = state.os_client_sec;
-      aeroKey.value = state.aeroapi_key;
+      aggUrl.value = state.agg_url;
+      aggToken.value = state.agg_token;
       apiErr.style.display = 'none';
-      clearInputErrors([osClientId, osClientSec, aeroKey]);
+      clearInputErrors([aggUrl, aggToken]);
     }
     if (n === 3) {
       centerLat.value = state.center_lat;
@@ -531,9 +527,8 @@ function getTimezoneConfig() {
       state.wifi_ssid = wifiSsid.value.trim();
       state.wifi_password = wifiPass.value;
     } else if (currentStep === 2) {
-      state.os_client_id = osClientId.value.trim();
-      state.os_client_sec = osClientSec.value.trim();
-      state.aeroapi_key = aeroKey.value.trim();
+      state.agg_url = aggUrl.value.trim();
+      state.agg_token = aggToken.value.trim();
     } else if (currentStep === 3) {
       state.center_lat = centerLat.value.trim();
       state.center_lon = centerLon.value.trim();
@@ -567,20 +562,18 @@ function getTimezoneConfig() {
       return true;
     }
     if (n === 2) {
-      state.os_client_id = osClientId.value.trim();
-      state.os_client_sec = osClientSec.value.trim();
-      state.aeroapi_key = aeroKey.value.trim();
+      state.agg_url = aggUrl.value.trim();
+      state.agg_token = aggToken.value.trim();
       var missing2 = [];
-      if (!state.os_client_id) missing2.push(osClientId);
-      if (!state.os_client_sec) missing2.push(osClientSec);
-      if (!state.aeroapi_key) missing2.push(aeroKey);
+      if (!state.agg_url) missing2.push(aggUrl);
+      if (!state.agg_token) missing2.push(aggToken);
       if (missing2.length > 0) {
         apiErr.style.display = '';
         markInputErrors(missing2);
         return false;
       }
       apiErr.style.display = 'none';
-      clearInputErrors([osClientId, osClientSec, aeroKey]);
+      clearInputErrors([aggUrl, aggToken]);
       return true;
     }
     if (n === 3) {
@@ -657,9 +650,8 @@ function getTimezoneConfig() {
     var payload = {
       wifi_ssid: state.wifi_ssid,
       wifi_password: state.wifi_password,
-      os_client_id: state.os_client_id,
-      os_client_sec: state.os_client_sec,
-      aeroapi_key: state.aeroapi_key,
+      agg_url: state.agg_url,
+      agg_token: state.agg_token,
       center_lat: Number(state.center_lat),
       center_lon: Number(state.center_lon),
       radius_km: Number(state.radius_km),

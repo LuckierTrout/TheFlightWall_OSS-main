@@ -2,7 +2,8 @@
 Purpose: Firmware entry point for ESP32.
 Responsibilities:
 - Initialize serial, connect to Wi-Fi, and construct fetchers and display.
-- Periodically fetch state vectors (OpenSky), enrich flights (AeroAPI), and push to queue.
+- Periodically fetch the fleet snapshot from the Cloudflare aggregator worker
+  (AggregatorFetcher) and push enriched flights to the display queue.
 - Display task on Core 0 reads queue and renders to LED matrix independently.
 Configuration: ConfigManager (NVS-backed with compile-time fallbacks).
 Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = display).
@@ -25,8 +26,8 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "utils/TimeUtils.h"
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
-#include "adapters/OpenSkyFetcher.h"
-#include "adapters/AeroAPIFetcher.h"
+#include "adapters/AggregatorFetcher.h"
+#include "core/LayoutStore.h"
 #include "core/FlightDataFetcher.h"
 #include "adapters/NeoMatrixDisplay.h"
 #include "adapters/WiFiManager.h"
@@ -88,9 +89,15 @@ struct FlightDisplayData {
     std::vector<FlightInfo> flights;
 };
 
+// Boot/status confirmation state. PENDING uses the configured text color
+// (amber-friendly default); OK maps to green; FAIL to red. Consumed by the
+// display task when dequeuing a DisplayStatusMessage.
+enum class StatusKind : uint8_t { PENDING, OK, FAIL };
+
 struct DisplayStatusMessage {
     char text[64];
     uint32_t durationMs;
+    StatusKind status;
 };
 
 // Double buffer for safe cross-core data transfer (no memcpy of String/vector)
@@ -169,8 +176,7 @@ static void enterPhase(StartupPhase phase)
 
 // --- Existing globals ---
 
-static OpenSkyFetcher g_openSky;
-static AeroAPIFetcher g_aeroApi;
+static AggregatorFetcher g_aggregator;
 static FlightDataFetcher *g_fetcher = nullptr;
 static NeoMatrixDisplay g_display;
 static WiFiManager g_wifiManager;
@@ -232,6 +238,19 @@ FlightStatsSnapshot getFlightStatsSnapshot() {
     return s;
 }
 
+// Snapshot of the latest enriched flight list, used by /api/flights/current
+// for the dashboard layout preview. Reads the *other* side of the double
+// buffer — the one Core 1 is NOT currently writing to — then copies the
+// vector so the caller owns the String allocations. Race window is the
+// brief moment between a writer's buffer flip and its next write, which
+// takes tens of microseconds; acceptable for a preview polling every few
+// seconds. If this ever becomes load-bearing for correctness (it isn't),
+// promote g_writeBuf to std::atomic and gate behind a mutex.
+std::vector<FlightInfo> getCurrentFlights() {
+    uint8_t readBuf = g_writeBuf ^ 1;
+    return g_flightBuf[readBuf].flights;
+}
+
 // --- Layout engine state (Story 3.1) ---
 // Computed once at boot from HardwareConfig; recomputed on config changes.
 // Read by WebPortal for GET /api/layout.
@@ -241,7 +260,8 @@ LayoutResult getCurrentLayout() {
     return g_layout;
 }
 
-static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
+static void queueDisplayMessage(const String &message, uint32_t durationMs = 0,
+                                StatusKind status = StatusKind::PENDING)
 {
     if (g_displayMessageQueue == nullptr)
     {
@@ -251,6 +271,7 @@ static void queueDisplayMessage(const String &message, uint32_t durationMs = 0)
     DisplayStatusMessage statusMessage = {};
     snprintf(statusMessage.text, sizeof(statusMessage.text), "%s", message.c_str());
     statusMessage.durationMs = durationMs;
+    statusMessage.status = status;
     xQueueOverwrite(g_displayMessageQueue, &statusMessage);
 }
 
@@ -288,12 +309,12 @@ static void queueWiFiStateMessage(WiFiState state)
         {
             case WiFiState::STA_CONNECTED:
                 enterPhase(StartupPhase::WIFI_CONNECTED);
-                queueDisplayMessage(String("WiFi Connected ✓"), 2000);
+                queueDisplayMessage(String("WiFi OK"), 2000, StatusKind::OK);
                 LOG_I("Main", "Startup: WiFi connected");
                 return;
             case WiFiState::AP_FALLBACK:
                 enterPhase(StartupPhase::WIFI_FAILED);
-                queueDisplayMessage(String("WiFi Failed - Reopen Setup"));
+                queueDisplayMessage(String("WiFi FAIL - Reopen Setup"), 0, StatusKind::FAIL);
                 LOG_I("Main", "Startup: WiFi failed, returning to setup");
                 return;
             case WiFiState::CONNECTING:
@@ -321,7 +342,7 @@ static void queueWiFiStateMessage(WiFiState state)
             queueDisplayMessage(String("WiFi Lost..."));
             break;
         case WiFiState::AP_FALLBACK:
-            queueDisplayMessage(String("WiFi Failed"));
+            queueDisplayMessage(String("WiFi FAIL"), 0, StatusKind::FAIL);
             break;
     }
 }
@@ -337,7 +358,8 @@ static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfi
            lhs.zigzag != rhs.zigzag ||
            lhs.zone_logo_pct != rhs.zone_logo_pct ||     // ds-3.2 synthesis: hot-reload zone layout
            lhs.zone_split_pct != rhs.zone_split_pct ||
-           lhs.zone_layout != rhs.zone_layout;
+           lhs.zone_layout != rhs.zone_layout ||
+           lhs.zone_pad_x != rhs.zone_pad_x;
 }
 
 static bool hardwareGeometryChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
@@ -355,7 +377,8 @@ static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConf
            lhs.zigzag != rhs.zigzag ||
            lhs.zone_logo_pct != rhs.zone_logo_pct ||     // ds-3.2 synthesis: zone changes update _layout via reconfigureFromConfig()
            lhs.zone_split_pct != rhs.zone_split_pct ||
-           lhs.zone_layout != rhs.zone_layout;
+           lhs.zone_layout != rhs.zone_layout ||
+           lhs.zone_pad_x != rhs.zone_pad_x;
 }
 
 // --- Display task (Task 2) ---
@@ -531,7 +554,19 @@ void displayTask(void *pvParameters)
             statusMessageDurationMs = statusMessage.durationMs; // 0 = indefinite
             strncpy(lastStatusText, statusMessage.text, sizeof(lastStatusText) - 1);
             lastStatusText[sizeof(lastStatusText) - 1] = '\0';
-            g_display.displayMessage(String(statusMessage.text));
+
+            // Map StatusKind → render color. PENDING uses the user-configured
+            // text color; OK/FAIL override with fixed semantic colors (green/red).
+            RenderContext ctx = g_display.buildRenderContext();
+            uint16_t color = ctx.textColor;
+            if (ctx.matrix != nullptr) {
+                if (statusMessage.status == StatusKind::OK) {
+                    color = ctx.matrix->Color(0, 220, 0);
+                } else if (statusMessage.status == StatusKind::FAIL) {
+                    color = ctx.matrix->Color(220, 0, 0);
+                }
+            }
+            g_display.displayMessage(String(statusMessage.text), color);
             g_display.show();
         }
 
@@ -581,6 +616,19 @@ void displayTask(void *pvParameters)
         ModeRegistry::tick(cachedCtx, *flightsPtr);
         if (ModeRegistry::getActiveMode() == nullptr) {
             g_display.displayFallbackCard(*flightsPtr);
+        }
+
+        // Universal 1-px **black** frame around the full panel. Painted after
+        // the active mode renders so it sits on top of any stray edge pixels.
+        // LayoutEngine inset its zones by 1 px (see FRAME_INSET_PX) so built-
+        // in modes already render inside this frame; the black ring here
+        // just guarantees nothing from a custom layout or rogue widget
+        // bleeds into the frame area.
+        if (cachedCtx.matrix != nullptr) {
+            cachedCtx.matrix->drawRect(0, 0,
+                                       cachedCtx.matrix->width(),
+                                       cachedCtx.matrix->height(),
+                                       cachedCtx.matrix->Color(0, 0, 0));
         }
 
         // Single frame commit (FR35 — one show() per frame)
@@ -701,13 +749,24 @@ static void performOtaSelfCheck() {
 
 // --- Partition validation helper (Story fn-1.1) ---
 
+// Default partition sizes match the classic ESP32 (4MB flash) partition
+// table in custom_partitions.csv. Envs with alternate partition tables (e.g.
+// esp32s3_n16r8 uses partitions_16mb.csv) override these at build time via
+// -D FW_EXPECTED_APP_SIZE / -D FW_EXPECTED_SPIFFS_SIZE in platformio.ini.
+#ifndef FW_EXPECTED_APP_SIZE
+#define FW_EXPECTED_APP_SIZE 0x180000   // 1.5MB — classic ESP32 OTA slot
+#endif
+#ifndef FW_EXPECTED_SPIFFS_SIZE
+#define FW_EXPECTED_SPIFFS_SIZE 0xF0000 // 960KB — classic LittleFS partition
+#endif
+
 void validatePartitionLayout() {
     Serial.println("[Main] Validating partition layout...");
 
-    // Expected partition sizes from custom_partitions.csv (Story fn-1.1)
-    // IMPORTANT: If you modify custom_partitions.csv, update these constants
-    const size_t EXPECTED_APP_SIZE = 0x180000;   // app0/app1: 1.5MB
-    const size_t EXPECTED_SPIFFS_SIZE = 0xF0000; // spiffs: 960KB
+    // Expected sizes come from the partition CSV referenced by the active
+    // PlatformIO env; see the #defines above for per-env overrides.
+    const size_t EXPECTED_APP_SIZE = FW_EXPECTED_APP_SIZE;
+    const size_t EXPECTED_SPIFFS_SIZE = FW_EXPECTED_SPIFFS_SIZE;
 
     // Validate running app partition
     const esp_partition_t* running = esp_ota_get_running_partition();
@@ -776,6 +835,21 @@ void setup()
     // Validate partition layout matches expectations (Story fn-1.1)
     validatePartitionLayout();
 
+    // Report PSRAM status at boot. On boards without PSRAM (classic ESP32) or
+    // when PSRAM init fails, getPsramSize() returns 0 — log that explicitly so
+    // a silent fallback never masquerades as success. PSRAM is not auto-merged
+    // into the default malloc pool; features that want it must call ps_malloc
+    // or heap_caps_malloc(MALLOC_CAP_SPIRAM).
+#ifdef BOARD_HAS_PSRAM
+    if (psramFound()) {
+        Serial.printf("[Main] PSRAM: %u KB total, %u KB free\n",
+                      (unsigned)(ESP.getPsramSize() / 1024),
+                      (unsigned)(ESP.getFreePsram() / 1024));
+    } else {
+        Serial.println("[Main] PSRAM: NOT FOUND (BOARD_HAS_PSRAM was defined but init failed)");
+    }
+#endif
+
     // Mount LittleFS without auto-format to prevent silent data loss
     if (!LittleFS.begin(false)) {
         LOG_E("Main", "LittleFS mount failed - filesystem may be corrupted or unformatted");
@@ -790,6 +864,14 @@ void setup()
     SystemStatus::init();
     OTAUpdater::init(GITHUB_REPO_OWNER, GITHUB_REPO_NAME);
     ModeOrchestrator::init();
+
+    // Ensure /layouts/ directory exists on LittleFS. Without this call
+    // LayoutStore::list() returns false on a freshly-flashed filesystem,
+    // which cascades into `/api/layouts` 500s and Custom Layout mode being
+    // unable to load any layout (LE-1.1 regression surfaced 2026-04-20).
+    if (!LayoutStore::init()) {
+        LOG_E("Main", "LayoutStore init failed — custom layouts unavailable");
+    }
 
     // ModeRegistry init (Story ds-1.3, AC #2)
     // Registers mode table; requestSwitch deferred until after g_display.initialize()
@@ -1015,7 +1097,7 @@ void setup()
     g_webPortal.begin();
     LOG_I("Main", "WebPortal started");
 
-    g_fetcher = new FlightDataFetcher(&g_openSky, &g_aeroApi);
+    g_fetcher = new FlightDataFetcher(&g_aggregator, &g_aggregator);
     if (g_fetcher == nullptr)
     {
         LOG_E("Main", "Failed to create FlightDataFetcher");
@@ -1024,7 +1106,7 @@ void setup()
     // Enroll loop() task in TWDT for Core 1 stall detection (Story dl-1.4, AC #5).
     // 10s timeout (NFR10 ceiling). The per-iteration pet in FlightDataFetcher
     // covers multi-call enrichment batches; the 10s window is sized to absorb
-    // a single slow HTTPS call (AeroAPI rate-limited retries, etc.).
+    // a single slow HTTPS call (aggregator fetch + CDN name lookups).
     esp_task_wdt_init(10, true);
     esp_task_wdt_add(NULL);
     LOG_I("Main", "Loop task enrolled in TWDT (10s timeout)");
@@ -1348,8 +1430,9 @@ void loop()
 
             if (!flights.empty())
             {
-                // Clear progress message so display task renders flight data
-                queueDisplayMessage(String(""), 1);
+                // Brief green confirmation, then duration expires and the display
+                // task resumes normal mode rendering automatically.
+                queueDisplayMessage(String("Flights OK"), 1000, StatusKind::OK);
                 LOG_I("Main", "Startup complete: first flight data ready");
             }
             else

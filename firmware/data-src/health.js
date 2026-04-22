@@ -81,7 +81,7 @@
 
   function renderApis(d) {
     var sub = d.subsystems;
-    var map = { opensky: 'OpenSky', aeroapi: 'AeroAPI', cdn: 'CDN' };
+    var map = { aggregator: 'Aggregator', cdn: 'CDN' };
     var html = '';
     for (var key in map) {
       if (sub[key]) {

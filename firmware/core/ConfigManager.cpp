@@ -50,6 +50,7 @@ public:
 
 static bool isSupportedDisplayPin(uint8_t pin);
 static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels);
+static uint8_t maxHorizontalZonePadX(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels);
 
 // Reject tile configs that would exceed ESP32 RAM (~160KB usable).
 // CRGB is 3 bytes per pixel; cap at 16,384 pixels (~49KB).
@@ -57,6 +58,18 @@ static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pix
     if (tiles_x == 0 || tiles_y == 0 || tile_pixels == 0) return false;
     uint32_t total = (uint32_t)tiles_x * tiles_y * tile_pixels * tile_pixels;
     return total <= 16384;
+}
+
+static uint8_t maxHorizontalZonePadX(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels) {
+    if (tiles_x == 0 || tiles_y == 0 || tile_pixels == 0) return 0;
+
+    const uint16_t mw = static_cast<uint16_t>(tiles_x) * tile_pixels;
+    const uint16_t mh = static_cast<uint16_t>(tiles_y) * tile_pixels;
+    if (mw <= mh) return 0;
+
+    // Keep the default square logo width plus at least one column for the
+    // right-hand panel after applying left/right padding.
+    return static_cast<uint8_t>((mw - mh - 1U) / 2U);
 }
 
 static bool updateConfigValue(DisplayConfig& display,
@@ -120,6 +133,11 @@ static bool updateConfigValue(DisplayConfig& display,
         if (v > 1) return false;
         hardware.zone_layout = v; return true;
     }
+    if (strcmp(key, "zone_pad_x") == 0) {
+        uint8_t v = value.as<uint8_t>();
+        if (v > maxHorizontalZonePadX(hardware.tiles_x, hardware.tiles_y, hardware.tile_pixels)) return false;
+        hardware.zone_pad_x = v; return true;
+    }
 
     // Timing
     if (strcmp(key, "fetch_interval") == 0)    { timing.fetch_interval = value.as<uint16_t>(); return true; }
@@ -128,9 +146,8 @@ static bool updateConfigValue(DisplayConfig& display,
     // Network
     if (strcmp(key, "wifi_ssid") == 0)         { network.wifi_ssid = value.as<String>(); return true; }
     if (strcmp(key, "wifi_password") == 0)     { network.wifi_password = value.as<String>(); return true; }
-    if (strcmp(key, "os_client_id") == 0)      { network.opensky_client_id = value.as<String>(); return true; }
-    if (strcmp(key, "os_client_sec") == 0)     { network.opensky_client_secret = value.as<String>(); return true; }
-    if (strcmp(key, "aeroapi_key") == 0)       { network.aeroapi_key = value.as<String>(); return true; }
+    if (strcmp(key, "agg_url") == 0)           { network.agg_url = value.as<String>(); return true; }
+    if (strcmp(key, "agg_token") == 0)         { network.agg_token = value.as<String>(); return true; }
 
     // Schedule (Foundation release - night mode) — all hot-reload, NOT in REBOOT_KEYS
     if (strcmp(key, "timezone") == 0) {
@@ -190,12 +207,16 @@ static bool isSupportedDisplayPin(uint8_t pin) {
         case 18:
         case 19:
         case 21:
+#if !defined(CONFIG_IDF_TARGET_ESP32S3)
         case 22:
         case 23:
         case 25:
+#endif
         case 26:
+#if !defined(CONFIG_IDF_TARGET_ESP32S3)
         case 27:
         case 32:
+#endif
         case 33:
             return true;
         default:
@@ -206,8 +227,8 @@ static bool isSupportedDisplayPin(uint8_t pin) {
 // Reboot-required keys
 static const char* REBOOT_KEYS[] = {
     "wifi_ssid", "wifi_password",
-    "os_client_id", "os_client_sec",
-    "aeroapi_key", "display_pin",
+    "agg_url", "agg_token",
+    "display_pin",
     "tiles_x", "tiles_y", "tile_pixels"
 };
 static const size_t REBOOT_KEY_COUNT = sizeof(REBOOT_KEYS) / sizeof(REBOOT_KEYS[0]);
@@ -243,15 +264,15 @@ void ConfigManager::loadDefaults() {
     _hardware.zone_logo_pct = 0;
     _hardware.zone_split_pct = 0;
     _hardware.zone_layout = 0;
+    _hardware.zone_pad_x = 0;
 
     _timing.fetch_interval = TimingConfiguration::FETCH_INTERVAL_SECONDS;
     _timing.display_cycle = TimingConfiguration::DISPLAY_CYCLE_SECONDS;
 
     _network.wifi_ssid = WiFiConfiguration::WIFI_SSID;
     _network.wifi_password = WiFiConfiguration::WIFI_PASSWORD;
-    _network.opensky_client_id = APIConfiguration::OPENSKY_CLIENT_ID;
-    _network.opensky_client_secret = APIConfiguration::OPENSKY_CLIENT_SECRET;
-    _network.aeroapi_key = APIConfiguration::AEROAPI_KEY;
+    // agg_url / agg_token have no compile-time defaults — they are always
+    // provided at runtime via the setup wizard (or factory-reset blank).
 
     // Schedule defaults (Foundation release - night mode)
     _schedule.timezone = "UTC0";           // POSIX timezone
@@ -381,6 +402,16 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("zone_logo_pct"))  snapshot.hardware.zone_logo_pct = prefs.getUChar("zone_logo_pct", snapshot.hardware.zone_logo_pct);
     if (prefs.isKey("zone_split_pct")) snapshot.hardware.zone_split_pct = prefs.getUChar("zone_split_pct", snapshot.hardware.zone_split_pct);
     if (prefs.isKey("zone_layout"))    snapshot.hardware.zone_layout = prefs.getUChar("zone_layout", snapshot.hardware.zone_layout);
+    if (prefs.isKey("zone_pad_x")) {
+        const uint8_t storedPad = prefs.getUChar("zone_pad_x", snapshot.hardware.zone_pad_x);
+        if (storedPad <= maxHorizontalZonePadX(snapshot.hardware.tiles_x,
+                                               snapshot.hardware.tiles_y,
+                                               snapshot.hardware.tile_pixels)) {
+            snapshot.hardware.zone_pad_x = storedPad;
+        } else {
+            LOG_W("ConfigManager", "NVS zone_pad_x invalid — using default");
+        }
+    }
 
     // Timing
     if (prefs.isKey("fetch_interval")) snapshot.timing.fetch_interval = prefs.getUShort("fetch_interval", snapshot.timing.fetch_interval);
@@ -389,9 +420,8 @@ void ConfigManager::loadFromNvs() {
     // Network
     if (prefs.isKey("wifi_ssid"))      snapshot.network.wifi_ssid = prefs.getString("wifi_ssid", snapshot.network.wifi_ssid);
     if (prefs.isKey("wifi_password"))  snapshot.network.wifi_password = prefs.getString("wifi_password", snapshot.network.wifi_password);
-    if (prefs.isKey("os_client_id"))   snapshot.network.opensky_client_id = prefs.getString("os_client_id", snapshot.network.opensky_client_id);
-    if (prefs.isKey("os_client_sec"))  snapshot.network.opensky_client_secret = prefs.getString("os_client_sec", snapshot.network.opensky_client_secret);
-    if (prefs.isKey("aeroapi_key"))    snapshot.network.aeroapi_key = prefs.getString("aeroapi_key", snapshot.network.aeroapi_key);
+    if (prefs.isKey("agg_url"))        snapshot.network.agg_url = prefs.getString("agg_url", snapshot.network.agg_url);
+    if (prefs.isKey("agg_token"))      snapshot.network.agg_token = prefs.getString("agg_token", snapshot.network.agg_token);
 
     // Schedule (Foundation release - night mode)
     // Validate timezone on NVS load using the same rules as applyJson: non-empty, max 40 chars.
@@ -478,6 +508,7 @@ void ConfigManager::persistToNvs() {
     prefs.putUChar("zone_logo_pct", _hardware.zone_logo_pct);
     prefs.putUChar("zone_split_pct", _hardware.zone_split_pct);
     prefs.putUChar("zone_layout", _hardware.zone_layout);
+    prefs.putUChar("zone_pad_x", _hardware.zone_pad_x);
 
     // Timing
     prefs.putUShort("fetch_interval", _timing.fetch_interval);
@@ -486,9 +517,8 @@ void ConfigManager::persistToNvs() {
     // Network
     prefs.putString("wifi_ssid", _network.wifi_ssid);
     prefs.putString("wifi_password", _network.wifi_password);
-    prefs.putString("os_client_id", _network.opensky_client_id);
-    prefs.putString("os_client_sec", _network.opensky_client_secret);
-    prefs.putString("aeroapi_key", _network.aeroapi_key);
+    prefs.putString("agg_url", _network.agg_url);
+    prefs.putString("agg_token", _network.agg_token);
 
     // Schedule (Foundation release - night mode)
     prefs.putString("timezone", _schedule.timezone);
@@ -537,6 +567,7 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     out["zone_logo_pct"] = snapshot.hardware.zone_logo_pct;
     out["zone_split_pct"] = snapshot.hardware.zone_split_pct;
     out["zone_layout"] = snapshot.hardware.zone_layout;
+    out["zone_pad_x"] = snapshot.hardware.zone_pad_x;
 
     // Timing
     out["fetch_interval"] = snapshot.timing.fetch_interval;
@@ -545,9 +576,8 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     // Network — NVS abbreviated keys for API round-trip consistency
     out["wifi_ssid"] = snapshot.network.wifi_ssid;
     out["wifi_password"] = snapshot.network.wifi_password;
-    out["os_client_id"] = snapshot.network.opensky_client_id;
-    out["os_client_sec"] = snapshot.network.opensky_client_secret;
-    out["aeroapi_key"] = snapshot.network.aeroapi_key;
+    out["agg_url"] = snapshot.network.agg_url;
+    out["agg_token"] = snapshot.network.agg_token;
 
     // Schedule
     out["timezone"] = snapshot.schedule.timezone;
@@ -965,9 +995,5 @@ bool ConfigManager::setModeSchedule(const ModeScheduleConfig& config) {
 }
 
 // Compile-time URL accessors — these never change at runtime
-const char* ConfigManager::getOpenSkyTokenUrl() { return APIConfiguration::OPENSKY_TOKEN_URL; }
-const char* ConfigManager::getOpenSkyBaseUrl() { return APIConfiguration::OPENSKY_BASE_URL; }
-const char* ConfigManager::getAeroApiBaseUrl() { return APIConfiguration::AEROAPI_BASE_URL; }
 const char* ConfigManager::getFlightWallCdnBaseUrl() { return APIConfiguration::FLIGHTWALL_CDN_BASE_URL; }
-bool ConfigManager::getAeroApiInsecureTls() { return APIConfiguration::AEROAPI_INSECURE_TLS; }
 bool ConfigManager::getFlightWallInsecureTls() { return APIConfiguration::FLIGHTWALL_INSECURE_TLS; }

@@ -143,16 +143,15 @@ void SystemStatus::toExtendedJson(JsonObject& obj, const FlightStatsSnapshot& st
 
 const char* SystemStatus::subsystemName(Subsystem sys) {
     switch (sys) {
-        case Subsystem::WIFI:     return "wifi";
-        case Subsystem::OPENSKY:  return "opensky";
-        case Subsystem::AEROAPI:  return "aeroapi";
-        case Subsystem::CDN:      return "cdn";
-        case Subsystem::NVS:      return "nvs";
-        case Subsystem::LITTLEFS: return "littlefs";
-        case Subsystem::OTA:      return "ota";
-        case Subsystem::NTP:      return "ntp";
-        case Subsystem::OTA_PULL: return "ota_pull";
-        default:                  return "unknown";
+        case Subsystem::WIFI:       return "wifi";
+        case Subsystem::AGGREGATOR: return "aggregator";
+        case Subsystem::CDN:        return "cdn";
+        case Subsystem::NVS:        return "nvs";
+        case Subsystem::LITTLEFS:   return "littlefs";
+        case Subsystem::OTA:        return "ota";
+        case Subsystem::NTP:        return "ntp";
+        case Subsystem::OTA_PULL:   return "ota_pull";
+        default:                    return "unknown";
     }
 }
 

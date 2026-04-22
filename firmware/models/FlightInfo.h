@@ -23,9 +23,12 @@ struct FlightInfo
     // Aircraft
     String aircraft_code;
 
-    // Human-friendly display strings
+    // Human-friendly display strings (populated via FlightWall CDN lookups).
+    // `_short` is the marketing name ("737-800"); `_full` is the full form
+    // ("Boeing 737-800"). Widgets can choose which to render per zone.
     String airline_display_name_full;
     String aircraft_display_name_short;
+    String aircraft_display_name_full;
 
     // Display-ready telemetry (converted from StateVector units in pipeline)
     // NAN indicates missing/unavailable data — renderer shows "--" placeholders.

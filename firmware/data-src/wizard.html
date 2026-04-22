@@ -38,18 +38,16 @@
       </div>
     </section>
 
-    <!-- Step 2: API Keys -->
+    <!-- Step 2: Aggregator -->
     <section id="step-2" class="step">
-      <h2>API Keys</h2>
-      <p class="step-desc">Enter your API credentials. These are used to fetch live flight data.</p>
+      <h2>Aggregator</h2>
+      <p class="step-desc">Point the device at your FlightWall aggregator Worker.</p>
       <div class="form-fields">
-        <label for="os-client-id">OpenSky Client ID</label>
-        <input type="text" id="os-client-id" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client ID">
-        <label for="os-client-sec">OpenSky Client Secret</label>
-        <input type="text" id="os-client-sec" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste client secret">
-        <label for="aeroapi-key">AeroAPI Key</label>
-        <input type="text" id="aeroapi-key" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key">
-        <p id="api-err" class="field-error" style="display:none">All three API fields are required.</p>
+        <label for="agg-url">Aggregator URL</label>
+        <input type="text" id="agg-url" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="https://flightwall-aggregator.<sub>.workers.dev">
+        <label for="agg-token">Aggregator Token</label>
+        <input type="text" id="agg-token" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Bearer token">
+        <p id="api-err" class="field-error" style="display:none">URL and token are required.</p>
       </div>
     </section>
 

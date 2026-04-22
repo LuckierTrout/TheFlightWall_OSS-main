@@ -219,6 +219,11 @@ body{
 }
 .apply-bar-btn:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
 .apply-bar-btn:disabled{opacity:0.5;cursor:default}
+.apply-bar-actions{display:flex;gap:8px;align-items:center}
+.apply-bar.reboot-pending{border-color:#f0a020}
+.apply-bar.reboot-pending .apply-bar-text{color:#f0a020}
+.apply-bar-btn-reboot{background:#f0a020;border-color:#f0a020}
+.apply-bar-btn-reboot:hover{background:#d88c10;border-color:#d88c10}
 
 /* Card form fields (dashboard) */
 .card .form-fields{display:flex;flex-direction:column;gap:4px}

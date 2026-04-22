@@ -48,6 +48,7 @@ void test_defaults_hardware() {
     TEST_ASSERT_EQUAL_UINT8(2, h.tiles_y);
     TEST_ASSERT_EQUAL_UINT8(16, h.tile_pixels);
     TEST_ASSERT_EQUAL_UINT8(25, h.display_pin);
+    TEST_ASSERT_EQUAL_UINT8(0, h.zone_pad_x);
 }
 
 void test_defaults_timing() {
@@ -106,15 +107,17 @@ void test_apply_json_matrix_mapping_hot_reload() {
     doc["origin_corner"] = 3;
     doc["scan_dir"] = 1;
     doc["zigzag"] = 1;
+    doc["zone_pad_x"] = 4;
     JsonObject settings = doc.as<JsonObject>();
 
     ApplyResult result = ConfigManager::applyJson(settings);
 
-    TEST_ASSERT_EQUAL(3, result.applied.size());
+    TEST_ASSERT_EQUAL(4, result.applied.size());
     TEST_ASSERT_FALSE(result.reboot_required);
     TEST_ASSERT_EQUAL_UINT8(3, ConfigManager::getHardware().origin_corner);
     TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getHardware().scan_dir);
     TEST_ASSERT_EQUAL_UINT8(1, ConfigManager::getHardware().zigzag);
+    TEST_ASSERT_EQUAL_UINT8(4, ConfigManager::getHardware().zone_pad_x);
 }
 
 void test_apply_json_hot_reload_persists_after_debounce() {
@@ -175,8 +178,8 @@ void test_apply_json_mixed_keys() {
     ConfigManager::init();
 
     JsonDocument doc;
-    doc["brightness"] = 50;       // hot-reload
-    doc["aeroapi_key"] = "abc";   // reboot
+    doc["brightness"] = 50;                   // hot-reload
+    doc["agg_token"] = "bearer-token-xyz";    // reboot (Cloudflare aggregator bearer)
     JsonObject settings = doc.as<JsonObject>();
 
     ApplyResult result = ConfigManager::applyJson(settings);
@@ -184,7 +187,7 @@ void test_apply_json_mixed_keys() {
     TEST_ASSERT_EQUAL(2, result.applied.size());
     TEST_ASSERT_TRUE(result.reboot_required);
     TEST_ASSERT_EQUAL_UINT8(50, ConfigManager::getDisplay().brightness);
-    TEST_ASSERT_TRUE(ConfigManager::getNetwork().aeroapi_key == "abc");
+    TEST_ASSERT_TRUE(ConfigManager::getNetwork().agg_token == "bearer-token-xyz");
 }
 
 void test_apply_json_rejects_unknown_keys() {
@@ -208,9 +211,8 @@ void test_apply_json_rejects_unknown_keys() {
 void test_requires_reboot_known_keys() {
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_ssid"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_password"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("os_client_id"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("os_client_sec"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("aeroapi_key"));
+    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_url"));
+    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_token"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("display_pin"));
 }
 
@@ -228,6 +230,7 @@ void test_requires_reboot_hot_reload_keys() {
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("origin_corner"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("scan_dir"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("zigzag"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("zone_pad_x"));
 }
 
 // --- Factory Reset Tests ---
@@ -386,6 +389,15 @@ void test_apply_json_schedule_validation() {
     doc6["sched_enabled"] = 256;
     ApplyResult result6 = ConfigManager::applyJson(doc6.as<JsonObject>());
     TEST_ASSERT_EQUAL(0, result6.applied.size());
+
+    // 5x2 @ 16px => 80x32, so max safe pad per side is floor((80-32-1)/2)=23.
+    JsonDocument doc7;
+    doc7["tiles_x"] = 5;
+    doc7["tiles_y"] = 2;
+    doc7["tile_pixels"] = 16;
+    doc7["zone_pad_x"] = 24;
+    ApplyResult result7 = ConfigManager::applyJson(doc7.as<JsonObject>());
+    TEST_ASSERT_EQUAL(0, result7.applied.size());
 }
 
 void test_dump_settings_json_includes_schedule() {
@@ -413,11 +425,12 @@ void test_dump_settings_json_includes_schedule() {
     TEST_ASSERT_EQUAL_UINT16(1320, out["sched_dim_start"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT16(360, out["sched_dim_end"].as<uint16_t>());
     TEST_ASSERT_EQUAL_UINT8(5, out["sched_dim_brt"].as<uint8_t>());
+    TEST_ASSERT_EQUAL_UINT8(0, out["zone_pad_x"].as<uint8_t>());
 
-    // Verify total key count (29 keys total: 4 display + 3 location + 10 hardware + 2 timing + 5 network + 5 schedule)
+    // Verify total key count (30 keys total: 4 display + 3 location + 11 hardware + 2 timing + 5 network + 5 schedule)
     size_t keyCount = 0;
     for (JsonPair kv : out) keyCount++;
-    TEST_ASSERT_EQUAL_UINT32(29, keyCount);
+    TEST_ASSERT_EQUAL_UINT32(30, keyCount);
 }
 
 // --- SystemStatus Tests ---
@@ -438,8 +451,8 @@ void test_system_status_set_get() {
 }
 
 void test_system_status_error() {
-    SystemStatus::set(Subsystem::OPENSKY, StatusLevel::ERROR, "401 Unauthorized");
-    SubsystemStatus s = SystemStatus::get(Subsystem::OPENSKY);
+    SystemStatus::set(Subsystem::AGGREGATOR, StatusLevel::ERROR, "401 Unauthorized");
+    SubsystemStatus s = SystemStatus::get(Subsystem::AGGREGATOR);
     TEST_ASSERT_EQUAL(StatusLevel::ERROR, s.level);
     TEST_ASSERT_TRUE(s.message == "401 Unauthorized");
 }

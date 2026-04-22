@@ -19,8 +19,8 @@ This is the open source version with some basic guides to the panels, mounting t
     - [5V >20A power supply](https://www.amazon.com/dp/B07KC55TJF) (for 20 panels)
     - [3.3V - 5V voltage level shifter](https://www.amazon.com/dp/B07F7W91LC)
 - Data
-    - [OpenSky](https://opensky-network.org/) for ADS-B flight data
-    - [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/) for route, aircraft, and airline information
+    - FlightWall **aggregator Worker** (Cloudflare) that pulls ADS-B state vectors from [adsb.lol](https://adsb.lol/), joins route metadata, and exposes a single bearer-protected endpoint to the ESP32. See [`workers/flightwall-aggregator/`](workers/flightwall-aggregator/).
+    - FlightWall **CDN** for airline / aircraft display-name enrichment (resolves ICAO codes like `UAL` / `B738` to `United Airlines` / `Boeing 737-800`).
 
 # Hardware
 
@@ -49,23 +49,24 @@ The entire panel is controlled by one data line - simple electronics in exchange
 
 # Data and Software
 
-## Data API Keys
+## Data Pipeline
 
-The data for this project consists of two main data sources:
-1. Core public [ADS-B](https://en.wikipedia.org/wiki/Automatic_Dependent_Surveillance%E2%80%93Broadcast) data for flight positions and callsigns - using [OpenSky](https://opensky-network.org)
-2. Flight information lookup - aircraft, airline, and route (origin/destination airport). This is typically the hardest / most expensive information to find. Using [FlightAware AeroAPI](https://flightaware.com/aeroapi)
+The firmware no longer talks to OpenSky or FlightAware directly. All flight data is served by a Cloudflare Worker (the "aggregator") that sits in front of the upstream feeds and returns a single normalized fleet snapshot.
 
-### Setting up OpenSky
-1. Register for an [OpenSky](https://opensky-network.org/) account
-2. Go to your [account page](https://opensky-network.org/my-opensky/account)
-3. Create a new API client and copy the `client_id` and `client_secret` to the [APIConfiguration.h](firmware/config/APIConfiguration.h) file
+1. **Aggregator Worker** — [`workers/flightwall-aggregator/`](workers/flightwall-aggregator/). Polls [adsb.lol](https://adsb.lol/) on a cron, joins route metadata, caches the result in Cloudflare KV, and serves `GET /fleet` behind `Authorization: Bearer <ESP32_AUTH_TOKEN>`.
+2. **FlightWall CDN** — `https://cdn.theflightwall.com`. Resolves ICAO airline/aircraft codes to human-readable names. Called from the ESP32 for display enrichment.
 
+### Setting up the aggregator
 
-### Setting up AeroAPI
-1. Go to the [FlightAware AeroAPI]([https://flightaware.com/aeroapi](https://flightaware.com/aeroapi)) page and create a personal account
-3. From the dashboard, open **API Keys**, click **Create API Key** and follow the steps
-8. Copy the generated key and add it to [APIConfiguration.h](firmware/config/APIConfiguration.h)
+Deploy the Worker once (see [`workers/flightwall-aggregator/README.md`](workers/flightwall-aggregator/README.md) for `wrangler` setup and the `ESP32_AUTH_TOKEN` secret). After deploy you'll have a URL like `https://flightwall-aggregator.<subdomain>.workers.dev`.
 
+### Configuring the ESP32
+
+Credentials are **not** compiled into the firmware — they're entered in the setup wizard on first boot and persisted to NVS. The wizard asks for:
+
+- Wi-Fi SSID + password
+- `agg_url` — the deployed Worker URL
+- `agg_token` — the bearer token matching the Worker's `ESP32_AUTH_TOKEN`
 
 ## Software Setup
 
@@ -90,10 +91,10 @@ The firmware can be built and uploaded to the ESP32 using [PlatformIO](https://p
    - Add the [PlatformIO IDE extension](https://platformio.org/install/ide?install=vscode)
 
 2. **Configure your settings**:
-   - Add your API keys to [APIConfiguration.h](firmware/config/APIConfiguration.h)
-   - Add your WiFi credentials to [WiFiConfiguration.h](firmware/config/WiFiConfiguration.h)
-   - Set your location (and optional display preferences) in [UserConfiguration.h](firmware/config/UserConfiguration.h)
-   - Adjust display hardware (pin, tile layout) in [HardwareConfiguration.h](firmware/config/HardwareConfiguration.h)
+   - Wi-Fi, aggregator URL/token, and location are entered in the on-device setup wizard — no code changes needed for those.
+   - Compile-time defaults for display preferences live in [UserConfiguration.h](firmware/config/UserConfiguration.h).
+   - Display hardware (pin, tile layout) in [HardwareConfiguration.h](firmware/config/HardwareConfiguration.h).
+   - The FlightWall CDN base URL lives in [APIConfiguration.h](firmware/config/APIConfiguration.h) (only change this if you're self-hosting the CDN).
 
 3. **Build and upload**:
    - Open the `firmware` folder in PlatformIO

@@ -19,3 +19,6 @@ firmware/compile_commands.json
 .cursor/hooks/state/
 node_modules/
 workers/**/node_modules/
+workers/**/.deploy-out/
+workers/**/.wrangler/
+workers/**/.dev.vars

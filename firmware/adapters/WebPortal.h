@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
+#include <atomic>
 #include <functional>
 #include "adapters/WiFiManager.h"
 
@@ -20,6 +21,11 @@ public:
 private:
     AsyncWebServer* _server = nullptr;
     WiFiManager* _wifiMgr = nullptr;
+    // Set true when POST /api/settings writes a reboot-required key. Surfaced
+    // via GET /api/status so the dashboard can hydrate the reboot-pending UI
+    // state across browser refreshes without holding state in the client alone.
+    // Reset naturally at boot (default-initialized false).
+    std::atomic<bool> _rebootPending{false};
     RebootCallback _rebootCallback = nullptr;
     CalibrationCallback _calibrationCallback = nullptr;
     PositioningCallback _positioningCallback = nullptr;
@@ -29,6 +35,7 @@ private:
     void _handleGetSettings(AsyncWebServerRequest* request);
     void _handlePostSettings(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     void _handleGetStatus(AsyncWebServerRequest* request);
+    void _handleGetCurrentFlights(AsyncWebServerRequest* request);
     void _handlePostReboot(AsyncWebServerRequest* request);
     void _handlePostReset(AsyncWebServerRequest* request);
     void _handleGetWifiScan(AsyncWebServerRequest* request);

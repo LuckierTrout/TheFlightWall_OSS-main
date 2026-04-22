@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TheFlightWall is an ESP32 firmware for a large WS2812B LED wall that displays live flight information. It fetches ADS-B data from OpenSky Network, enriches it via FlightAware AeroAPI, and renders flight cards on tiled LED panels. A captive-portal web UI handles configuration, display mode selection, OTA updates, and diagnostics.
+TheFlightWall is an ESP32 firmware for a large WS2812B LED wall that displays live flight information. It pulls a normalized fleet snapshot from a Cloudflare Worker (the "aggregator" at `workers/flightwall-aggregator/`, which in turn pulls adsb.lol and joins route data), resolves airline/aircraft display names via the FlightWall CDN, and renders flight cards on tiled LED panels. A captive-portal web UI handles configuration, display mode selection, OTA updates, and diagnostics.
+
+**NOTE — legacy:** earlier versions of the firmware called OpenSky and FlightAware AeroAPI directly. That path has been fully removed; there is no rollback. Any reference to OpenSky / AeroAPI / `os_client_id` / `aeroapi_key` in old docs or comments is stale.
 
 ## Build & Flash Commands
 
@@ -70,7 +72,7 @@ Adding a new mode requires: a `DisplayMode` subclass in `modes/`, a factory func
 
 `ConfigManager` wraps ESP32 NVS (namespace `"flightwall"`). Only ConfigManager.cpp includes compile-time config headers. Other components use category struct getters (`getDisplay()`, `getHardware()`, `getNetwork()`, etc.) which return thread-safe copies.
 
-Reboot-required NVS keys: `wifi_ssid`, `wifi_password`, `os_client_id`, `os_client_sec`, `aeroapi_key`, `display_pin`.
+Reboot-required NVS keys: `wifi_ssid`, `wifi_password`, `agg_url`, `agg_token`, `display_pin`, `tiles_x`, `tiles_y`, `tile_pixels`.
 
 ### REST API Pattern
 
@@ -110,7 +112,7 @@ python3 tests/smoke/test_web_portal_smoke.py --base-url http://flightwall.local
 
 - **Heap**: ESP32 has ~160KB usable. Modes require a 30KB heap margin before switching. OTA download requires 80KB free. Prefer static allocation over dynamic.
 - **Binary size**: Must fit in 1.5MB OTA partition. Currently ~81% used.
-- **NVS keys**: 15-character limit. Many are abbreviated (e.g., `os_client_id` = OpenSky client ID).
+- **NVS keys**: 15-character limit. Many are abbreviated (e.g., `agg_url`/`agg_token` for the Cloudflare aggregator Worker, `sched_dim_start` for the night-mode schedule).
 - **ArduinoJson v7**: Use `JsonDocument` (not deprecated `StaticJsonDocument`/`DynamicJsonDocument`). Use filter documents for large payloads.
 - **Web JS**: ES5 syntax only (no arrow functions, no `let`/`const`, no template literals). `FW.get()`, `FW.post()`, `FW.del()` return promises with `{ status, body }`. `FW.showToast(msg, severity)` for notifications.
 

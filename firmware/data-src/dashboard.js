@@ -107,9 +107,10 @@ function getTimezoneConfig() {
  * @param {number} tilesX - Number of horizontal tiles
  * @param {number} tilesY - Number of vertical tiles
  * @param {number} tilePixels - Pixels per tile edge
+ * @param {number} zonePadX - Blank columns per side around the panel
  * @returns {object} { matrixWidth, matrixHeight, mode, logoZone, flightZone, telemetryZone, valid }
  */
-function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct, layoutMode) {
+function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct, layoutMode, zonePadX) {
   if (!tilesX || !tilesY || !tilePixels) {
     return { matrixWidth: 0, matrixHeight: 0, mode: 'compact',
       logoZone: {x:0,y:0,w:0,h:0}, flightZone: {x:0,y:0,w:0,h:0},
@@ -130,11 +131,17 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   else if (mh < 48) { mode = 'full'; }
   else { mode = 'expanded'; }
 
+  var maxPadX = (mw > mh) ? Math.floor((mw - mh - 1) / 2) : 0;
+  var insetX = Math.max(0, Math.min(maxPadX, Math.round(Number(zonePadX) || 0)));
+  var contentX = insetX;
+  var contentW = mw - (insetX * 2);
+
   var logoW = mh; // default: square logo
   if (logoWidthPct > 0 && logoWidthPct <= 99) {
     logoW = Math.round(mw * logoWidthPct / 100);
     logoW = Math.max(1, Math.min(mw - 1, logoW));
   }
+  logoW = Math.max(1, Math.min(contentW - 1, logoW));
 
   var splitY = Math.floor(mh / 2); // default: 50/50
   if (flightHeightPct > 0 && flightHeightPct <= 99) {
@@ -144,21 +151,23 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
 
   var logoZone, flightZone, telemetryZone;
   if (layoutMode === 1) {
-    // Full-width bottom: logo top-left, flight top-right, telemetry spans full width
-    logoZone      = { x: 0,     y: 0,      w: logoW,      h: splitY };
-    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
-    telemetryZone = { x: 0,     y: splitY, w: mw,         h: mh - splitY };
+    // Full-width bottom: logo top-left, flight top-right, telemetry spans the padded panel width.
+    logoZone      = { x: contentX,         y: 0,      w: logoW,            h: splitY };
+    flightZone    = { x: contentX + logoW, y: 0,      w: contentW - logoW, h: splitY };
+    telemetryZone = { x: contentX,         y: splitY, w: contentW,         h: mh - splitY };
   } else {
-    // Classic: logo full-height left, flight/telemetry stacked right
-    logoZone      = { x: 0,     y: 0,      w: logoW,      h: mh };
-    flightZone    = { x: logoW, y: 0,      w: mw - logoW, h: splitY };
-    telemetryZone = { x: logoW, y: splitY, w: mw - logoW, h: mh - splitY };
+    // Classic: logo full-height left, flight/telemetry stacked right.
+    logoZone      = { x: contentX,         y: 0,      w: logoW,            h: mh };
+    flightZone    = { x: contentX + logoW, y: 0,      w: contentW - logoW, h: splitY };
+    telemetryZone = { x: contentX + logoW, y: splitY, w: contentW - logoW, h: mh - splitY };
   }
 
   return {
     matrixWidth: mw,
     matrixHeight: mh,
     mode: mode,
+    zoneLayout: layoutMode,
+    zonePadX: insetX,
     logoZone: logoZone,
     flightZone: flightZone,
     telemetryZone: telemetryZone,
@@ -188,9 +197,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   // --- Network & API card DOM ---
   var dWifiSsid = document.getElementById('d-wifi-ssid');
   var dWifiPass = document.getElementById('d-wifi-pass');
-  var dOsClientId = document.getElementById('d-os-client-id');
-  var dOsClientSec = document.getElementById('d-os-client-sec');
-  var dAeroKey = document.getElementById('d-aeroapi-key');
+  var dAggUrl = document.getElementById('d-agg-url');
+  var dAggToken = document.getElementById('d-agg-token');
   var dBtnScan = document.getElementById('d-btn-scan');
   var dScanArea = document.getElementById('d-scan-area');
   var dScanResults = document.getElementById('d-scan-results');
@@ -203,20 +211,61 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   var dOriginCorner = document.getElementById('d-origin-corner');
   var dScanDir = document.getElementById('d-scan-dir');
   var dZigzag = document.getElementById('d-zigzag');
+  var dZonePadX = document.getElementById('d-zone-pad-x');
   var dResText = document.getElementById('d-resolution-text');
 
   // --- Unified apply bar ---
   var applyBar = document.getElementById('apply-bar');
+  var applyBarText = document.getElementById('apply-bar-text');
   var btnApplyAll = document.getElementById('btn-apply-all');
+  var btnRebootNow = document.getElementById('btn-reboot-now');
   var dirtySections = { display: false, timing: false, network: false, hardware: false, nightmode: false };
+  // Server-backed: a reboot-required save happened since boot but the device
+  // has not yet rebooted. Hydrated from /api/status on load so the bar
+  // survives browser refresh. Cleared only by the reboot itself.
+  var rebootPending = false;
   // nmTimezoneDirty tracks explicit user changes to the timezone dropdown separately from
   // the nightmode dirty section, so posixToIana()'s 'UTC' fallback cannot silently overwrite
   // a custom POSIX string stored on the device when other Night Mode fields are changed.
   var nmTimezoneDirty = false;
 
+  function hasDirtySection() {
+    return dirtySections.display || dirtySections.timing || dirtySections.network ||
+           dirtySections.hardware || dirtySections.nightmode;
+  }
+
+  function refreshApplyBar() {
+    var dirty = hasDirtySection();
+    if (!dirty && !rebootPending) {
+      applyBar.style.display = 'none';
+      return;
+    }
+    applyBar.style.display = '';
+    if (rebootPending) {
+      applyBar.classList.add('reboot-pending');
+      btnRebootNow.style.display = '';
+    } else {
+      applyBar.classList.remove('reboot-pending');
+      btnRebootNow.style.display = 'none';
+    }
+    btnApplyAll.style.display = dirty ? '' : 'none';
+    if (dirty && rebootPending) {
+      applyBarText.textContent = 'Unsaved changes \u2022 Reboot pending';
+    } else if (rebootPending) {
+      applyBarText.textContent = 'Reboot required to apply saved changes';
+    } else {
+      applyBarText.textContent = 'Unsaved changes';
+    }
+  }
+
+  function setRebootPending(pending) {
+    rebootPending = !!pending;
+    refreshApplyBar();
+  }
+
   function markSectionDirty(section) {
     dirtySections[section] = true;
-    applyBar.style.display = '';
+    refreshApplyBar();
   }
 
   function clearDirtyState() {
@@ -226,7 +275,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     dirtySections.hardware = false;
     dirtySections.nightmode = false;
     nmTimezoneDirty = false;
-    applyBar.style.display = 'none';
+    refreshApplyBar();
   }
 
   function collectPayload() {
@@ -244,9 +293,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     if (dirtySections.network) {
       payload.wifi_ssid = dWifiSsid.value;
       payload.wifi_password = dWifiPass.value;
-      payload.os_client_id = dOsClientId.value.trim();
-      payload.os_client_sec = dOsClientSec.value.trim();
-      payload.aeroapi_key = dAeroKey.value.trim();
+      payload.agg_url = dAggUrl.value.trim();
+      payload.agg_token = dAggToken.value.trim();
     }
     if (dirtySections.hardware) {
       var tilesX = parseUint8Field(dTilesX, 'Tiles X', false);
@@ -266,6 +314,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       if (scanDir === null) return null;
       var zigzag = parseUint8Field(dZigzag, 'Zigzag', true);
       if (zigzag === null) return null;
+      var zonePadX = parseZonePadX(true);
+      if (zonePadX === null) return null;
       payload.tiles_x = tilesX;
       payload.tiles_y = tilesY;
       payload.tile_pixels = tilePixels;
@@ -273,6 +323,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       payload.origin_corner = originCorner;
       payload.scan_dir = scanDir;
       payload.zigzag = zigzag;
+      payload.zone_pad_x = zonePadX;
       payload.zone_logo_pct = customLogoPct;
       payload.zone_split_pct = customSplitPct;
       payload.zone_layout = zoneLayout;
@@ -299,7 +350,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   var debounceTimer = null;
   var DEBOUNCE_MS = 400;
   var SECONDS_PER_MONTH = 2592000;
-  var OPENSKY_WARN_THRESHOLD = 4000;
+  var POLL_WARN_THRESHOLD = 4000;
   var previewLastLayout = null;
   var hardwareInputDirty = false;
   var suppressHardwareInputHandler = false;
@@ -372,9 +423,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       // Network & API
       if (d.wifi_ssid !== undefined) dWifiSsid.value = d.wifi_ssid;
       if (d.wifi_password !== undefined) dWifiPass.value = d.wifi_password;
-      if (d.os_client_id !== undefined) dOsClientId.value = d.os_client_id;
-      if (d.os_client_sec !== undefined) dOsClientSec.value = d.os_client_sec;
-      if (d.aeroapi_key !== undefined) dAeroKey.value = d.aeroapi_key;
+      if (d.agg_url !== undefined) dAggUrl.value = d.agg_url;
+      if (d.agg_token !== undefined) dAggToken.value = d.agg_token;
 
       // Location
       var loadedLocation = normalizeLocationValues({
@@ -400,6 +450,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       if (d.origin_corner !== undefined) dOriginCorner.value = d.origin_corner;
       if (d.scan_dir !== undefined) dScanDir.value = d.scan_dir;
       if (d.zigzag !== undefined) dZigzag.value = d.zigzag;
+      if (d.zone_pad_x !== undefined && dZonePadX) dZonePadX.value = d.zone_pad_x;
       if (d.zone_logo_pct !== undefined) customLogoPct = d.zone_logo_pct;
       if (d.zone_split_pct !== undefined) customSplitPct = d.zone_split_pct;
       if (d.zone_layout !== undefined) {
@@ -465,40 +516,60 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   }
 
   // --- Apply settings with reboot awareness ---
+  // Saves synchronously. If the server reports reboot_required, we do NOT
+  // reboot here — the user must explicitly confirm via the "Reboot Now"
+  // button that appears on the apply bar. This keeps the device responsive
+  // while the user batches multi-module edits, and makes reboots intentional
+  // rather than side-effects of saving.
   function applyWithReboot(payload, btn, originalText) {
     btn.disabled = true;
-    btn.textContent = 'Applying...';
-    var rebootRequested = false;
+    btn.textContent = 'Saving...';
 
     FW.post('/api/settings', payload).then(function(res) {
       if (!res.body.ok) {
         throw new Error(res.body.error || 'Save failed');
       }
-      if (res.body.reboot_required) {
-        FW.showToast('Rebooting to apply changes...', 'warning');
-        rebootRequested = true;
-        return FW.post('/api/reboot', {});
-      }
-      FW.showToast('Applied', 'success');
       btn.disabled = false;
       btn.textContent = originalText;
-      return null;
-    }).then(function(res) {
-      if (!rebootRequested) return;
-      if (!res || !res.body || !res.body.ok) {
-        throw new Error((res && res.body && res.body.error) || 'Reboot failed');
+      if (res.body.reboot_required) {
+        setRebootPending(true);
+        FW.showToast('Saved — reboot required to apply', 'warning');
+      } else {
+        FW.showToast('Saved', 'success');
       }
-      btn.textContent = 'Rebooting...';
     }).catch(function(err) {
-      if (rebootRequested && err && err.name === 'TypeError') {
-        // Connection loss after reboot request is expected
-        btn.textContent = 'Rebooting...';
-        return;
-      }
       FW.showToast(err && err.message ? err.message : 'Network error', 'error');
       btn.disabled = false;
       btn.textContent = originalText;
     });
+  }
+
+  // Explicit reboot trigger — wired to the apply-bar "Reboot Now" button.
+  // Separate from applyWithReboot so a save never reboots on its own.
+  function requestReboot() {
+    btnRebootNow.disabled = true;
+    btnRebootNow.textContent = 'Rebooting...';
+    FW.showToast('Rebooting device...', 'warning');
+    FW.post('/api/reboot', {}).then(function(res) {
+      if (!res || !res.body || !res.body.ok) {
+        throw new Error((res && res.body && res.body.error) || 'Reboot failed');
+      }
+      // Success path ends here; the device is going down and the page will
+      // either reload itself or the user will reload once the wall is back.
+    }).catch(function(err) {
+      // Connection errors immediately after issuing reboot are expected —
+      // the device has torn down the HTTP stack before it could reply.
+      if (err && err.name === 'TypeError') {
+        return;
+      }
+      FW.showToast(err && err.message ? err.message : 'Reboot failed', 'error');
+      btnRebootNow.disabled = false;
+      btnRebootNow.textContent = 'Reboot Now';
+    });
+  }
+
+  if (btnRebootNow) {
+    btnRebootNow.addEventListener('click', requestReboot);
   }
 
   function debouncedApply(payload) {
@@ -532,6 +603,34 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     if (value === null || value < min || value > 255) {
       FW.showToast(label + ' must be a whole number from ' + min + ' to 255', 'error');
       return null;
+    }
+    return value;
+  }
+
+  function getMaxZonePadX(dims) {
+    if (!dims || dims.matrixWidth <= dims.matrixHeight) return 0;
+    return Math.floor((dims.matrixWidth - dims.matrixHeight - 1) / 2);
+  }
+
+  function parseZonePadX(showError) {
+    if (!dZonePadX) return 0;
+    var value = parseStrictInteger(dZonePadX.value);
+    if (value === null || value < 0 || value > 255) {
+      if (showError) {
+        FW.showToast('Horizontal panel padding must be a whole number from 0 to 255', 'error');
+        return null;
+      }
+      return 0;
+    }
+
+    var dims = parseHardwareDimensionsFromInputs();
+    var max = getMaxZonePadX(dims);
+    if (value > max) {
+      if (showError) {
+        FW.showToast('Horizontal panel padding must be ' + max + ' or less for this display', 'error');
+        return null;
+      }
+      return max;
     }
     return value;
   }
@@ -578,7 +677,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     if (s <= 0) s = 1;
     var n = Math.round(SECONDS_PER_MONTH / s);
     fetchEstimate.textContent = '~' + n.toLocaleString() + ' calls/month';
-    if (n > OPENSKY_WARN_THRESHOLD) {
+    if (n > POLL_WARN_THRESHOLD) {
       fetchEstimate.classList.add('estimate-warning');
     } else {
       fetchEstimate.classList.remove('estimate-warning');
@@ -609,13 +708,15 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   function onNetworkInput() { markSectionDirty('network'); }
   dWifiSsid.addEventListener('input', onNetworkInput);
   dWifiPass.addEventListener('input', onNetworkInput);
-  dOsClientId.addEventListener('input', onNetworkInput);
-  dOsClientSec.addEventListener('input', onNetworkInput);
-  dAeroKey.addEventListener('input', onNetworkInput);
+  dAggUrl.addEventListener('input', onNetworkInput);
+  dAggToken.addEventListener('input', onNetworkInput);
 
   // --- Hardware: Resolution text ---
   function updateHwResolution() {
     var dims = parseHardwareDimensionsFromInputs();
+    if (dZonePadX) {
+      dZonePadX.max = String(getMaxZonePadX(dims));
+    }
     setResolutionText(dims);
   }
 
@@ -669,11 +770,19 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       matrixWidth: mw,
       matrixHeight: mh,
       mode: String(data.mode || 'compact'),
+      zoneLayout: Number(data.hardware.zone_layout) === 1 ? 1 : 0,
+      zonePadX: Number.isFinite(Number(data.hardware.zone_pad_x)) ? Number(data.hardware.zone_pad_x) : 0,
       logoZone: logo,
       flightZone: flight,
       telemetryZone: telemetry,
       valid: mw > 0 && mh > 0 && mw >= mh,
-      hardware: { tilesX: tx, tilesY: ty, tilePixels: tp }
+      hardware: {
+        tilesX: tx,
+        tilesY: ty,
+        tilePixels: tp,
+        zoneLayout: Number(data.hardware.zone_layout) === 1 ? 1 : 0,
+        zonePadX: Number.isFinite(Number(data.hardware.zone_pad_x)) ? Number(data.hardware.zone_pad_x) : 0
+      }
     };
   }
 
@@ -861,7 +970,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     ctx.strokeRect(0, 0, drawWidth, drawHeight);
 
     // Draw zone divider drag handles
-    var logoX = Math.round(layout.logoZone.w * sx);
+    var panelX = Math.round(layout.logoZone.x * sx);
+    var panelRight = Math.round((layout.telemetryZone.x + layout.telemetryZone.w) * sx);
+    var logoX = Math.round((layout.logoZone.x + layout.logoZone.w) * sx);
     var splitYPos = Math.round(layout.flightZone.h * sy);
 
     ctx.save();
@@ -877,11 +988,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     ctx.lineTo(logoX, logoVEnd);
     ctx.stroke();
 
-    // Split divider (horizontal) — in mode 1, spans full width
-    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
+    // Split divider (horizontal) — in mode 1, spans the padded panel width
+    var splitXStart = (layout.zoneLayout === 1) ? panelX : logoX;
     ctx.beginPath();
     ctx.moveTo(splitXStart, splitYPos);
-    ctx.lineTo(drawWidth, splitYPos);
+    ctx.lineTo(panelRight, splitYPos);
     ctx.stroke();
 
     ctx.setLineDash([]);
@@ -891,7 +1002,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     var ghw = 4, ghh = 16;
     ctx.fillStyle = '#fff';
     ctx.fillRect(logoX - ghw / 2, logoVEnd / 2 - ghh / 2, ghw, ghh);
-    var infoMidX = (layout.zoneLayout === 1) ? drawWidth / 2 : logoX + (drawWidth - logoX) / 2;
+    var infoMidX = (layout.zoneLayout === 1) ? (panelX + panelRight) / 2 : logoX + (panelRight - logoX) / 2;
     ctx.fillRect(infoMidX - ghh / 2, splitYPos - ghw / 2, ghh, ghw);
 
     ctx.restore();
@@ -903,12 +1014,15 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     if (!dims) {
       layout = { valid: false };
     } else {
-      layout = computeLayout(dims.tilesX, dims.tilesY, dims.tilePixels, customLogoPct, customSplitPct, zoneLayout);
-      layout.zoneLayout = zoneLayout;
+      var zonePadX = parseZonePadX(false);
+      layout = computeLayout(dims.tilesX, dims.tilesY, dims.tilePixels,
+        customLogoPct, customSplitPct, zoneLayout, zonePadX);
       layout.hardware = {
         tilesX: dims.tilesX,
         tilesY: dims.tilesY,
-        tilePixels: dims.tilePixels
+        tilePixels: dims.tilePixels,
+        zoneLayout: zoneLayout,
+        zonePadX: zonePadX
       };
     }
     renderLayoutCanvas(layout);
@@ -927,6 +1041,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   dTilesX.addEventListener('input', onHardwareInput);
   dTilesY.addEventListener('input', onHardwareInput);
   dTilePixels.addEventListener('input', onHardwareInput);
+  if (dZonePadX) dZonePadX.addEventListener('input', onHardwareInput);
   window.addEventListener('resize', function() {
     if (previewLastLayout) {
       renderLayoutCanvas(previewLastLayout);
@@ -951,13 +1066,16 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     var sy = layoutCanvas.height / layout.matrixHeight;
     var threshold = 10;
 
-    var logoX = layout.logoZone.w * sx;
+    var panelX = layout.logoZone.x * sx;
+    var panelRight = (layout.telemetryZone.x + layout.telemetryZone.w) * sx;
+    var logoX = (layout.logoZone.x + layout.logoZone.w) * sx;
     var logoVEnd = (layout.zoneLayout === 1) ? (layout.flightZone.h * sy) : (layoutCanvas.height);
     if (Math.abs(pos.x - logoX) < threshold && pos.y <= logoVEnd + threshold) return 'logo';
 
     var splitY = layout.flightZone.h * sy;
-    var splitXStart = (layout.zoneLayout === 1) ? 0 : logoX;
-    if (pos.x >= splitXStart - threshold && Math.abs(pos.y - splitY) < threshold) return 'split';
+    var splitXStart = (layout.zoneLayout === 1) ? panelX : logoX;
+    if (pos.x >= splitXStart - threshold && pos.x <= panelRight + threshold &&
+        Math.abs(pos.y - splitY) < threshold) return 'split';
 
     return null;
   }
@@ -991,8 +1109,10 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     var sy = layoutCanvas.height / layout.matrixHeight;
 
     if (zoneDragTarget === 'logo') {
-      var newLogoW = Math.round(pos.x / sx);
-      newLogoW = Math.max(Math.round(layout.matrixWidth * 0.05), Math.min(Math.round(layout.matrixWidth * 0.95), newLogoW));
+      var panelWidth = (layout.telemetryZone.x + layout.telemetryZone.w) - layout.logoZone.x;
+      var newLogoW = Math.round(pos.x / sx) - layout.logoZone.x;
+      newLogoW = Math.max(Math.round(layout.matrixWidth * 0.05),
+        Math.min(panelWidth - 1, Math.round(layout.matrixWidth * 0.95), newLogoW));
       customLogoPct = Math.round(newLogoW / layout.matrixWidth * 100);
     } else {
       var newSplitY = Math.round(pos.y / sy);
@@ -1020,9 +1140,9 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   // --- Hardware: mark dirty on change ---
   function onHardwareDirty() { markSectionDirty('hardware'); }
   dDisplayPin.addEventListener('input', onHardwareDirty);
-  dOriginCorner.addEventListener('input', onHardwareDirty);
-  dScanDir.addEventListener('input', onHardwareDirty);
-  dZigzag.addEventListener('input', onHardwareDirty);
+  dOriginCorner.addEventListener('change', onHardwareDirty);
+  dScanDir.addEventListener('change', onHardwareDirty);
+  dZigzag.addEventListener('change', onHardwareDirty);
 
   // --- Layout mode selector ---
   if (dZoneLayout) {
@@ -2132,7 +2252,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         if (!res.body.ok) {
           FW.showToast(res.body.error || 'Save failed', 'error');
         } else if (res.body.reboot_required) {
-          FW.showToast('Calibration saved. Reboot required to apply live mapping.', 'warning');
+          setRebootPending(true);
+          FW.showToast('Calibration saved \u2014 reboot required to apply live mapping.', 'warning');
         } else {
           FW.showToast('Calibration updated', 'success');
         }
@@ -3510,6 +3631,12 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       } else {
         rollbackBanner.style.display = 'none';
       }
+      // Hydrate reboot-pending state so the apply bar's "Reboot Now" button
+      // survives a browser refresh between saving a reboot-required key and
+      // actually rebooting the device.
+      if (d.reboot_pending) {
+        setRebootPending(true);
+      }
     }).catch(function() {
       FW.showToast('Could not load firmware status \u2014 check connection', 'error');
     });
@@ -4306,11 +4433,11 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     dTilesX.value = layout.hardware.tilesX;
     dTilesY.value = layout.hardware.tilesY;
     dTilePixels.value = layout.hardware.tilePixels;
+    zoneLayout = layout.hardware.zoneLayout;
+    if (dZoneLayout) dZoneLayout.value = layout.hardware.zoneLayout;
+    if (dZonePadX) dZonePadX.value = layout.hardware.zonePadX;
     suppressHardwareInputHandler = false;
-    setResolutionText({
-      matrixWidth: layout.matrixWidth,
-      matrixHeight: layout.matrixHeight
-    });
+    updateHwResolution();
     renderLayoutCanvas(layout);
     renderWiringCanvas();
   }).catch(function() {

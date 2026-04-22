@@ -6,9 +6,8 @@
 
 enum class Subsystem : uint8_t {
     WIFI,
-    OPENSKY,
-    AEROAPI,
-    CDN,
+    AGGREGATOR,  // Cloudflare aggregator worker — flight-data fetch status
+    CDN,         // FlightWall CDN — airline/aircraft display-name enrichment status
     NVS,
     LITTLEFS,
     OTA,
@@ -53,7 +52,7 @@ public:
     static const char* levelName(StatusLevel level);
 
 private:
-    static const uint8_t SUBSYSTEM_COUNT = 9;
+    static const uint8_t SUBSYSTEM_COUNT = 8;
     static SubsystemStatus _statuses[SUBSYSTEM_COUNT];
     static SemaphoreHandle_t _mutex;
     static const char* subsystemName(Subsystem sys);

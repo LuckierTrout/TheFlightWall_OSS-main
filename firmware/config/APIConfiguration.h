@@ -4,22 +4,12 @@
 
 namespace APIConfiguration
 {
-    // OpenSky API credentials
-    static const char *OPENSKY_CLIENT_ID = "";
-    static const char *OPENSKY_CLIENT_SECRET = "";
-    static constexpr const char *OPENSKY_TOKEN_URL =
-        "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
-
-    static constexpr const char *OPENSKY_BASE_URL = "https://opensky-network.org";
-
-    // FlightAware AeroAPI credentials
-    static const char *AEROAPI_KEY = "";
-    static constexpr const char *AEROAPI_BASE_URL = "https://aeroapi.flightaware.com/aeroapi";
-
-    // FlightWall CDN lookup
+    // FlightWall CDN lookup — airline/aircraft display-name enrichment layered
+    // on top of the aggregator's raw codes. See firmware/adapters/FlightWallFetcher.
     static constexpr const char *FLIGHTWALL_CDN_BASE_URL = "https://cdn.theflightwall.com";
 
-    // TLS behavior for external services
-    static const bool AEROAPI_INSECURE_TLS = true;
+    // Legacy TLS-insecure flag kept for the FlightWall CDN HTTPS client — the
+    // CDN cert pin isn't baked into the firmware, so we fall back to TLS
+    // without strict cert validation. Revisit when cert pinning lands.
     static const bool FLIGHTWALL_INSECURE_TLS = true;
 }

@@ -11,7 +11,7 @@
   <header class="dash-header">
     <h1>FlightWall</h1>
     <p class="dash-ip" id="device-ip"></p>
-    <nav><a href="/health.html">System Health</a> <a href="#mode-picker">Display Modes</a></nav>
+    <nav><a href="/health.html">System Health</a> <a href="#mode-picker">Display Modes</a> <a href="/editor.html">Layout Editor</a></nav>
   </header>
 
   <!-- Upgrade notification banner host (ds-3.6) — populated by JS -->
@@ -65,7 +65,7 @@
         <input type="range" id="fetch-interval" min="30" max="3600" step="30" value="600">
       </div>
       <p class="estimate-line" id="fetch-estimate"></p>
-      <p class="estimate-note">OpenSky poll estimate; AeroAPI/CDN calls not included.</p>
+      <p class="estimate-note">Aggregator poll estimate; CDN calls not included.</p>
 
       <label for="display-cycle">Cycle flights every: <span id="cycle-label">3 s</span></label>
       <div class="range-row">
@@ -87,14 +87,11 @@
         <label for="d-wifi-pass">WiFi Password</label>
         <input type="password" id="d-wifi-pass" autocomplete="off" autocapitalize="off" spellcheck="false">
 
-        <label for="d-os-client-id">OpenSky Client ID</label>
-        <input type="text" id="d-os-client-id" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <label for="d-agg-url">Aggregator URL</label>
+        <input type="text" id="d-agg-url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://flightwall-aggregator.<sub>.workers.dev">
 
-        <label for="d-os-client-sec">OpenSky Client Secret</label>
-        <input type="password" id="d-os-client-sec" autocomplete="off" autocapitalize="off" spellcheck="false">
-
-        <label for="d-aeroapi-key">AeroAPI Key</label>
-        <input type="password" id="d-aeroapi-key" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <label for="d-agg-token">Aggregator Token</label>
+        <input type="password" id="d-agg-token" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Bearer token">
       </div>
     </section>
 
@@ -115,13 +112,24 @@
         <input type="number" id="d-display-pin" inputmode="numeric" min="0" step="1" autocomplete="off">
 
         <label for="d-origin-corner">Origin corner</label>
-        <input type="number" id="d-origin-corner" inputmode="numeric" min="0" step="1" autocomplete="off">
+        <select id="d-origin-corner" autocomplete="off">
+          <option value="0">Top-Left</option>
+          <option value="1">Top-Right</option>
+          <option value="2">Bottom-Left</option>
+          <option value="3">Bottom-Right</option>
+        </select>
 
         <label for="d-scan-dir">Scan direction</label>
-        <input type="number" id="d-scan-dir" inputmode="numeric" min="0" step="1" autocomplete="off">
+        <select id="d-scan-dir" autocomplete="off">
+          <option value="0">Rows (horizontal)</option>
+          <option value="1">Columns (vertical)</option>
+        </select>
 
         <label for="d-zigzag">Zigzag</label>
-        <input type="number" id="d-zigzag" inputmode="numeric" min="0" step="1" autocomplete="off">
+        <select id="d-zigzag" autocomplete="off">
+          <option value="0">Progressive (same direction)</option>
+          <option value="1">Zigzag (alternating)</option>
+        </select>
       </div>
       <p class="resolution-text" id="d-resolution-text"></p>
 
@@ -130,6 +138,10 @@
         <option value="0">Classic</option>
         <option value="1">Full-width bottom</option>
       </select>
+
+      <label for="d-zone-pad-x">Horizontal Panel Padding (px per side)</label>
+      <input type="number" id="d-zone-pad-x" inputmode="numeric" min="0" step="1" autocomplete="off">
+      <p class="helper-copy" style="margin-top:4px">Adds blank columns on the left and right edges without reducing text rows.</p>
 
       <div class="preview-container" id="preview-container">
         <canvas id="layout-preview"></canvas>
@@ -349,8 +361,11 @@
   </main>
 
   <div class="apply-bar" id="apply-bar" style="display:none">
-    <span class="apply-bar-text">Unsaved changes</span>
-    <button type="button" class="apply-bar-btn" id="btn-apply-all">Apply Changes</button>
+    <span class="apply-bar-text" id="apply-bar-text">Unsaved changes</span>
+    <div class="apply-bar-actions">
+      <button type="button" class="apply-bar-btn" id="btn-apply-all">Apply Changes</button>
+      <button type="button" class="apply-bar-btn apply-bar-btn-reboot" id="btn-reboot-now" style="display:none">Reboot Now</button>
+    </div>
   </div>
 </div>
 

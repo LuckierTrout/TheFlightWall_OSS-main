@@ -6,8 +6,8 @@
 #include <functional>
 
 // NVS key abbreviations (15-char limit):
-// os_client_id   = opensky_client_id
-// os_client_sec  = opensky_client_secret
+// agg_url        = Cloudflare aggregator Worker URL
+// agg_token      = bearer token for the aggregator Worker
 // scan_dir       = scan_direction
 // sched_enabled  = schedule_enabled (13 chars)
 // sched_dim_start = schedule_dim_start (15 chars - AT LIMIT)
@@ -34,6 +34,7 @@ struct HardwareConfig {
     uint8_t zone_logo_pct;   // 0 = auto (square logo), 1-99 = % of matrix width
     uint8_t zone_split_pct;  // 0 = auto (50/50), 1-99 = % of matrix height for flight zone
     uint8_t zone_layout;     // 0 = classic (logo full-height left), 1 = full-width bottom
+    uint8_t zone_pad_x;      // 0 = no outer gutter, N = blank columns per side around the panel
 };
 
 struct TimingConfig {
@@ -42,8 +43,12 @@ struct TimingConfig {
 
 struct NetworkConfig {
     String wifi_ssid, wifi_password;
-    String opensky_client_id, opensky_client_secret;
-    String aeroapi_key;
+    // Cloudflare aggregator Worker — the sole flight-data source (the
+    // firmware previously called OpenSky and AeroAPI directly; that path
+    // was retired when the worker shipped).
+    // NVS keys: agg_url (7 chars), agg_token (9 chars) — both under 15-char limit.
+    String agg_url;     // e.g. "https://flightwall-aggregator.<sub>.workers.dev"
+    String agg_token;   // bearer token matching Worker's ESP32_AUTH_TOKEN
 };
 
 // Schedule configuration for night mode / brightness scheduling
@@ -137,11 +142,7 @@ public:
     static bool setLayoutActiveId(const char* id);
 
     // Compile-time URL accessors (remain in ConfigManager, not NVS)
-    static const char* getOpenSkyTokenUrl();
-    static const char* getOpenSkyBaseUrl();
-    static const char* getAeroApiBaseUrl();
     static const char* getFlightWallCdnBaseUrl();
-    static bool getAeroApiInsecureTls();
     static bool getFlightWallInsecureTls();
 
 private:

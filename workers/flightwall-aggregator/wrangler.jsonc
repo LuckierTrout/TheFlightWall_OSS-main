@@ -1,0 +1,34 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "flightwall-aggregator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+    // If you want to stay within the Workers KV free write limit,
+    // switch this to "*/2 * * * *" and set SNAPSHOT_TTL_SECONDS to 240.
+  },
+  "vars": {
+    "PROVIDER": "adsb_lol",
+    "CENTER_LAT": "38.9072",
+    "CENTER_LON": "-77.0369",
+    "RADIUS_NM": "30",
+    "ROUTESET_BATCH_SIZE": "50",
+    "SNAPSHOT_TTL_SECONDS": "120"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "FLEET_SNAPSHOT",
+      "id": "69f01712a2f84a53afa4c8f6c57b0ea0"
+    }
+  ],
+  "secrets": {
+    "required": ["ESP32_AUTH_TOKEN"]
+  }
+}

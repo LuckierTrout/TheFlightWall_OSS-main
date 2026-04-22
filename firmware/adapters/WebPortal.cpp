@@ -11,10 +11,10 @@ JSON key alignment (matches ConfigManager::updateCacheFromKey / NVS):
   Location:  center_lat, center_lon, radius_km
   Hardware:  tiles_x, tiles_y, tile_pixels, display_pin, origin_corner, scan_dir, zigzag
   Timing:    fetch_interval, display_cycle
-  Network:   wifi_ssid, wifi_password, os_client_id, os_client_sec, aeroapi_key
+  Network:   wifi_ssid, wifi_password, agg_url, agg_token
 
 GET /api/status extended JSON (Story 2.4):
-  data.subsystems   — existing six subsystem objects (wifi, opensky, aeroapi, cdn, nvs, littlefs)
+  data.subsystems   — eight subsystem objects (wifi, aggregator, cdn, nvs, littlefs, ota, ntp, ota_pull)
   data.wifi_detail  — SSID, RSSI, IP, mode
   data.device       — uptime_ms, free_heap, fs_total, fs_used
   data.flight       — last_fetch_ms, state_vectors, enriched_flights, logos_matched
@@ -32,10 +32,15 @@ GET /api/status extended JSON (Story 2.4):
 #include "core/SystemStatus.h"
 #include "core/LogoManager.h"
 #include "core/OTAUpdater.h"
+#include "models/FlightInfo.h"
 #include "utils/Log.h"
 
 // Defined in main.cpp — provides thread-safe flight stats for the health page
 extern FlightStatsSnapshot getFlightStatsSnapshot();
+
+// Defined in main.cpp — snapshot of the latest enriched flight list, used by
+// the dashboard's Custom Layout preview to show live data while editing.
+extern std::vector<FlightInfo> getCurrentFlights();
 
 // Defined in main.cpp — NTP sync status accessor (Story fn-2.1)
 extern bool isNtpSynced();
@@ -247,6 +252,12 @@ void WebPortal::_registerRoutes() {
     // GET /api/status
     _server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
         _handleGetStatus(request);
+    });
+
+    // GET /api/flights/current — snapshot of the latest enriched flights,
+    // consumed by the Custom Layout preview for live-data rendering.
+    _server->on("/api/flights/current", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        _handleGetCurrentFlights(request);
     });
 
     // POST /api/reboot
@@ -915,6 +926,14 @@ void WebPortal::_registerRoutes() {
     _server->on("/editor.css", HTTP_GET, [](AsyncWebServerRequest* request) {
         _serveGzAsset(request, "/editor.css.gz", "text/css");
     });
+    // Pixel-accurate layout preview: glyph data + renderer (served to the
+    // editor page; not loaded from any other route).
+    _server->on("/preview-glyphs.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/preview-glyphs.js.gz", "application/javascript");
+    });
+    _server->on("/preview.js", HTTP_GET, [](AsyncWebServerRequest* request) {
+        _serveGzAsset(request, "/preview.js.gz", "application/javascript");
+    });
 }
 
 void WebPortal::_handleRoot(AsyncWebServerRequest* request) {
@@ -983,6 +1002,13 @@ void WebPortal::_handlePostSettings(AsyncWebServerRequest* request, uint8_t* dat
     }
     resp["reboot_required"] = result.reboot_required;
 
+    // Persist the reboot-pending flag so the dashboard can rehydrate the
+    // sticky bar across refreshes. Only *setting* it here — clearing happens
+    // naturally when the device reboots (flag is default-initialized false).
+    if (result.reboot_required) {
+        _rebootPending.store(true, std::memory_order_release);
+    }
+
     String output;
     serializeJson(respDoc, output);
     request->send(200, "application/json", output);
@@ -1012,6 +1038,59 @@ void WebPortal::_handleGetStatus(AsyncWebServerRequest* request) {
     data["ota_available"] = otaAvail;
     data["ota_version"] = otaAvail ? (const char*)OTAUpdater::getRemoteVersion()
                                    : (const char*)nullptr;
+
+    // Reboot-pending flag — set true when a reboot-required setting was saved
+    // since boot but the device has not yet rebooted. Drives the dashboard's
+    // sticky "Reboot Now" bar; cleared implicitly by the device reboot.
+    data["reboot_pending"] = _rebootPending.load(std::memory_order_acquire);
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebPortal::_handleGetCurrentFlights(AsyncWebServerRequest* request) {
+    // Snapshot is a copy — getCurrentFlights() handles cross-task safety by
+    // reading from the stable reader side of the double buffer. We serialize
+    // the minimal field set the preview needs (ident, operator, route, live
+    // telemetry) to keep the payload small for frequent polling.
+    std::vector<FlightInfo> flights = getCurrentFlights();
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["ok"] = true;
+    JsonObject data = root["data"].to<JsonObject>();
+    JsonArray arr = data["flights"].to<JsonArray>();
+
+    auto addNumber = [](JsonObject& obj, const char* key, double value) {
+        if (!isnan(value)) {
+            obj[key] = value;
+        } else {
+            obj[key] = (const char*)nullptr;
+        }
+    };
+
+    for (const FlightInfo& f : flights) {
+        JsonObject row = arr.add<JsonObject>();
+        row["ident"] = f.ident;
+        row["ident_icao"] = f.ident_icao;
+        row["ident_iata"] = f.ident_iata;
+        row["operator_code"] = f.operator_code;
+        row["operator_icao"] = f.operator_icao;
+        row["operator_iata"] = f.operator_iata;
+        row["origin_icao"] = f.origin.code_icao;
+        row["destination_icao"] = f.destination.code_icao;
+        row["aircraft_code"] = f.aircraft_code;
+        row["airline_display_name_full"] = f.airline_display_name_full;
+        row["aircraft_display_name_short"] = f.aircraft_display_name_short;
+        row["aircraft_display_name_full"] = f.aircraft_display_name_full;
+        addNumber(row, "altitude_kft", f.altitude_kft);
+        addNumber(row, "speed_mph", f.speed_mph);
+        addNumber(row, "track_deg", f.track_deg);
+        addNumber(row, "vertical_rate_fps", f.vertical_rate_fps);
+        addNumber(row, "distance_km", f.distance_km);
+        addNumber(row, "bearing_deg", f.bearing_deg);
+    }
 
     String output;
     serializeJson(doc, output);
@@ -1421,6 +1500,8 @@ void WebPortal::_handleGetLayout(AsyncWebServerRequest* request) {
     hardware["tiles_x"] = hw.tiles_x;
     hardware["tiles_y"] = hw.tiles_y;
     hardware["tile_pixels"] = hw.tile_pixels;
+    hardware["zone_layout"] = hw.zone_layout;
+    hardware["zone_pad_x"] = hw.zone_pad_x;
 
     String output;
     serializeJson(doc, output);
@@ -2179,6 +2260,59 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         }
     };
 
+    // Shared option tables + sibling-label emitter for the font + size
+    // dropdowns across all text-rendering widgets. Keeping this in one place
+    // means adding support to a new widget only needs one call to
+    // `emitFontLabels(obj)` plus the matching `addField` pair.
+    static const char* const fontOpts[] = { "default", "tomthumb", "picopixel" };
+    static const char* const sizeOpts[] = { "1", "2", "3" };
+    // text_transform is offered on text/flight_field/metric (clock digits
+    // wouldn't benefit, so its dropdown is intentionally suppressed).
+    static const char* const transformOpts[] = { "none", "upper", "lower" };
+    auto emitTransformLabels = [](JsonObject& obj) {
+        JsonArray arr = obj["transform_options"].to<JsonArray>();
+        {
+            JsonObject o = arr.add<JsonObject>();
+            o["id"] = "none"; o["label"] = "None";
+        }
+        {
+            JsonObject o = arr.add<JsonObject>();
+            o["id"] = "upper"; o["label"] = "UPPER";
+        }
+        {
+            JsonObject o = arr.add<JsonObject>();
+            o["id"] = "lower"; o["label"] = "lower";
+        }
+    };
+    auto emitFontLabels = [](JsonObject& obj) {
+        JsonArray fontFieldOptions = obj["font_options"].to<JsonArray>();
+        {
+            JsonObject o = fontFieldOptions.add<JsonObject>();
+            o["id"] = "default"; o["label"] = "Default (6\u00d78)";
+        }
+        {
+            JsonObject o = fontFieldOptions.add<JsonObject>();
+            o["id"] = "tomthumb"; o["label"] = "TomThumb (3\u00d75)";
+        }
+        {
+            JsonObject o = fontFieldOptions.add<JsonObject>();
+            o["id"] = "picopixel"; o["label"] = "Picopixel (4\u00d75)";
+        }
+        JsonArray sizeFieldOptions = obj["size_options"].to<JsonArray>();
+        {
+            JsonObject o = sizeFieldOptions.add<JsonObject>();
+            o["id"] = "1"; o["label"] = "1\u00d7";
+        }
+        {
+            JsonObject o = sizeFieldOptions.add<JsonObject>();
+            o["id"] = "2"; o["label"] = "2\u00d7";
+        }
+        {
+            JsonObject o = sizeFieldOptions.add<JsonObject>();
+            o["id"] = "3"; o["label"] = "3\u00d7";
+        }
+    };
+
     // ── text ─────────────────────────────────────────────────────────────
     {
         JsonObject obj = data.add<JsonObject>();
@@ -2188,11 +2322,16 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         addField(fields, "content", "string", "", 0, false, nullptr, 0);
         static const char* const alignOptions[] = { "left", "center", "right" };
         addField(fields, "align", "select", "left", 0, false, alignOptions, 3);
+        addField(fields, "font", "select", "default", 0, false, fontOpts, 2);
+        addField(fields, "text_size", "select", "1", 0, false, sizeOpts, 3);
+        addField(fields, "text_transform", "select", "none", 0, false, transformOpts, 3);
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "w", "int", nullptr, 32, true, nullptr, 0);
         addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+        emitFontLabels(obj);
+        emitTransformLabels(obj);
     }
     // ── clock ────────────────────────────────────────────────────────────
     {
@@ -2202,11 +2341,14 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         JsonArray fields = obj["fields"].to<JsonArray>();
         static const char* const clockFmtOptions[] = { "12h", "24h" };
         addField(fields, "content", "select", "24h", 0, false, clockFmtOptions, 2);
+        addField(fields, "font", "select", "default", 0, false, fontOpts, 2);
+        addField(fields, "text_size", "select", "1", 0, false, sizeOpts, 3);
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "w", "int", nullptr, 48, true, nullptr, 0);
         addField(fields, "h", "int", nullptr, 8, true, nullptr, 0);
+        emitFontLabels(obj);
     }
     // ── logo ─────────────────────────────────────────────────────────────
     {
@@ -2245,6 +2387,9 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         for (size_t i = 0; i < ffCount; ++i) ffOptions.push_back(ffCat[i].id);
         addField(fields, "content", "select", ffCount > 0 ? ffCat[0].id : "", 0, false,
                  ffOptions.empty() ? nullptr : ffOptions.data(), ffOptions.size());
+        addField(fields, "font", "select", "default", 0, false, fontOpts, 2);
+        addField(fields, "text_size", "select", "1", 0, false, sizeOpts, 3);
+        addField(fields, "text_transform", "select", "none", 0, false, transformOpts, 3);
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
@@ -2259,6 +2404,8 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
             fo["id"]    = ffCat[i].id;
             fo["label"] = ffCat[i].label;
         }
+        emitFontLabels(obj);
+        emitTransformLabels(obj);
     }
     // ── metric ───────────────────────────────────────────────────────────
     // LE-1.8 + LE-1.10 — dropdown of telemetry ids owned by MetricWidget's
@@ -2276,6 +2423,9 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
         for (size_t i = 0; i < mCount; ++i) mOptions.push_back(mCat[i].id);
         addField(fields, "content", "select", mCount > 0 ? mCat[0].id : "", 0, false,
                  mOptions.empty() ? nullptr : mOptions.data(), mOptions.size());
+        addField(fields, "font", "select", "default", 0, false, fontOpts, 2);
+        addField(fields, "text_size", "select", "1", 0, false, sizeOpts, 3);
+        addField(fields, "text_transform", "select", "none", 0, false, transformOpts, 3);
         addField(fields, "color", "color", "#FFFFFF", 0, false, nullptr, 0);
         addField(fields, "x", "int", nullptr, 0, true, nullptr, 0);
         addField(fields, "y", "int", nullptr, 0, true, nullptr, 0);
@@ -2288,6 +2438,8 @@ void WebPortal::_handleGetWidgetTypes(AsyncWebServerRequest* request) {
             fo["label"] = mCat[i].label;
             if (mCat[i].unit != nullptr) fo["unit"] = mCat[i].unit;
         }
+        emitFontLabels(obj);
+        emitTransformLabels(obj);
     }
 
     String output;
