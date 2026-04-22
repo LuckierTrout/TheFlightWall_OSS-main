@@ -188,7 +188,7 @@ class FlightWallSmokeTests(unittest.TestCase):
 
         subsystems = data["subsystems"]
         self.assertIsInstance(subsystems, dict)
-        for key in ("wifi", "opensky", "aeroapi", "cdn", "nvs", "littlefs"):
+        for key in ("wifi", "aggregator", "cdn", "nvs", "littlefs"):
             self.assertIn(key, subsystems)
 
     def test_get_layout_contract(self) -> None:

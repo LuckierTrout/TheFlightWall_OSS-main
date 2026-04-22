@@ -101,6 +101,40 @@ void test_compute_from_hardware_config() {
     TEST_ASSERT_EQUAL_UINT16(160, r.matrixWidth);
     TEST_ASSERT_EQUAL_UINT16(32, r.matrixHeight);
     TEST_ASSERT_EQUAL_STRING("full", r.mode);
+    assertRect("logo",      r.logoZone,      0,  0,  32, 32);
+    assertRect("flight",    r.flightZone,    32, 0,  128, 16);
+    assertRect("telemetry", r.telemetryZone, 32, 16, 128, 16);
+}
+
+void test_compute_from_hardware_config_with_horizontal_padding() {
+    HardwareConfig hw = {};
+    hw.tiles_x = 10;
+    hw.tiles_y = 2;
+    hw.tile_pixels = 16;
+    hw.zone_pad_x = 4;
+
+    LayoutResult r = LayoutEngine::compute(hw);
+    TEST_ASSERT_TRUE(r.valid);
+    TEST_ASSERT_EQUAL_UINT16(160, r.matrixWidth);
+    TEST_ASSERT_EQUAL_UINT16(32, r.matrixHeight);
+    assertRect("logo",      r.logoZone,      4,  0,  32, 32);
+    assertRect("flight",    r.flightZone,    36, 0,  120, 16);
+    assertRect("telemetry", r.telemetryZone, 36, 16, 120, 16);
+}
+
+void test_compute_full_width_bottom_with_horizontal_padding() {
+    HardwareConfig hw = {};
+    hw.tiles_x = 10;
+    hw.tiles_y = 2;
+    hw.tile_pixels = 16;
+    hw.zone_layout = 1;
+    hw.zone_pad_x = 4;
+
+    LayoutResult r = LayoutEngine::compute(hw);
+    TEST_ASSERT_TRUE(r.valid);
+    assertRect("logo",      r.logoZone,      4,  0,  32, 16);
+    assertRect("flight",    r.flightZone,    36, 0,  120, 16);
+    assertRect("telemetry", r.telemetryZone, 4,  16, 152, 16);
 }
 
 void setup() {
@@ -119,6 +153,8 @@ void setup() {
 
     // HardwareConfig overload
     RUN_TEST(test_compute_from_hardware_config);
+    RUN_TEST(test_compute_from_hardware_config_with_horizontal_padding);
+    RUN_TEST(test_compute_full_width_bottom_with_horizontal_padding);
 
     UNITY_END();
 }

@@ -151,6 +151,17 @@ bool LogoManager::loadLogo(const String& operatorIcao, uint16_t* rgb565Buffer) {
         return false;
     }
 
+    // Stored format convention is big-endian RGB565 (one high byte, one low
+    // byte, common output of LCD image converters). The ESP32 is little-
+    // endian, so raw f.read() into a uint16_t buffer interprets the bytes
+    // with R/B channels swapped — AA's flag-blue would appear as green and
+    // the UAL banner looked mud. Swap each pair now so everything downstream
+    // (drawBitmapRGB565) sees the pixel as the authored RGB565 literal.
+    for (size_t i = 0; i < LOGO_PIXEL_COUNT; i++) {
+        uint16_t v = rgb565Buffer[i];
+        rgb565Buffer[i] = (uint16_t)((v >> 8) | (v << 8));
+    }
+
     return true;
 }
 

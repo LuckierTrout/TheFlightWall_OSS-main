@@ -261,6 +261,8 @@ void LiveFlightCardMode::renderLogoZone(const RenderContext& ctx, const FlightIn
                                          const Rect& zone) {
     if (ctx.logoBuffer == nullptr) return;  // No buffer supplied — skip logo zone silently
     LogoManager::loadLogo(f.operator_icao, ctx.logoBuffer);
+    // Logo renders flush with its zone — the universal panel frame and
+    // LayoutEngine's 1 px inset already separate the logo from the edge.
     DisplayUtils::drawBitmapRGB565(ctx.matrix, zone.x, zone.y,
                                     LOGO_WIDTH, LOGO_HEIGHT,
                                     ctx.logoBuffer, zone.w, zone.h);
@@ -280,11 +282,16 @@ void LiveFlightCardMode::renderFlightZone(const RenderContext& ctx, const Flight
                          : (f.operator_icao.length() ? f.operator_icao.c_str()
                          : f.operator_code.c_str()));
 
-    // Route string in fixed buffer — ICAO origin > destination (e.g. "KJFK>KLAX")
+    // Route string: prefer IATA (DCA, JFK — no K prefix) with ICAO fallback
+    // (KDCA, KJFK) when IATA is absent, so non-US airports and partially-
+    // enriched flights still render something.
     char route[LINE_BUF_SIZE] = "";
-    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
-        snprintf(route, sizeof(route), "%s>%s",
-                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    const char* originCode = f.origin.code_iata.length() > 0
+        ? f.origin.code_iata.c_str() : f.origin.code_icao.c_str();
+    const char* destCode = f.destination.code_iata.length() > 0
+        ? f.destination.code_iata.c_str() : f.destination.code_icao.c_str();
+    if (originCode[0] != '\0' || destCode[0] != '\0') {
+        snprintf(route, sizeof(route), "%s>%s", originCode, destCode);
     }
 
     char line1[LINE_BUF_SIZE] = "";
@@ -430,10 +437,14 @@ void LiveFlightCardMode::renderSingleFlightCard(const RenderContext& ctx, const 
                              : (f.operator_icao.length() ? f.operator_icao.c_str()
                              : f.operator_code.c_str()));
 
+    // IATA-first route (see main render() for rationale).
     char route[LINE_BUF_SIZE] = "";
-    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
-        snprintf(route, sizeof(route), "%s>%s",
-                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    const char* originCode2 = f.origin.code_iata.length() > 0
+        ? f.origin.code_iata.c_str() : f.origin.code_icao.c_str();
+    const char* destCode2 = f.destination.code_iata.length() > 0
+        ? f.destination.code_iata.c_str() : f.destination.code_icao.c_str();
+    if (originCode2[0] != '\0' || destCode2[0] != '\0') {
+        snprintf(route, sizeof(route), "%s>%s", originCode2, destCode2);
     }
 
     // Enriched telemetry summary: all four fields in compact abbreviated form

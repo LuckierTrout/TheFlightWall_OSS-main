@@ -21,6 +21,7 @@ public:
     void clear() override;
     void displayFlights(const std::vector<FlightInfo> &flights) override;
     void displayMessage(const String &message);
+    void displayMessage(const String &message, uint16_t color);
     void showLoading();
     void updateBrightness(uint8_t brightness);
     bool reconfigureFromConfig();

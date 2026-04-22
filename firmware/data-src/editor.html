@@ -19,6 +19,17 @@
       </div>
       <div class="editor-canvas-wrap">
         <canvas id="editor-canvas"></canvas>
+        <div class="preview-panel" id="preview-panel">
+          <div class="preview-panel-head">
+            <h3 class="preview-panel-title">Live Preview</h3>
+            <label class="preview-toggle">
+              <input type="checkbox" id="preview-live-data" checked>
+              <span>Live flight data</span>
+            </label>
+          </div>
+          <canvas id="preview-canvas"></canvas>
+          <p class="preview-panel-hint" id="preview-panel-hint">Preview uses sample data until a flight is in range.</p>
+        </div>
       </div>
       <div class="editor-props" id="editor-props">
         <p class="props-placeholder" id="props-placeholder">Select a widget</p>
@@ -27,6 +38,18 @@
             <label class="props-label" for="prop-content">Content</label>
             <input type="text" id="prop-content" class="props-input" autocomplete="off">
             <select id="prop-content-select" class="props-input" style="display:none"></select>
+          </div>
+          <div class="props-field" id="props-field-font">
+            <label class="props-label" for="prop-font">Font</label>
+            <select id="prop-font" class="props-input"></select>
+          </div>
+          <div class="props-field" id="props-field-text-size">
+            <label class="props-label" for="prop-text-size">Size</label>
+            <select id="prop-text-size" class="props-input"></select>
+          </div>
+          <div class="props-field" id="props-field-text-transform">
+            <label class="props-label" for="prop-text-transform">Case</label>
+            <select id="prop-text-transform" class="props-input"></select>
           </div>
           <div class="props-field" id="props-field-color">
             <label class="props-label" for="prop-color">Color</label>
@@ -63,10 +86,21 @@
         <button type="button" class="snap-btn" data-snap="16">Tidy</button>
         <button type="button" class="snap-btn" data-snap="1">Fine</button>
       </div>
+      <button type="button" class="save-btn" id="btn-auto-space" title="Redistribute widgets vertically with a small gap">Auto-space</button>
+      <div class="align-group" id="align-group" aria-label="Align selected widgets">
+        <button type="button" class="snap-btn align-group-btn" data-group-align="left"    title="Align left edges">L</button>
+        <button type="button" class="snap-btn align-group-btn" data-group-align="centerX" title="Center horizontally">C</button>
+        <button type="button" class="snap-btn align-group-btn" data-group-align="right"   title="Align right edges">R</button>
+        <button type="button" class="snap-btn align-group-btn" data-group-align="top"     title="Align top edges">T</button>
+        <button type="button" class="snap-btn align-group-btn" data-group-align="centerY" title="Center vertically">M</button>
+        <button type="button" class="snap-btn align-group-btn" data-group-align="bottom"  title="Align bottom edges">B</button>
+      </div>
       <span class="editor-status" id="editor-status"></span>
     </div>
   </div>
   <script src="/common.js"></script>
+  <script src="/preview-glyphs.js"></script>
+  <script src="/preview.js"></script>
   <script src="/editor.js"></script>
 </body>
 </html>

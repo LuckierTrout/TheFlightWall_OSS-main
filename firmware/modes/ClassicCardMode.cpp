@@ -16,6 +16,8 @@ Review follow-ups addressed:
 #include "utils/DisplayUtils.h"
 #include "core/LogoManager.h"
 
+#include <Fonts/Picopixel.h>
+
 #include <cstring>
 #include <cmath>
 
@@ -141,6 +143,9 @@ void ClassicCardMode::renderLogoZone(const RenderContext& ctx, const FlightInfo&
     if (ctx.logoBuffer == nullptr) return;  // No buffer supplied — skip logo zone silently
     // Load logo by operator ICAO; fallback sprite if not found
     LogoManager::loadLogo(f.operator_icao, ctx.logoBuffer);
+    // The universal panel frame (main.cpp) + LayoutEngine's 1 px zone inset
+    // already provide the only visual gap needed. No extra padding here or
+    // the top/left edges end up with 2 px of blank before the logo.
     DisplayUtils::drawBitmapRGB565(ctx.matrix, zone.x, zone.y,
                                     LOGO_WIDTH, LOGO_HEIGHT,
                                     ctx.logoBuffer, zone.w, zone.h);
@@ -165,31 +170,54 @@ void ClassicCardMode::renderFlightZone(const RenderContext& ctx, const FlightInf
                               : f.aircraft_code.c_str();
 
     // Build route string in fixed buffer — only if at least one code is set.
+    // Prefer IATA codes (DCA, JFK, LAX — 3 letters, no K prefix for US
+    // airports) and fall back to ICAO (KDCA, KJFK) only when IATA is absent
+    // (e.g. some non-US airports or missing enrichment data).
     // Initialise to "" so fallback logic works correctly for flights with no origin/dest.
     char route[LINE_BUF_SIZE] = "";
-    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
-        snprintf(route, sizeof(route), "%s>%s",
-                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    const char* originCode = f.origin.code_iata.length() > 0
+        ? f.origin.code_iata.c_str() : f.origin.code_icao.c_str();
+    const char* destCode = f.destination.code_iata.length() > 0
+        ? f.destination.code_iata.c_str() : f.destination.code_icao.c_str();
+    if (originCode[0] != '\0' || destCode[0] != '\0') {
+        snprintf(route, sizeof(route), "%s>%s", originCode, destCode);
     }
 
     // Cache lengths — avoid redundant O(n) strlen() per frame at ~20fps (review item ds-1.4 #3)
     const int routeLen = (int)strlen(route);
     const int aircraftLen = (int)strlen(aircraftSrc);
 
+    // The airline line uses Picopixel (4px advance vs default 6px) so that
+    // long names like "United Airlines" / "American Airlines" fit in the
+    // narrow flight zone. Other lines stay on the default 6x8 font. The
+    // airline line is truncated against Picopixel's advance separately so
+    // we get ~50% more horizontal capacity than the other lines.
+    constexpr int AIRLINE_CHAR_W = 4;           // Picopixel xAdvance
+    constexpr int AIRLINE_BASELINE_Y = 5;       // cap height offset: baseline is
+                                                // ~5 px below the glyph's top
+    const int airlineMaxCols = zone.w / AIRLINE_CHAR_W;
+
     // Truncated line buffers
     char line1[LINE_BUF_SIZE] = "";
     char line2[LINE_BUF_SIZE] = "";
     char line3[LINE_BUF_SIZE] = "";
     int linesToDraw = 1;
+    bool line1IsAirline = false;
 
     if (linesAvailable == 1) {
         // Compact: route priority when only one row fits
         const char* compactSrc = (routeLen > 0) ? route : airline;
         if (strlen(compactSrc) == 0) compactSrc = aircraftSrc;
-        DisplayUtils::truncateToColumns(compactSrc, maxCols, line1, sizeof(line1));
+        if (compactSrc == airline) {
+            DisplayUtils::truncateToColumns(compactSrc, airlineMaxCols, line1, sizeof(line1));
+            line1IsAirline = true;
+        } else {
+            DisplayUtils::truncateToColumns(compactSrc, maxCols, line1, sizeof(line1));
+        }
     } else if (linesAvailable == 2) {
         // Full: airline + route+aircraft compressed into row two
-        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
+        DisplayUtils::truncateToColumns(airline, airlineMaxCols, line1, sizeof(line1));
+        line1IsAirline = true;
         char detailLine[LINE_BUF_SIZE];
         if (aircraftLen > 0 && routeLen > 0) {
             snprintf(detailLine, sizeof(detailLine), "%s %s", route, aircraftSrc);
@@ -204,7 +232,8 @@ void ClassicCardMode::renderFlightZone(const RenderContext& ctx, const FlightInf
         linesToDraw = (strlen(line2) > 0) ? 2 : 1;
     } else {
         // Expanded: three separate lines
-        DisplayUtils::truncateToColumns(airline, maxCols, line1, sizeof(line1));
+        DisplayUtils::truncateToColumns(airline, airlineMaxCols, line1, sizeof(line1));
+        line1IsAirline = true;
         DisplayUtils::truncateToColumns(route, maxCols, line2, sizeof(line2));
         DisplayUtils::truncateToColumns(aircraftSrc, maxCols, line3, sizeof(line3));
         linesToDraw = (strlen(line3) > 0) ? 3 : ((strlen(line2) > 0) ? 2 : 1);
@@ -213,7 +242,16 @@ void ClassicCardMode::renderFlightZone(const RenderContext& ctx, const FlightInf
     int totalTextH = linesToDraw * CHAR_HEIGHT;
     int16_t y = zone.y + (zone.h - totalTextH) / 2;
 
-    DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line1, ctx.textColor);
+    if (line1IsAirline) {
+        // Picopixel uses a baseline cursor; shift setCursor down so glyphs
+        // appear within the same CHAR_HEIGHT slot as the default font.
+        ctx.matrix->setFont(&Picopixel);
+        DisplayUtils::drawTextLine(ctx.matrix, zone.x,
+                                   y + AIRLINE_BASELINE_Y, line1, ctx.textColor);
+        ctx.matrix->setFont(nullptr);
+    } else {
+        DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line1, ctx.textColor);
+    }
     if (linesToDraw >= 2 && strlen(line2) > 0) {
         y += CHAR_HEIGHT;
         DisplayUtils::drawTextLine(ctx.matrix, zone.x, y, line2, ctx.textColor);
@@ -299,10 +337,14 @@ void ClassicCardMode::renderSingleFlightCard(const RenderContext& ctx, const Fli
                              : (f.operator_icao.length() ? f.operator_icao.c_str()
                              : f.operator_code.c_str()));
 
+    // IATA-first route (see main render() for rationale).
     char route[LINE_BUF_SIZE] = "";
-    if (f.origin.code_icao.length() > 0 || f.destination.code_icao.length() > 0) {
-        snprintf(route, sizeof(route), "%s>%s",
-                 f.origin.code_icao.c_str(), f.destination.code_icao.c_str());
+    const char* originCode2 = f.origin.code_iata.length() > 0
+        ? f.origin.code_iata.c_str() : f.origin.code_icao.c_str();
+    const char* destCode2 = f.destination.code_iata.length() > 0
+        ? f.destination.code_iata.c_str() : f.destination.code_icao.c_str();
+    if (originCode2[0] != '\0' || destCode2[0] != '\0') {
+        snprintf(route, sizeof(route), "%s>%s", originCode2, destCode2);
     }
 
     const char* aircraftSrc = f.aircraft_display_name_short.length()

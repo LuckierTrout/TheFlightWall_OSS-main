@@ -24,6 +24,7 @@ whitelist):
 #include "widgets/FlightFieldWidget.h"
 
 #include "utils/DisplayUtils.h"
+#include "widgets/WidgetFont.h"
 
 #include <cstring>
 
@@ -34,12 +35,16 @@ namespace {
 // the fallback target when a widget has an unknown or missing field id.
 // ---------------------------------------------------------------------------
 static constexpr FieldDescriptor kFlightFieldCatalog[] = {
-    { "callsign",         "Callsign",    nullptr },
-    { "airline",          "Airline",     nullptr },
-    { "aircraft_type",    "Aircraft",    nullptr },
-    { "origin_icao",      "Origin",      nullptr },
-    { "destination_icao", "Destination", nullptr },
-    { "flight_number",    "Flight #",    nullptr },
+    { "callsign",         "Callsign",         nullptr },
+    { "airline",          "Airline",          nullptr },
+    { "aircraft_type",    "Aircraft",         nullptr },
+    { "aircraft_short",   "Aircraft (model)", nullptr },
+    { "aircraft_full",    "Aircraft (full)",  nullptr },
+    { "origin_icao",      "Origin (ICAO)",    nullptr },
+    { "origin_iata",      "Origin (IATA)",    nullptr },
+    { "destination_icao", "Destination (ICAO)", nullptr },
+    { "destination_iata", "Destination (IATA)", nullptr },
+    { "flight_number",    "Flight #",         nullptr },
 };
 static constexpr size_t kFlightFieldCatalogCount =
     sizeof(kFlightFieldCatalog) / sizeof(kFlightFieldCatalog[0]);
@@ -61,7 +66,15 @@ const char* resolveField(const char* key, const FlightInfo& f) {
         return f.ident.c_str();
     }
     if (strcmp(key, "airline") == 0) {
-        return f.airline_display_name_full.c_str();
+        // Precedence mirrors the aircraft resolvers: prefer the CDN-resolved
+        // display name, fall back to the ICAO code so the widget renders
+        // "UAL" immediately rather than "--" while the per-cycle CDN budget
+        // works through fresh callsigns. Once the cache warms up the field
+        // auto-upgrades to "United Airlines" on the next render.
+        if (f.airline_display_name_full.length() > 0) {
+            return f.airline_display_name_full.c_str();
+        }
+        return f.operator_icao.c_str();
     }
     if (strcmp(key, "aircraft_type") == 0) {
         // AC #6 precedence: display_name_short → aircraft_code → empty.
@@ -70,11 +83,38 @@ const char* resolveField(const char* key, const FlightInfo& f) {
         }
         return f.aircraft_code.c_str();
     }
+    if (strcmp(key, "aircraft_short") == 0) {
+        // Prefer the marketing name ("737-800") with a fallback to the raw
+        // ICAO code so the widget never collapses to empty when CDN lookup
+        // missed.
+        if (f.aircraft_display_name_short.length() > 0) {
+            return f.aircraft_display_name_short.c_str();
+        }
+        return f.aircraft_code.c_str();
+    }
+    if (strcmp(key, "aircraft_full") == 0) {
+        // Prefer the full name ("Boeing 737-800"); fall back to the short
+        // form and then the raw code. Three-layer fallback matches the
+        // firmware's tolerance for sparse CDN data.
+        if (f.aircraft_display_name_full.length() > 0) {
+            return f.aircraft_display_name_full.c_str();
+        }
+        if (f.aircraft_display_name_short.length() > 0) {
+            return f.aircraft_display_name_short.c_str();
+        }
+        return f.aircraft_code.c_str();
+    }
     if (strcmp(key, "origin_icao") == 0) {
         return f.origin.code_icao.c_str();
     }
+    if (strcmp(key, "origin_iata") == 0) {
+        return f.origin.code_iata.c_str();
+    }
     if (strcmp(key, "destination_icao") == 0) {
         return f.destination.code_icao.c_str();
+    }
+    if (strcmp(key, "destination_iata") == 0) {
+        return f.destination.code_iata.c_str();
     }
     return nullptr;
 }
@@ -114,8 +154,13 @@ bool isKnownFieldId(const char* fieldId) {
 // Render entry point (unchanged signature from LE-1.8).
 // ---------------------------------------------------------------------------
 bool renderFlightField(const WidgetSpec& spec, const RenderContext& ctx) {
-    // Minimum dimension floor — at least one 5x7 glyph must fit.
-    if ((int)spec.w < WIDGET_CHAR_W || (int)spec.h < WIDGET_CHAR_H) {
+    WidgetFontId fontId = resolveWidgetFontId(spec.font_id);
+    uint8_t textSize = spec.text_size == 0 ? 1 : spec.text_size;
+    WidgetFontMetrics metrics = widgetFontMetrics(fontId, textSize);
+
+    // Minimum dimension floor — at least one glyph must fit under the
+    // chosen font + scale.
+    if ((int)spec.w < metrics.charW || (int)spec.h < metrics.charH) {
         return true;  // skip render — not an error
     }
 
@@ -132,17 +177,32 @@ bool renderFlightField(const WidgetSpec& spec, const RenderContext& ctx) {
     // Hardware-free test path.
     if (ctx.matrix == nullptr) return true;
 
-    int maxCols = (int)spec.w / WIDGET_CHAR_W;
+    int maxCols = (int)spec.w / metrics.charW;
     if (maxCols <= 0) return true;
 
+    // Copy into a scratch buffer so the case transform doesn't mutate the
+    // FlightInfo String storage `value` points into (another widget might
+    // read the same field in the same frame).
+    char scratch[48];
+    size_t valueLen = strlen(value);
+    if (valueLen >= sizeof(scratch)) valueLen = sizeof(scratch) - 1;
+    memcpy(scratch, value, valueLen);
+    scratch[valueLen] = '\0';
+    applyTextTransform(scratch, spec.text_transform);
+
     char out[48];
-    DisplayUtils::truncateToColumns(value, maxCols, out, sizeof(out));
+    DisplayUtils::truncateToColumns(scratch, maxCols, out, sizeof(out));
 
     int16_t drawY = spec.y;
-    if ((int)spec.h > WIDGET_CHAR_H) {
-        drawY = spec.y + (int16_t)(((int)spec.h - WIDGET_CHAR_H) / 2);
+    if ((int)spec.h > metrics.charH) {
+        drawY = spec.y + (int16_t)(((int)spec.h - metrics.charH) / 2);
     }
 
+    ctx.matrix->setTextSize(textSize);
+    drawY += applyWidgetFont(ctx.matrix, fontId, metrics.charH);
     DisplayUtils::drawTextLine(ctx.matrix, spec.x, drawY, out, spec.color);
+
+    ctx.matrix->setFont(nullptr);
+    ctx.matrix->setTextSize(1);
     return true;
 }

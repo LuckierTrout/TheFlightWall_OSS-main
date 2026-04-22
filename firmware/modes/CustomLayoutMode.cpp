@@ -96,6 +96,33 @@ uint8_t parseAlign(const char* a) {
     return 0;  // "left" or anything else → 0
 }
 
+// Map the JSON "font" string to WidgetSpec.font_id byte encoding. Unknown
+// values fall back to the default 6x8 font, preserving legacy-layout
+// rendering for any spec that doesn't carry a font field at all.
+uint8_t parseFontId(const char* f) {
+    if (f == nullptr) return (uint8_t)WidgetFontId::Default;
+    if (strcmp(f, "tomthumb")  == 0) return (uint8_t)WidgetFontId::TomThumb;
+    if (strcmp(f, "picopixel") == 0) return (uint8_t)WidgetFontId::Picopixel;
+    return (uint8_t)WidgetFontId::Default;
+}
+
+// Clamp a JSON-derived text_size into the [1, 3] range the GFX renderer
+// supports. Missing/zero → 1 so pre-LE-font layouts keep their @1x look.
+uint8_t parseTextSize(int v) {
+    if (v <= 0) return 1;
+    if (v > 3)  return 3;
+    return (uint8_t)v;
+}
+
+// Map the JSON "text_transform" string to the WidgetTextTransform byte
+// encoding. Unknown / missing → None so legacy layouts render verbatim.
+uint8_t parseTextTransform(const char* t) {
+    if (t == nullptr) return (uint8_t)WidgetTextTransform::None;
+    if (strcmp(t, "upper") == 0) return (uint8_t)WidgetTextTransform::Upper;
+    if (strcmp(t, "lower") == 0) return (uint8_t)WidgetTextTransform::Lower;
+    return (uint8_t)WidgetTextTransform::None;
+}
+
 // Copy a null-terminated string into a fixed destination buffer, always
 // leaving a null terminator. Used for the id[] and content[] fields.
 void copyFixed(char* dst, size_t dstLen, const char* src) {
@@ -173,14 +200,16 @@ bool CustomLayoutMode::parseFromJson(const String& json) {
         }
 
         WidgetSpec& w = _widgets[_widgetCount];
-        w.type  = t;
-        w.x     = (int16_t)(obj["x"] | 0);
-        w.y     = (int16_t)(obj["y"] | 0);
-        w.w     = (uint16_t)(obj["w"] | 0);
-        w.h     = (uint16_t)(obj["h"] | 0);
-        w.color = parseHexColor(obj["color"] | (const char*)nullptr);
-        w.align = parseAlign(obj["align"] | (const char*)nullptr);
-        w._reserved = 0;
+        w.type       = t;
+        w.x          = (int16_t)(obj["x"] | 0);
+        w.y          = (int16_t)(obj["y"] | 0);
+        w.w          = (uint16_t)(obj["w"] | 0);
+        w.h          = (uint16_t)(obj["h"] | 0);
+        w.color      = parseHexColor(obj["color"] | (const char*)nullptr);
+        w.align      = parseAlign(obj["align"] | (const char*)nullptr);
+        w.font_id        = parseFontId(obj["font"] | (const char*)nullptr);
+        w.text_size      = parseTextSize(obj["text_size"] | 0);
+        w.text_transform = parseTextTransform(obj["text_transform"] | (const char*)nullptr);
 
         copyFixed(w.id,      sizeof(w.id),      obj["id"]      | (const char*)"");
         copyFixed(w.content, sizeof(w.content), obj["content"] | (const char*)"");

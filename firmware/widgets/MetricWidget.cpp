@@ -27,6 +27,7 @@ Conversion constants:
 #include "widgets/MetricWidget.h"
 
 #include "utils/DisplayUtils.h"
+#include "widgets/WidgetFont.h"
 
 #include <cmath>
 #include <cstring>
@@ -42,12 +43,13 @@ static const char kDegreeSuffix[] = { (char)0xF7, '\0' };
 // LE-1.10 catalog — 6 entries. Order matters: kCatalog[0] is unknown-id fallback.
 // ---------------------------------------------------------------------------
 static constexpr FieldDescriptor kMetricCatalog[] = {
-    { "altitude_ft",       "Altitude (ft)",   "ft"  },
-    { "speed_kts",         "Speed (kts)",     "kts" },
-    { "heading_deg",       "Heading (deg)",   "deg" },
-    { "vertical_rate_fpm", "Vert Rate (fpm)", "fpm" },
-    { "distance_nm",       "Distance (nm)",   "nm"  },
-    { "bearing_deg",       "Bearing (deg)",   "deg" },
+    { "altitude_ft",       "Altitude (ft)",       "ft"  },
+    { "speed_kts",         "Speed (kts)",         "kts" },
+    { "speed_mph",         "Ground speed (mph)",  "mph" },
+    { "heading_deg",       "Heading (deg)",       "deg" },
+    { "vertical_rate_fpm", "Vert Rate (fpm)",     "fpm" },
+    { "distance_nm",       "Distance (nm)",       "nm"  },
+    { "bearing_deg",       "Bearing (deg)",       "deg" },
 };
 static constexpr size_t kMetricCatalogCount =
     sizeof(kMetricCatalog) / sizeof(kMetricCatalog[0]);
@@ -67,6 +69,14 @@ bool resolveMetric(const char* key, const FlightInfo& f,
     if (strcmp(key, "speed_kts") == 0) {
         outValue    = (isnan(f.speed_mph) ? NAN : f.speed_mph * 0.8689762);
         outSuffix   = "kts";
+        outDecimals = 0;
+        return true;
+    }
+    if (strcmp(key, "speed_mph") == 0) {
+        // Ground speed already lives in FlightInfo in mph (converted from
+        // the upstream feed's m/s at fetch time), so just passthrough.
+        outValue    = f.speed_mph;
+        outSuffix   = "mph";
         outDecimals = 0;
         return true;
     }
@@ -131,8 +141,13 @@ bool isKnownFieldId(const char* fieldId) {
 // Render entry point (unchanged signature from LE-1.8).
 // ---------------------------------------------------------------------------
 bool renderMetric(const WidgetSpec& spec, const RenderContext& ctx) {
-    // Minimum dimension floor — at least one 5x7 glyph must fit.
-    if ((int)spec.w < WIDGET_CHAR_W || (int)spec.h < WIDGET_CHAR_H) {
+    WidgetFontId fontId = resolveWidgetFontId(spec.font_id);
+    uint8_t textSize = spec.text_size == 0 ? 1 : spec.text_size;
+    WidgetFontMetrics metrics = widgetFontMetrics(fontId, textSize);
+
+    // Minimum dimension floor — at least one glyph must fit under the
+    // chosen font + scale.
+    if ((int)spec.w < metrics.charW || (int)spec.h < metrics.charH) {
         return true;  // skip render — not an error
     }
 
@@ -156,17 +171,27 @@ bool renderMetric(const WidgetSpec& spec, const RenderContext& ctx) {
     // Hardware-free test path.
     if (ctx.matrix == nullptr) return true;
 
-    int maxCols = (int)spec.w / WIDGET_CHAR_W;
+    int maxCols = (int)spec.w / metrics.charW;
     if (maxCols <= 0) return true;
+
+    // Transform before truncation so the visual width drives the ellipsis.
+    // Note: the degree glyph 0xF7 is not in the ASCII range the transform
+    // touches, so bearing/heading suffixes survive untouched.
+    applyTextTransform(buf, spec.text_transform);
 
     char out[24];
     DisplayUtils::truncateToColumns(buf, maxCols, out, sizeof(out));
 
     int16_t drawY = spec.y;
-    if ((int)spec.h > WIDGET_CHAR_H) {
-        drawY = spec.y + (int16_t)(((int)spec.h - WIDGET_CHAR_H) / 2);
+    if ((int)spec.h > metrics.charH) {
+        drawY = spec.y + (int16_t)(((int)spec.h - metrics.charH) / 2);
     }
 
+    ctx.matrix->setTextSize(textSize);
+    drawY += applyWidgetFont(ctx.matrix, fontId, metrics.charH);
     DisplayUtils::drawTextLine(ctx.matrix, spec.x, drawY, out, spec.color);
+
+    ctx.matrix->setFont(nullptr);
+    ctx.matrix->setTextSize(1);
     return true;
 }

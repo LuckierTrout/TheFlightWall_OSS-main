@@ -33,7 +33,12 @@ enum class SwitchState : uint8_t {
 // status getter advances state to FAILED with code REQUESTED_STALL. Insurance
 // against future variants of "tick() never runs" (the auto-yield in main.cpp
 // already removes the only known cause).
-static constexpr uint32_t kRequestedStallLimitMs = 500;
+//
+// Bumped from 500ms → 5000ms (2026-04-20) after observing real switches take
+// 3-5s in practice (widget-heavy custom_layout teardown + init + fade), which
+// was causing spurious "stalled" reports on the dashboard even though the
+// switch was still in-flight and completing successfully.
+static constexpr uint32_t kRequestedStallLimitMs = 5000;
 
 struct ModeEntry {
     const char* id;                           // e.g., "classic_card"

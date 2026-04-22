@@ -23,6 +23,7 @@ Rendering:
 #include "widgets/ClockWidget.h"
 
 #include "utils/DisplayUtils.h"
+#include "widgets/WidgetFont.h"
 
 #include <cstdio>
 #include <cstring>
@@ -39,8 +40,16 @@ namespace {
 }
 
 bool renderClock(const WidgetSpec& spec, const RenderContext& ctx) {
-    // Minimum dimension floor (AC #7): need room for "HH:MM" in 5x7 font.
-    if ((int)spec.w < 6 * WIDGET_CHAR_W || (int)spec.h < WIDGET_CHAR_H) {
+    // Resolve font + scale from the spec (defaults to 6x8 @1x when the
+    // widget was authored before per-widget font support shipped).
+    WidgetFontId fontId = resolveWidgetFontId(spec.font_id);
+    uint8_t textSize = spec.text_size == 0 ? 1 : spec.text_size;
+    WidgetFontMetrics metrics = widgetFontMetrics(fontId, textSize);
+
+    // Minimum dimension floor (AC #7): need room for "HH:MM" (5 chars) plus
+    // any inter-char advance. Scales with the chosen font/size so picking
+    // a bigger font enforces a larger minimum widget size.
+    if ((int)spec.w < 5 * metrics.charW || (int)spec.h < metrics.charH) {
         return true;  // skip render — not an error
     }
 
@@ -67,18 +76,26 @@ bool renderClock(const WidgetSpec& spec, const RenderContext& ctx) {
 
     // Truncate for safety — "HH:MM" is always 5 chars, but the spec might
     // shrink the column count below 5 in adversarial layouts.
-    int maxCols = (int)spec.w / WIDGET_CHAR_W;
+    int maxCols = (int)spec.w / metrics.charW;
     if (maxCols <= 0) return true;
 
     char out[8];
     DisplayUtils::truncateToColumns(s_clockBuf, maxCols, out, sizeof(out));
 
     int16_t drawY = spec.y;
-    if ((int)spec.h > WIDGET_CHAR_H) {
-        drawY = spec.y + (int16_t)(((int)spec.h - WIDGET_CHAR_H) / 2);
+    if ((int)spec.h > metrics.charH) {
+        drawY = spec.y + (int16_t)(((int)spec.h - metrics.charH) / 2);
     }
 
+    // Apply font + scale for this render; reset to canonical state after so
+    // sibling widgets don't inherit our selection. TomThumb uses a baseline
+    // cursor (not top-left) — shift drawY down by charH-1 to compensate.
+    ctx.matrix->setTextSize(textSize);
+    drawY += applyWidgetFont(ctx.matrix, fontId, metrics.charH);
     DisplayUtils::drawTextLine(ctx.matrix, spec.x, drawY, out, spec.color);
+
+    ctx.matrix->setFont(nullptr);
+    ctx.matrix->setTextSize(1);
     return true;
 }
 

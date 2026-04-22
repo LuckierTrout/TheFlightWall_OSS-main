@@ -36,9 +36,47 @@ Architecture references:
 // Font / dimension constants shared across widget render functions.
 // Matches the 5x7 default Adafruit GFX font + 1px spacing used by
 // ClassicCardMode and the V0 spike (CustomLayoutMode.cpp).
+//
+// Widgets that opt into per-widget font customization (starting with
+// TextWidget) use widgetFontMetrics() below to compute advance and line
+// height dynamically from the widget's font_id + text_size. Other widgets
+// continue to reference WIDGET_CHAR_W / WIDGET_CHAR_H directly, which
+// remain the default-font @1x metrics.
 // ------------------------------------------------------------------
 static constexpr int WIDGET_CHAR_W = 6;
 static constexpr int WIDGET_CHAR_H = 8;
+
+// ------------------------------------------------------------------
+// WidgetFontId — enumerates the fonts TextWidget (and, incrementally,
+// other widgets) may request. Values are stable across stored layouts.
+// ------------------------------------------------------------------
+enum class WidgetFontId : uint8_t {
+    Default   = 0,  // Adafruit GFX classic 5x7 glyph, 6px advance, 8px line
+    TomThumb  = 1,  // Compact 3x5 glyph, 4px advance, 6px line (GFX custom)
+    Picopixel = 2,  // 4x5-ish glyph, ~4px advance, 7px line (GFX custom)
+};
+
+// ------------------------------------------------------------------
+// WidgetTextTransform — per-widget ASCII case transform applied before
+// truncation. Stored as a uint8_t on WidgetSpec (reclaims the former
+// _reserved pad byte — no struct growth). Missing / unknown values fall
+// back to None so pre-existing layouts render byte-identically.
+// ------------------------------------------------------------------
+enum class WidgetTextTransform : uint8_t {
+    None  = 0,  // Render content verbatim (default, matches legacy behavior)
+    Upper = 1,  // Uppercase ASCII A-Z; leaves non-ASCII bytes untouched
+    Lower = 2,  // Lowercase ASCII a-z; leaves non-ASCII bytes untouched
+};
+
+// Character metrics for a given font + integer scale factor. Callers use
+// these for truncation (maxCols = w / charW), centering (midY = (h-charH)/2),
+// and the minimum-dimension floors that guard undersized widget zones.
+struct WidgetFontMetrics {
+    int charW;
+    int charH;
+};
+
+WidgetFontMetrics widgetFontMetrics(WidgetFontId font, uint8_t textSize);
 
 // ------------------------------------------------------------------
 // WidgetType — production enum, wire-compatible with JSON type strings.
@@ -73,8 +111,10 @@ struct WidgetSpec {
     uint16_t   color;        // RGB565
     char       id[16];       // widget instance id (e.g. "w1"), 15 chars + null
     char       content[48];  // text content / clock format / logo_id
-    uint8_t    align;        // 0=left, 1=center, 2=right (TextWidget only)
-    uint8_t    _reserved;    // pad for alignment
+    uint8_t    align;          // 0=left, 1=center, 2=right (TextWidget only)
+    uint8_t    font_id;        // WidgetFontId cast to uint8_t; 0 = default 6x8
+    uint8_t    text_size;      // integer GFX setTextSize; 1-3. 0 parses as 1.
+    uint8_t    text_transform; // WidgetTextTransform cast to uint8_t; 0 = none
 };
 
 // ------------------------------------------------------------------

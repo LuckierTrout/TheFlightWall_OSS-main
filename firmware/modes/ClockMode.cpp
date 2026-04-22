@@ -103,7 +103,9 @@ void ClockMode::render(const RenderContext& ctx,
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
     }
 
-    // Render time (AC #2: no fillScreen to avoid flicker)
+    // Render time. We still update only on second changes, but each fresh clock
+    // frame must clear the whole matrix so stale pixels from the previous mode
+    // do not survive underneath the time digits.
     renderTime(ctx, timeStr);
 }
 
@@ -124,6 +126,10 @@ void ClockMode::renderTime(const RenderContext& ctx, const char* timeStr) {
     uint16_t mh = ctx.layout.matrixHeight;
     if (mw == 0) mw = ctx.matrix->width();
     if (mh == 0) mh = ctx.matrix->height();
+
+    // Clock mode owns the full canvas. Clear once per refresh so switching in
+    // from card-based modes does not leave prior flight pixels around the time.
+    ctx.matrix->fillScreen(0);
 
     // Calculate optimal text size to fill the matrix
     int strLen = (int)strlen(timeStr);

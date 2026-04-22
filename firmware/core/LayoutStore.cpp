@@ -45,13 +45,25 @@ static const char* const kAllowedWidgetTypes[] = {
 // reserved and rejected by save() indirectly through isSafeLayoutId (it
 // starts with "_" which is allowed, but tests should not rely on being able
 // to save id="_default" — the epic architecture reserves it).
+// Baked-in default layout. Designed for an 80x48 "expanded" panel — the
+// common FlightWall form factor (5x3 tile grid of 16x16 panels). Falls back
+// to this when the user hasn't saved any custom layout yet. Six rows of
+// information stacked top-to-bottom: callsign (default 6x8), airline
+// (TomThumb 4x6 so "United Airlines" fits), origin/destination codes,
+// altitude + speed, aircraft type + clock.
 static const char kDefaultLayoutJson[] = R"JSON({
   "id":"_default","name":"Default","v":1,
-  "canvas":{"w":160,"h":32},
+  "canvas":{"w":80,"h":48},
   "bg":"#000000",
   "widgets":[
-    {"id":"w1","type":"clock","x":0,"y":0,"w":80,"h":16,"format":"24h","font":"M","color":"#FFFFFF"},
-    {"id":"w2","type":"text","x":0,"y":16,"w":160,"h":10,"content":"FLIGHTWALL","align":"center","font":"S","color":"#AAAAAA"}
+    {"id":"cs","type":"flight_field","x":1,"y":1,"w":78,"h":8,"content":"callsign","align":"center","font":"default","text_size":1,"color":"#FFFFFF"},
+    {"id":"al","type":"flight_field","x":1,"y":10,"w":78,"h":6,"content":"airline","align":"center","font":"tomthumb","text_size":1,"color":"#6699FF"},
+    {"id":"org","type":"flight_field","x":1,"y":17,"w":36,"h":8,"content":"origin_iata","align":"left","font":"default","text_size":1,"color":"#00FFAA"},
+    {"id":"dst","type":"flight_field","x":43,"y":17,"w":36,"h":8,"content":"destination_iata","align":"right","font":"default","text_size":1,"color":"#00FFAA"},
+    {"id":"alt","type":"metric","x":1,"y":27,"w":39,"h":8,"content":"altitude_ft","align":"left","font":"default","text_size":1,"color":"#FFCC00"},
+    {"id":"spd","type":"metric","x":40,"y":27,"w":39,"h":8,"content":"speed_kts","align":"right","font":"default","text_size":1,"color":"#FFCC00"},
+    {"id":"ac","type":"flight_field","x":1,"y":37,"w":39,"h":6,"content":"aircraft_short","align":"left","font":"tomthumb","text_size":1,"color":"#AAAAAA"},
+    {"id":"clk","type":"clock","x":40,"y":37,"w":39,"h":6,"content":"24h","align":"right","font":"tomthumb","text_size":1,"color":"#888888"}
   ]
 })JSON";
 

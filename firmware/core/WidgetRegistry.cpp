@@ -26,6 +26,39 @@ Implementation notes:
 // ------------------------------------------------------------------
 // fromString
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// widgetFontMetrics
+//
+// Returns the character advance (charW) and line height (charH) for a
+// font + integer scale factor. Clamps textSize to the valid [1, 3] range
+// so callers that receive the raw byte from a stored layout can pass it
+// through without extra guards. Falls back to the default font when the
+// enum value is unrecognized (forward-compat for future font additions).
+//
+// Keep these in sync with preview.js (dashboard WYSIWYG preview) and with
+// the glyph metrics defined in Adafruit_GFX / Fonts/TomThumb.h.
+// ------------------------------------------------------------------
+WidgetFontMetrics widgetFontMetrics(WidgetFontId font, uint8_t textSize) {
+    int scale = (int)textSize;
+    if (scale < 1) scale = 1;
+    if (scale > 3) scale = 3;
+
+    switch (font) {
+        case WidgetFontId::TomThumb:
+            return { 4 * scale, 6 * scale };
+        case WidgetFontId::Picopixel:
+            // yAdvance=7 from the bundled Picopixel.h; xAdvance is variable
+            // per glyph (3–5), but the truncation math treats it as a fixed
+            // cell width. 4 is the most common xAdvance and renders most
+            // strings correctly; wide glyphs ('M', 'W') may slightly overflow
+            // their estimated slot, which drawTextLine clips by design.
+            return { 4 * scale, 7 * scale };
+        case WidgetFontId::Default:
+        default:
+            return { 6 * scale, 8 * scale };
+    }
+}
+
 WidgetType WidgetRegistry::fromString(const char* typeStr) {
     if (typeStr == nullptr)                return WidgetType::Unknown;
     if (typeStr[0] == '\0')                return WidgetType::Unknown;

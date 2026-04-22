@@ -34,6 +34,12 @@ Call-ordering note (test contract):
 #include "core/LogoManager.h"
 #include "utils/DisplayUtils.h"
 
+// Uniform padding (in pixels) inside the widget bounds. Kept at 0 because
+// LayoutEngine + the universal panel frame already provide a 1 px visual
+// gap around every zone — adding more here stacks into 2 px on the top/
+// left, which looked wrong. Raise to 1 if a future design drops the frame.
+static constexpr int LOGO_PAD_PX = 0;
+
 bool renderLogo(const WidgetSpec& spec, const RenderContext& ctx) {
     // Minimum dimension floor (AC #5) — preserves V1 stub behavior.
     if ((int)spec.w < 8 || (int)spec.h < 8) return true;
@@ -50,9 +56,23 @@ bool renderLogo(const WidgetSpec& spec, const RenderContext& ctx) {
     // Hardware-free test path — buffer is loaded above; skip the blit.
     if (ctx.matrix == nullptr) return true;
 
-    DisplayUtils::drawBitmapRGB565(ctx.matrix, spec.x, spec.y,
+    // Apply uniform inside-padding. If the zone is too small to accommodate
+    // the padding on both sides, fall back to the full zone so the logo is
+    // still visible (degrades gracefully rather than disappearing).
+    int16_t drawX = spec.x;
+    int16_t drawY = spec.y;
+    uint16_t drawW = spec.w;
+    uint16_t drawH = spec.h;
+    if ((int)spec.w > 2 * LOGO_PAD_PX && (int)spec.h > 2 * LOGO_PAD_PX) {
+        drawX = spec.x + LOGO_PAD_PX;
+        drawY = spec.y + LOGO_PAD_PX;
+        drawW = spec.w - 2 * LOGO_PAD_PX;
+        drawH = spec.h - 2 * LOGO_PAD_PX;
+    }
+
+    DisplayUtils::drawBitmapRGB565(ctx.matrix, drawX, drawY,
                                    LOGO_WIDTH, LOGO_HEIGHT,
                                    ctx.logoBuffer,
-                                   spec.w, spec.h);
+                                   drawW, drawH);
     return true;
 }

@@ -14,6 +14,9 @@
 #include <Arduino.h>
 #include <unity.h>
 #include <Preferences.h>
+#include <cstring>
+#include <FastLED.h>
+#include <FastLED_NeoMatrix.h>
 
 // Include ModeRegistry (brings in DisplayMode.h, vector, FlightInfo)
 #include "core/ModeRegistry.h"
@@ -104,10 +107,13 @@ public:
     const ModeSettingsSchema* getSettingsSchema() const override { return nullptr; }
 };
 
-// Heavy mock: MEMORY_REQUIREMENT far exceeds ESP32 heap, triggering the heap guard
+// Heavy mock: used only to exercise the heap-guard rejection path. The mode
+// itself does not allocate; the HEAP_GUARD_MODE_TABLE memoryRequirement()
+// callback below intentionally reports a live over-budget value so the test
+// stays stable across boards/builds with different free-heap baselines.
 class MockModeHeavy : public DisplayMode {
 public:
-    // 200 KB > ESP32 usable heap (~160 KB) — guaranteed to trip the heap guard
+    // Metadata only; not used directly by the rejection test.
     static constexpr uint32_t MEMORY_REQUIREMENT = 200 * 1024;
 
     bool init(const RenderContext& ctx) override { (void)ctx; return true; }
@@ -127,7 +133,13 @@ static DisplayMode* mockModeBFactory() { return new MockModeB(); }
 static DisplayMode* mockModeHeavyFactory() { return new MockModeHeavy(); }
 static uint32_t mockModeAMemReq() { return MockModeA::MEMORY_REQUIREMENT; }
 static uint32_t mockModeBMemReq() { return MockModeB::MEMORY_REQUIREMENT; }
-static uint32_t mockModeHeavyMemReq() { return MockModeHeavy::MEMORY_REQUIREMENT; }
+static uint32_t mockModeHeavyMemReq() {
+    // Return a live over-budget requirement rather than a fixed number.
+    // executeSwitch() adds MODE_SWITCH_HEAP_MARGIN on top, so this remains
+    // strictly larger than the measured free heap and deterministically trips
+    // the guard regardless of current firmware/test memory layout.
+    return ESP.getFreeHeap();
+}
 
 // Test mode table (used by most tests)
 static const ModeEntry TEST_MODE_TABLE[] = {
@@ -173,6 +185,42 @@ static RenderContext makeTestCtx() {
     ctx.logoBuffer = nullptr;
     ctx.displayCycleMs = 5000;
     return ctx;
+}
+
+static constexpr uint16_t TEST_MATRIX_W = 64;
+static constexpr uint16_t TEST_MATRIX_H = 32;
+static constexpr uint16_t TEST_PIXEL_COUNT = TEST_MATRIX_W * TEST_MATRIX_H;
+static CRGB testLeds[TEST_PIXEL_COUNT];
+
+static FastLED_NeoMatrix* createTestMatrix() {
+    memset(testLeds, 0, sizeof(testLeds));
+    FastLED_NeoMatrix* m = new FastLED_NeoMatrix(
+        testLeds, 16, 16, 4, 2,
+        NEO_MATRIX_TOP + NEO_MATRIX_LEFT +
+        NEO_MATRIX_ROWS + NEO_MATRIX_PROGRESSIVE +
+        NEO_TILE_TOP + NEO_TILE_LEFT +
+        NEO_TILE_ROWS + NEO_TILE_PROGRESSIVE);
+    m->setTextWrap(false);
+    return m;
+}
+
+static RenderContext makeRealMatrixCtx(FastLED_NeoMatrix* m) {
+    RenderContext ctx = makeTestCtx();
+    ctx.matrix = m;
+    ctx.textColor = m->Color(255, 255, 255);
+    ctx.layout.matrixWidth = TEST_MATRIX_W;
+    ctx.layout.matrixHeight = TEST_MATRIX_H;
+    return ctx;
+}
+
+static int countNonBlackPixels() {
+    int count = 0;
+    for (uint16_t i = 0; i < TEST_PIXEL_COUNT; ++i) {
+        if (testLeds[i].r != 0 || testLeds[i].g != 0 || testLeds[i].b != 0) {
+            count++;
+        }
+    }
+    return count;
 }
 
 // ============================================================================
@@ -263,7 +311,8 @@ void test_heap_guard_allows_sufficient_memory() {
 
 void test_heap_guard_rejects_insufficient_memory() {
     // Uses HEAP_GUARD_MODE_TABLE which includes mock_mode_heavy with
-    // MEMORY_REQUIREMENT = 200 KB — guaranteed to exceed ESP32's ~160 KB usable heap.
+    // a live over-budget memoryRequirement() so the guard is deterministic
+    // even when firmware size or test build options change the free heap.
     clearModeNvs();
     g_mockModeAStats.reset();
     ConfigManager::init();
@@ -640,6 +689,29 @@ void test_clock_mode_render_with_null_matrix_no_crash() {
     std::vector<FlightInfo> empty;
     // Should not crash with nullptr matrix
     mode.render(ctx, empty);
+}
+
+void test_clock_mode_render_clears_stale_pixels() {
+    FastLED_NeoMatrix* m = createTestMatrix();
+    for (uint16_t i = 0; i < TEST_PIXEL_COUNT; ++i) {
+        testLeds[i] = CRGB(32, 0, 0);
+    }
+
+    ClockMode mode;
+    RenderContext ctx = makeRealMatrixCtx(m);
+    TEST_ASSERT_TRUE(mode.init(ctx));
+
+    std::vector<FlightInfo> empty;
+    mode.render(ctx, empty);  // NTP stub is false, so fallback "--:--" renders.
+
+    const int nonBlack = countNonBlackPixels();
+    TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
+        "Expected fallback clock glyphs to render");
+    TEST_ASSERT_TRUE_MESSAGE(nonBlack < TEST_PIXEL_COUNT,
+        "Expected ClockMode to clear stale pixels from the previous frame");
+
+    mode.teardown();
+    delete m;
 }
 
 // ============================================================================
@@ -1234,6 +1306,7 @@ void setup() {
     RUN_TEST(test_clock_mode_in_prod_table);
     RUN_TEST(test_clock_mode_init_with_null_matrix);
     RUN_TEST(test_clock_mode_render_with_null_matrix_no_crash);
+    RUN_TEST(test_clock_mode_render_clears_stale_pixels);
 
     // DeparturesBoardMode tests (Story dl-2.1)
     RUN_TEST(test_departures_board_mode_name);

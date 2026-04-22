@@ -12,6 +12,8 @@ Outputs: Visual output to LED matrix using FastLED.
 #include "adapters/NeoMatrixDisplay.h"
 
 #include <Adafruit_GFX.h>
+#include <Fonts/TomThumb.h>
+#include <Fonts/Picopixel.h>
 #include <FastLED_NeoMatrix.h>
 #include <FastLED.h>
 #include "utils/Log.h"
@@ -20,6 +22,12 @@ Outputs: Visual output to LED matrix using FastLED.
 #include "core/LogoManager.h"
 
 namespace {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+static const uint8_t FALLBACK_DISPLAY_PIN = 21;
+#else
+static const uint8_t FALLBACK_DISPLAY_PIN = 25;
+#endif
+
 template <uint8_t Pin>
 void addStripController(CRGB *leds, uint32_t numPixels)
 {
@@ -43,16 +51,20 @@ bool configureStripForPin(uint8_t pin, CRGB *leds, uint32_t numPixels)
         case 18: addStripController<18>(leds, numPixels); return true;
         case 19: addStripController<19>(leds, numPixels); return true;
         case 21: addStripController<21>(leds, numPixels); return true;
+#if !defined(CONFIG_IDF_TARGET_ESP32S3)
         case 22: addStripController<22>(leds, numPixels); return true;
         case 23: addStripController<23>(leds, numPixels); return true;
         case 25: addStripController<25>(leds, numPixels); return true;
+#endif
         case 26: addStripController<26>(leds, numPixels); return true;
+#if !defined(CONFIG_IDF_TARGET_ESP32S3)
         case 27: addStripController<27>(leds, numPixels); return true;
         case 32: addStripController<32>(leds, numPixels); return true;
+#endif
         case 33: addStripController<33>(leds, numPixels); return true;
         default:
-            LOG_E("Display", "Unsupported display_pin; falling back to GPIO 25");
-            addStripController<25>(leds, numPixels);
+            LOG_E("Display", "Unsupported display_pin; falling back to safe GPIO");
+            configureStripForPin(FALLBACK_DISPLAY_PIN, leds, numPixels);
             return false;
     }
 }
@@ -427,27 +439,49 @@ void NeoMatrixDisplay::displayLoadingScreen()
 
 void NeoMatrixDisplay::displayMessage(const String &message)
 {
+    DisplayConfig disp = ConfigManager::getDisplay();
+    const uint16_t textColor = _matrix ? _matrix->Color(disp.text_color_r,
+                                                        disp.text_color_g,
+                                                        disp.text_color_b)
+                                       : 0;
+    displayMessage(message, textColor);
+}
+
+void NeoMatrixDisplay::displayMessage(const String &message, uint16_t color)
+{
     if (_matrix == nullptr)
         return;
 
     _matrix->fillScreen(0);
 
-    const int charWidth = 6;
-    const int charHeight = 6;
+    // Boot/status messages render in Picopixel (~4x5 glyphs, 4px advance,
+    // yAdvance=7) — same horizontal fit as TomThumb (so messages like
+    // "Fetching flights..." still don't truncate on an 80px panel), but
+    // taller/bolder strokes for better readability from across the room.
+    // Restore the default font afterward so flight-card rendering (which
+    // relies on the GFX default) is unaffected.
+    _matrix->setFont(&Picopixel);
 
-    DisplayConfig disp = ConfigManager::getDisplay();
-    const uint16_t textColor = _matrix->Color(disp.text_color_r,
-                                              disp.text_color_g,
-                                              disp.text_color_b);
-
-    // Simple single-line message; truncate if needed
+    const int charWidth = 4;   // Picopixel xAdvance for most glyphs
     const int innerWidth = _matrixWidth;
     const int maxCols = innerWidth / charWidth;
     String line = DisplayUtils::truncateToColumns(message, maxCols);
 
-    const int16_t x = 0;
-    const int16_t y = (_matrixHeight - charHeight) / 2;
-    DisplayUtils::drawTextLine(_matrix, x, y, line, textColor);
+    // Measure the truncated line so we can center both axes. getTextBounds is
+    // font-aware: (x1, y1) is the offset from the cursor to the top-left of
+    // the bounding box, (w, h) its size. Centering in pixel space means:
+    //   cursor.x = (matrixW - w) / 2 - x1
+    //   cursor.y = (matrixH - h) / 2 - y1
+    // For Picopixel this positions the baseline correctly without hardcoding
+    // font metrics, and it works if we ever swap fonts again.
+    int16_t x1, y1;
+    uint16_t w, h;
+    _matrix->getTextBounds(line, 0, 0, &x1, &y1, &w, &h);
+    int16_t cursorX = (int16_t)((_matrixWidth - (int)w) / 2) - x1;
+    int16_t cursorY = (int16_t)((_matrixHeight - (int)h) / 2) - y1;
+    DisplayUtils::drawTextLine(_matrix, cursorX, cursorY, line, color);
+
+    _matrix->setFont(nullptr);  // restore default 6x8 font for downstream rendering
 }
 
 void NeoMatrixDisplay::showLoading()
