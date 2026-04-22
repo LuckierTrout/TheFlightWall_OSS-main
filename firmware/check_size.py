@@ -14,14 +14,71 @@ Gates (descending severity):
 Import("env")
 import os
 
-# Partition + gate constants
-PARTITION_SIZE = 0x180000                          # 1,572,864 bytes — app0/app1 OTA partition
-CAP_100_PCT    = PARTITION_SIZE                    # 1,572,864 bytes — absolute brick limit
-CAP_92_PCT     = int(PARTITION_SIZE * 0.92)        # 1,447,034 bytes — LE-1.9 hard cap
-WARN_83_PCT    = int(PARTITION_SIZE * 0.83)        # 1,305,477 bytes — warning threshold (83%)
+# Fallback partition size when we can't read the active env's partition CSV.
+# Matches firmware/custom_partitions.csv (classic ESP32, 1.5MB OTA slot).
+FALLBACK_PARTITION_SIZE = 0x180000                 # 1,572,864 bytes
 
 # Delta cap: a single merge must not grow the binary by more than 180 KB.
 DELTA_CAP_BYTES = 180 * 1024                       # 184,320 bytes
+
+
+def _parse_app0_size(csv_path):
+    """
+    Parse a PlatformIO / ESP-IDF partitions CSV and return the app0 row's
+    size in bytes. Returns None if the file can't be read or no app0 row is
+    found so the caller can fall back safely. Size values may be decimal,
+    hex (0x…), or suffixed with K / M — we handle all three.
+    """
+    if not csv_path or not os.path.exists(csv_path):
+        return None
+    try:
+        with open(csv_path, "r") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        name, ptype, subtype, offset, size = parts[:5]
+        if name != "app0":
+            continue
+        try:
+            if size.lower().endswith("k"):
+                return int(size[:-1], 0) * 1024
+            if size.lower().endswith("m"):
+                return int(size[:-1], 0) * 1024 * 1024
+            return int(size, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_partition_size(env):
+    """
+    Resolve the app0 partition size for the active PlatformIO env by reading
+    the CSV referenced by `board_build.partitions`. Falls back to the classic
+    1.5MB OTA slot on parse failure so classic envs keep their historical cap.
+    """
+    try:
+        csv_name = env.BoardConfig().get("build.partitions", "")
+    except Exception:
+        csv_name = ""
+    if csv_name:
+        csv_path = os.path.join(env.subst("$PROJECT_DIR"), csv_name)
+        parsed = _parse_app0_size(csv_path)
+        if parsed:
+            return parsed, csv_name
+    return FALLBACK_PARTITION_SIZE, None
+
+
+PARTITION_SIZE, _PARTITION_CSV = _resolve_partition_size(env)
+CAP_100_PCT    = PARTITION_SIZE                    # absolute brick limit
+CAP_92_PCT     = int(PARTITION_SIZE * 0.92)        # LE-1.9 hard cap
+WARN_83_PCT    = int(PARTITION_SIZE * 0.83)        # warning threshold (83%)
 
 
 def get_main_baseline_size(project_dir):
@@ -62,7 +119,10 @@ def check_binary_size(source, target, env):
     print("=" * 60)
     print(f"Firmware Binary Size Check (LE-1.9 budget gate)")
     print(f"Binary size: {size:,} bytes ({size/1024/1024:.2f} MB)")
-    print(f"Partition:   {PARTITION_SIZE:,} bytes ({PARTITION_SIZE/1024/1024:.2f} MB)")
+    if _PARTITION_CSV:
+        print(f"Partition:   {PARTITION_SIZE:,} bytes ({PARTITION_SIZE/1024/1024:.2f} MB) — from {_PARTITION_CSV}")
+    else:
+        print(f"Partition:   {PARTITION_SIZE:,} bytes ({PARTITION_SIZE/1024/1024:.2f} MB) — fallback default")
     print(f"Usage:       {size/PARTITION_SIZE*100:.1f}%")
     print(f"Caps:        92% = {CAP_92_PCT:,}  |  100% = {CAP_100_PCT:,}")
 

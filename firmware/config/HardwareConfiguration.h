@@ -5,7 +5,11 @@
 namespace HardwareConfiguration
 {
     // Display configuration (FastLED NeoMatrix)
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    static const uint8_t DISPLAY_PIN = 21;
+#else
     static const uint8_t DISPLAY_PIN = 25;
+#endif
 
     // Physical tile size (pixels per 16x16 tile commonly)
     static const uint16_t DISPLAY_TILE_PIXEL_W = 16;

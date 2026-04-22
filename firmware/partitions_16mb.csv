@@ -1,0 +1,24 @@
+# Name,    Type,  SubType,  Offset,    Size
+# Dual-OTA 16MB partition layout for ESP32-S3 N16R8 boards (Lonely Binary
+# Gold Edition and equivalents). Verified 2026-04-20 against MAC
+# 10:b4:1d:ce:3b:ec: 16MB QSPI flash, 8MB QSPI PSRAM.
+#
+# IMPORTANT: If partition sizes change, also update either
+#   firmware/src/main.cpp validatePartitionLayout() defaults
+#   OR the -D FW_EXPECTED_* flags in the matching platformio.ini env.
+#
+# Partition sizes:
+#   nvs:      20KB    (0x5000)
+#   otadata:  8KB     (0x2000)
+#   app0:     3MB     (0x300000)   — 2x headroom vs classic 1.5MB partition
+#   app1:     3MB     (0x300000)
+#   spiffs:   ~9.87MB (0x9E0000)   — LittleFS filesystem (~10x classic)
+#   coredump: 64KB    (0x10000)    — crash post-mortem
+#
+# End: 0x1000000 (16MB boundary; no gap)
+nvs,        data,  nvs,      0x9000,    0x5000
+otadata,    data,  ota,      0xe000,    0x2000
+app0,       app,   ota_0,    0x10000,   0x300000
+app1,       app,   ota_1,    0x310000,  0x300000
+spiffs,     data,  spiffs,   0x610000,  0x9E0000
+coredump,   data,  coredump, 0xFF0000,  0x10000
