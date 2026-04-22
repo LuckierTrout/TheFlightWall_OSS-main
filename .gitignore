@@ -13,3 +13,9 @@ __pycache__/
 .bmad-assist/cache/
 *.meta.yaml
 *.tpl.xml
+
+# IDE / agent tooling state (machine-local, never commit)
+firmware/compile_commands.json
+.cursor/hooks/state/
+node_modules/
+workers/**/node_modules/
