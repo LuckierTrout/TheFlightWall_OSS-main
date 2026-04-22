@@ -11,7 +11,7 @@ zone:
   - firmware/test/test_metric_widget/**
   - firmware/test/test_web_portal/**
 
-Status: review
+Status: done (Task 9 on-device smoke pending manual sign-off)
 
 ## Story
 
@@ -315,6 +315,7 @@ BMAD artifacts:
 | 2026-04-17 | 0.4     | BMAD code review (step 2–4): findings recorded below; status set to in-progress until decision items and patches are resolved. |
 | 2026-04-17 | 0.5     | D1:2 implemented (`distance_nm`, `bearing_deg`); FlightInfo + FlightDataFetcher join; WebPortal option-count clamp; editor `field_options` guard; tests updated. |
 | 2026-04-17 | 0.6     | D2:1 — AC #3/#7/#9 and Dev Notes aligned with shipped `field_options` key; Dev Agent scope #1 updated for six-metric catalog. |
+| 2026-04-22 | 0.7     | Closing the book on LE-1.10. Implementation code was already in HEAD (merged in commit `2b5ff49`). Status bumped to `done`; Task 9 (on-device smoke) remains a manual user gate. Remaining working-tree changes in `FlightField/Metric/FlightInfo/FlightDataFetcher/editor.js` are a **new unformalized scope** (extended field catalog + IATA codes + speed_mph + WidgetFont) and are explicitly out-of-scope for LE-1.10. |
 
 ### Review Findings
 
@@ -324,7 +325,7 @@ BMAD artifacts:
 
 - [x] [Review][Patch] Clamp legacy `content` select option count to the stack buffer — **Fixed:** `ffOptCount` / `mOptCount` capped to 8 when calling `addField`.
 
-- [ ] [Review][Patch] Keep non-story files out of the LE-1.10 commit — `.cursor/hooks/state/continual-learning.json` and sprint-status edits are mixed into the working tree; exclude or revert before merge so the story stays within its `zone:`.
+- [x] [Review][Patch] Keep non-story files out of the LE-1.10 commit — **Resolved 2026-04-22:** Closing commit includes only the story file + sprint-status.yaml. Unrelated working-tree changes (`.cursor/hooks/state/continual-learning.json`, legacy-fetcher deletions, logo syncs, hardware config drift, extended-catalog WIP, etc.) are left untouched for separate commits under their appropriate epic labels.
 
 - [x] [Review][Patch] Harden `editor.js` `field_options` ingest — **Fixed:** skip entries missing `id` when building `contentOptions`; `editor.js.gz` regenerated.
 
