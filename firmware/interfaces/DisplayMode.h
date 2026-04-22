@@ -1,7 +1,7 @@
 #pragma once
 
 #include <vector>
-#include <FastLED_NeoMatrix.h>
+#include <Adafruit_GFX.h>
 #include "models/FlightInfo.h"
 #include "core/LayoutEngine.h"
 
@@ -10,7 +10,15 @@
 
 // --- Rendering Context (passed to modes each frame) ---
 struct RenderContext {
-    FastLED_NeoMatrix* matrix;       // GFX drawing surface — mutable for rendering
+    // GFX drawing surface — mutable for rendering. Typed as the Adafruit_GFX
+    // base class so the adapter layer can plug in either a FastLED_NeoMatrix
+    // (legacy WS2812B path, retired), a GFXcanvas16 (HW-1.1 stub), or a
+    // MatrixPanel_I2S_DMA (HW-1.2 real HUB75) without modes/widgets caring.
+    // Base-class methods (drawPixel, fillRect, setCursor, print, setFont,
+    // setTextColor, setTextSize, setTextWrap, width, height) cover all
+    // existing draw paths. For RGB565 color packing, call the static
+    // DisplayUtils::rgb565(r,g,b) helper instead of FastLED_NeoMatrix::Color.
+    Adafruit_GFX* matrix;
     LayoutResult layout;             // zone bounds (logo, flight, telemetry)
     uint16_t textColor;              // pre-computed from DisplayConfig RGB
     uint8_t brightness;              // read-only — managed by night mode scheduler

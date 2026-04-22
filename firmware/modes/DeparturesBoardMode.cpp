@@ -189,7 +189,7 @@ const ModeSettingsSchema* DeparturesBoardMode::getSettingsSchema() const {
     return &DEPBD_SCHEMA;
 }
 
-void DeparturesBoardMode::renderRow(FastLED_NeoMatrix* matrix, const FlightInfo& f,
+void DeparturesBoardMode::renderRow(Adafruit_GFX* matrix, const FlightInfo& f,
                                      int16_t y, uint16_t rowHeight, uint16_t matrixWidth,
                                      uint16_t textColor) {
     // CODE QUALITY FIX (2026-04-16): Add const for immutable value

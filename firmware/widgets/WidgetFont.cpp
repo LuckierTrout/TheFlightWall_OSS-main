@@ -1,7 +1,6 @@
 #include "widgets/WidgetFont.h"
 
 #include <Adafruit_GFX.h>
-#include <FastLED_NeoMatrix.h>
 #include <Fonts/Picopixel.h>
 #include <Fonts/TomThumb.h>
 
@@ -13,7 +12,7 @@ WidgetFontId resolveWidgetFontId(uint8_t raw) {
     return WidgetFontId::Default;
 }
 
-int16_t applyWidgetFont(FastLED_NeoMatrix* matrix, WidgetFontId fontId, int charH) {
+int16_t applyWidgetFont(Adafruit_GFX* matrix, WidgetFontId fontId, int charH) {
     switch (fontId) {
         case WidgetFontId::TomThumb:
             matrix->setFont(&TomThumb);

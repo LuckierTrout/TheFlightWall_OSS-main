@@ -67,15 +67,15 @@ VerticalTrend LiveFlightCardMode::classifyVerticalTrend(float vrate_fps) {
 // Draws a 5×5 directional glyph centered vertically in [zoneY, zoneY+zoneH) at column x.
 // Colors: CLIMBING=green, DESCENDING=red, LEVEL=amber, UNKNOWN=no-op (AC #6).
 // Pixels clipped to zone bounds for safety on very short zones.
-static void drawVerticalTrend(FastLED_NeoMatrix* matrix, VerticalTrend trend,
+static void drawVerticalTrend(Adafruit_GFX* matrix, VerticalTrend trend,
                                int16_t x, int16_t zoneY, int16_t zoneH) {
     if (trend == VerticalTrend::UNKNOWN) return;
     if (zoneH <= 0) return;
 
     uint16_t color;
-    if      (trend == VerticalTrend::CLIMBING)   color = matrix->Color(0,   220, 0);    // green
-    else if (trend == VerticalTrend::DESCENDING) color = matrix->Color(220, 0,   0);    // red
-    else                                         color = matrix->Color(220, 140, 0);    // amber
+    if      (trend == VerticalTrend::CLIMBING)   color = DisplayUtils::rgb565(0, 220, 0);    // green
+    else if (trend == VerticalTrend::DESCENDING) color = DisplayUtils::rgb565(220, 0, 0);    // red
+    else                                         color = DisplayUtils::rgb565(220, 140, 0);    // amber
 
     // 5×5 glyph patterns (static const → .rodata, no stack/heap cost).
     // Up-arrow (climbing): apex at top, shaft below
@@ -486,7 +486,7 @@ void LiveFlightCardMode::renderLoadingScreen(const RenderContext& ctx) {
     if (mh == 0) mh = ctx.matrix->height();
 
     // White border (matches legacy loading screen)
-    const uint16_t borderColor = ctx.matrix->Color(255, 255, 255);
+    const uint16_t borderColor = DisplayUtils::rgb565(255, 255, 255);
     ctx.matrix->drawRect(0, 0, mw, mh, borderColor);
 
     // Centered "..." text using user theme color

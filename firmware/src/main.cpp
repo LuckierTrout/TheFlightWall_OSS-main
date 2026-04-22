@@ -23,13 +23,14 @@ Architecture: Producer-Consumer dual-core (Core 1 = fetch/network, Core 0 = disp
 #include "esp_ota_ops.h"
 #include "esp_sntp.h"
 #include "utils/Log.h"
+#include "utils/DisplayUtils.h"
 #include "utils/TimeUtils.h"
 #include "core/ConfigManager.h"
 #include "core/SystemStatus.h"
 #include "adapters/AggregatorFetcher.h"
 #include "core/LayoutStore.h"
 #include "core/FlightDataFetcher.h"
-#include "adapters/NeoMatrixDisplay.h"
+#include "adapters/HUB75MatrixDisplay.h"
 #include "adapters/WiFiManager.h"
 #include "adapters/WebPortal.h"
 #include "core/LayoutEngine.h"
@@ -178,7 +179,7 @@ static void enterPhase(StartupPhase phase)
 
 static AggregatorFetcher g_aggregator;
 static FlightDataFetcher *g_fetcher = nullptr;
-static NeoMatrixDisplay g_display;
+static HUB75MatrixDisplay g_display;
 static WiFiManager g_wifiManager;
 static AsyncWebServer g_webServer(80);
 static WebPortal g_webPortal;
@@ -561,9 +562,9 @@ void displayTask(void *pvParameters)
             uint16_t color = ctx.textColor;
             if (ctx.matrix != nullptr) {
                 if (statusMessage.status == StatusKind::OK) {
-                    color = ctx.matrix->Color(0, 220, 0);
+                    color = DisplayUtils::rgb565(0, 220, 0);
                 } else if (statusMessage.status == StatusKind::FAIL) {
-                    color = ctx.matrix->Color(220, 0, 0);
+                    color = DisplayUtils::rgb565(220, 0, 0);
                 }
             }
             g_display.displayMessage(String(statusMessage.text), color);
@@ -628,7 +629,7 @@ void displayTask(void *pvParameters)
             cachedCtx.matrix->drawRect(0, 0,
                                        cachedCtx.matrix->width(),
                                        cachedCtx.matrix->height(),
-                                       cachedCtx.matrix->Color(0, 0, 0));
+                                       DisplayUtils::rgb565(0, 0, 0));
         }
 
         // Single frame commit (FR35 — one show() per frame)

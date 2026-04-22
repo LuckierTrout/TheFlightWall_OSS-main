@@ -380,7 +380,7 @@ void ClassicCardMode::renderLoadingScreen(const RenderContext& ctx) {
     if (mh == 0) mh = ctx.matrix->height();
 
     // White border (matches legacy loading screen)
-    const uint16_t borderColor = ctx.matrix->Color(255, 255, 255);
+    const uint16_t borderColor = DisplayUtils::rgb565(255, 255, 255);
     ctx.matrix->drawRect(0, 0, mw, mh, borderColor);
 
     // Centered "..." text using user theme color

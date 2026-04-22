@@ -26,7 +26,7 @@ returns. render() never sees JSON.
 #include "utils/Log.h"
 
 #include <ArduinoJson.h>
-#include <FastLED_NeoMatrix.h>
+#include <Adafruit_GFX.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

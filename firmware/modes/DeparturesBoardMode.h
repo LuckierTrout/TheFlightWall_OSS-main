@@ -56,7 +56,7 @@ private:
     static uint32_t identHash(const FlightInfo& f);
 
     // Render a single row band for one flight (zero-alloc: uses char[] buffers)
-    void renderRow(FastLED_NeoMatrix* matrix, const FlightInfo& f,
+    void renderRow(Adafruit_GFX* matrix, const FlightInfo& f,
                    int16_t y, uint16_t rowHeight, uint16_t matrixWidth,
                    uint16_t textColor);
 

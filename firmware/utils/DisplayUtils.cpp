@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-void DisplayUtils::drawTextLine(FastLED_NeoMatrix* matrix, int16_t x, int16_t y,
+void DisplayUtils::drawTextLine(Adafruit_GFX* matrix, int16_t x, int16_t y,
                                 const String& text, uint16_t color)
 {
     matrix->setCursor(x, y);
@@ -35,7 +35,7 @@ String DisplayUtils::formatTelemetryValue(double value, const char* suffix, int 
 
 // --- char*-based overloads (zero heap allocation) ---
 
-void DisplayUtils::drawTextLine(FastLED_NeoMatrix* matrix, int16_t x, int16_t y,
+void DisplayUtils::drawTextLine(Adafruit_GFX* matrix, int16_t x, int16_t y,
                                 const char* text, uint16_t color)
 {
     matrix->setCursor(x, y);
@@ -97,7 +97,7 @@ void DisplayUtils::formatTelemetryValue(double value, const char* suffix, int de
     }
 }
 
-void DisplayUtils::drawBitmapRGB565(FastLED_NeoMatrix* matrix, int16_t x, int16_t y,
+void DisplayUtils::drawBitmapRGB565(Adafruit_GFX* matrix, int16_t x, int16_t y,
                                      uint16_t w, uint16_t h, const uint16_t* bitmap,
                                      uint16_t zoneW, uint16_t zoneH)
 {

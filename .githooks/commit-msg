@@ -11,6 +11,7 @@
 #   fn-X.Y         fn epic (e.g. fn-1.4)
 #   dl-X.Y         dl epic (e.g. dl-7.3)
 #   ds-X.Y         ds epic (e.g. ds-3.1)
+#   hw-X.Y         hardware migration epic (e.g. hw-1.1)
 #
 # Merge / revert auto-generated messages are exempt.
 # Empty commit messages are rejected.
@@ -45,7 +46,7 @@ esac
 
 # Validate story-ID prefix (case-insensitive).
 shopt -s nocasematch
-pattern='^(td-[0-9]+|le-[0-9]+[.-][0-9]+|fn-[0-9]+[.-][0-9]+|dl-[0-9]+[.-][0-9]+|ds-[0-9]+[.-][0-9]+):[[:space:]]+.+'
+pattern='^(td-[0-9]+|le-[0-9]+[.-][0-9]+|fn-[0-9]+[.-][0-9]+|dl-[0-9]+[.-][0-9]+|ds-[0-9]+[.-][0-9]+|hw-[0-9]+[.-][0-9]+):[[:space:]]+.+'
 if ! [[ "$subject" =~ $pattern ]]; then
     cat >&2 <<EOF
 [commit-msg] Commit subject must start with a story ID prefix:
@@ -54,6 +55,7 @@ if ! [[ "$subject" =~ $pattern ]]; then
     fn-X.Y: <summary>      (fn epic)
     dl-X.Y: <summary>      (dl epic)
     ds-X.Y: <summary>      (ds epic)
+    hw-X.Y: <summary>      (hardware migration; e.g. hw-1.1: hub75 toolchain)
 
 Either '.' or '-' accepted between version numbers. Case-insensitive.
 See AGENTS.md for the full convention and rationale.

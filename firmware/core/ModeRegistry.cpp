@@ -12,7 +12,11 @@ References: architecture.md#D2, core/ModeRegistry.h
 #include "utils/Log.h"
 #include <Arduino.h>
 #include <cstring>
-#include <FastLED.h>
+// HW-1.1: FastLED removed from lib_deps. The crossfade transition below
+// depended on direct CRGB buffer access through FastLED.leds() + FastLED.show().
+// The fade path is stubbed to instant-handoff until HW-1.2 re-implements
+// transitions against the HUB75 double-buffered DMA canvas. Search for
+// "HW-1.2 fade placeholder" below for the disabled blocks.
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "esp_task_wdt.h"
@@ -146,47 +150,10 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
     size_t fadePixelCount = 0;
     size_t fadeBufBytes = 0;
 
-    {
-        uint16_t w = ctx.layout.matrixWidth;
-        uint16_t h = ctx.layout.matrixHeight;
-
-        if (w == 0 || h == 0) {
-            // AC #2: zero dimensions — skip fade, instant path
-            LOG_W("ModeRegistry", "Fade skipped: matrix dimensions zero");
-        } else {
-            fadePixelCount = (size_t)w * (size_t)h;
-            fadeBufBytes = fadePixelCount * 3;  // RGB888 per pixel
-
-            // Allocate buffer A (outgoing snapshot)
-            fadeSnapshotBuf = (uint8_t*)malloc(fadeBufBytes);
-            if (fadeSnapshotBuf != nullptr) {
-                // Copy current CRGB leds into RGB888 buffer A
-                CRGB* leds = FastLED.leds();
-                int numLeds = FastLED.size();
-                size_t copyCount = (fadePixelCount <= (size_t)numLeds) ? fadePixelCount : (size_t)numLeds;
-                for (size_t i = 0; i < copyCount; i++) {
-                    fadeSnapshotBuf[i * 3 + 0] = leds[i].r;
-                    fadeSnapshotBuf[i * 3 + 1] = leds[i].g;
-                    fadeSnapshotBuf[i * 3 + 2] = leds[i].b;
-                }
-                // Zero-fill any remaining pixels if pixelCount > numLeds
-                if (copyCount < fadePixelCount) {
-                    memset(fadeSnapshotBuf + copyCount * 3, 0,
-                           (fadePixelCount - copyCount) * 3);
-                }
-                LOG_I("ModeRegistry", "Fade snapshot captured");
-#if LOG_LEVEL >= 2
-                Serial.printf("[ModeRegistry] Snapshot: %ux%u = %u pixels, %u bytes\n",
-                              (unsigned)w, (unsigned)h, (unsigned)fadePixelCount, (unsigned)fadeBufBytes);
-#endif
-            } else {
-                // AC #6: malloc failed — will use instant handoff
-                LOG_W("ModeRegistry", "Fade snapshot malloc failed — instant handoff");
-                fadePixelCount = 0;
-                fadeBufBytes = 0;
-            }
-        }
-    }
+    // HW-1.2 fade placeholder: outgoing CRGB snapshot capture was here.
+    // Depends on FastLED.leds() / FastLED.size(), which are not available
+    // under the HUB75 stack. Leave fadeSnapshotBuf = nullptr so the fade
+    // loop below (also stubbed) falls through to instant handoff.
 
     // Step 1: Teardown active mode (keep shell allocated for safe restoration)
     if (_activeMode != nullptr) {
@@ -322,69 +289,16 @@ void ModeRegistry::executeSwitch(uint8_t targetIndex, const RenderContext& ctx,
     _nvsWritePending = true;
     _lastSwitchMs = millis();
 
-    // Step 7 (Story dl-3.1, AC #1): Execute fade transition AFTER init succeeds,
-    // BEFORE returning to IDLE. _switchState remains SWITCHING during fade so
-    // orchestrator/HTTP paths remain coherent (AC #9).
-    // New requestSwitch calls during fade write to _requestedIndex atomically
-    // but are NOT consumed until tick() runs after IDLE (AC #8 — drop during fade).
-    if (fadeSnapshotBuf != nullptr && fadePixelCount > 0) {
-        // Render first frame of new mode to capture buffer B
-        _activeMode->render(ctx, flights);
-
-        // Allocate buffer B (incoming first frame)
-        uint8_t* fadeIncomingBuf = (uint8_t*)malloc(fadeBufBytes);
-        if (fadeIncomingBuf != nullptr) {
-            CRGB* leds = FastLED.leds();
-            int numLeds = FastLED.size();
-            size_t copyCount = (fadePixelCount <= (size_t)numLeds) ? fadePixelCount : (size_t)numLeds;
-            for (size_t i = 0; i < copyCount; i++) {
-                fadeIncomingBuf[i * 3 + 0] = leds[i].r;
-                fadeIncomingBuf[i * 3 + 1] = leds[i].g;
-                fadeIncomingBuf[i * 3 + 2] = leds[i].b;
-            }
-            if (copyCount < fadePixelCount) {
-                memset(fadeIncomingBuf + copyCount * 3, 0,
-                       (fadePixelCount - copyCount) * 3);
-            }
-
-            // Execute crossfade: ~15 steps over ≤1s (AC #3)
-            // FR35 exception: multiple show() calls during transition only (AC #9)
-            static constexpr int FADE_STEPS = 15;
-            static constexpr int FADE_STEP_DELAY_MS = 66;  // 15 steps × 66ms ≈ 990ms ≤ 1s
-
-            LOG_I("ModeRegistry", "Fade transition starting");
-
-            for (int step = 1; step <= FADE_STEPS; step++) {
-                // AC #4: integer lerp with fixed-point 0–255 alpha
-                uint8_t alpha = (uint8_t)((step * 255) / FADE_STEPS);
-                uint8_t invAlpha = 255 - alpha;
-
-                CRGB* leds = FastLED.leds();
-                size_t blendCount = (fadePixelCount <= (size_t)FastLED.size())
-                                     ? fadePixelCount : (size_t)FastLED.size();
-
-                for (size_t i = 0; i < blendCount; i++) {
-                    size_t off = i * 3;
-                    leds[i].r = (uint8_t)(((uint16_t)fadeSnapshotBuf[off + 0] * invAlpha +
-                                           (uint16_t)fadeIncomingBuf[off + 0] * alpha) >> 8);
-                    leds[i].g = (uint8_t)(((uint16_t)fadeSnapshotBuf[off + 1] * invAlpha +
-                                           (uint16_t)fadeIncomingBuf[off + 1] * alpha) >> 8);
-                    leds[i].b = (uint8_t)(((uint16_t)fadeSnapshotBuf[off + 2] * invAlpha +
-                                           (uint16_t)fadeIncomingBuf[off + 2] * alpha) >> 8);
-                }
-
-                FastLED.show();
-                esp_task_wdt_reset();  // Prevent WDT timeout during ~990ms crossfade
-                vTaskDelay(pdMS_TO_TICKS(FADE_STEP_DELAY_MS));
-            }
-
-            LOG_I("ModeRegistry", "Fade transition complete");
-            free(fadeIncomingBuf);  // AC #7: free immediately
-        } else {
-            // AC #6: buffer B malloc failed — graceful degradation, instant handoff
-            LOG_W("ModeRegistry", "Fade incoming buffer malloc failed — instant handoff");
-        }
-    }
+    // HW-1.2 fade placeholder: Step 7 used to run a ~1-second crossfade by
+    // grabbing FastLED.leds() into two RGB888 buffers and linear-blending
+    // frame-by-frame. That entire path depends on FastLED's CRGB buffer and
+    // show() primitive, neither of which exists under the HUB75 stack.
+    // Until HW-1.2 re-implements transitions against the HUB75 DMA
+    // double-buffer, mode switches are instant. Story dl-3.1's fade
+    // contract (≤1s, 15-step linear lerp, FR35 exception for multi-show
+    // during transition) is deferred, not lost.
+    (void)flights;  // unused until the fade path is re-wired
+    (void)fadeBufBytes;
 
     // AC #7: free snapshot buffer immediately after fade (or if fade was skipped)
     free(fadeSnapshotBuf);

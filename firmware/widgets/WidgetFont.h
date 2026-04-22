@@ -13,7 +13,7 @@
 
 #include "core/WidgetRegistry.h"
 
-class FastLED_NeoMatrix;
+class Adafruit_GFX;
 
 // Map a persisted font_id byte to its enum value. Unknown values fall back
 // to the default 6x8 font so malformed layouts never crash.
@@ -23,8 +23,9 @@ WidgetFontId resolveWidgetFontId(uint8_t raw);
 // Y offset the caller should add to its drawY. Custom GFX fonts use a
 // baseline cursor, so a TextWidget that centered its draw using top-left
 // semantics needs to shift down by (charH - 1). Default (nullptr) font
-// returns zero.
-int16_t applyWidgetFont(FastLED_NeoMatrix* matrix, WidgetFontId fontId, int charH);
+// returns zero. Accepts any Adafruit_GFX surface (GFXcanvas16, the stub's
+// canvas in HW-1.1, or MatrixPanel_I2S_DMA once HW-1.2 lands).
+int16_t applyWidgetFont(Adafruit_GFX* matrix, WidgetFontId fontId, int charH);
 
 // In-place ASCII case transform on a null-terminated buffer. Called by
 // text-rendering widgets (Text, Metric, FlightField) before truncation so

@@ -172,3 +172,6 @@ development_status:
   le-1-8-flight-field-and-metric-widgets: done
   le-1-9-golden-frame-tests-and-budget-gate: done
   le-1-10-widget-field-picker: done  # Task 9 on-device smoke pending manual user sign-off
+  # Epic hw-1 (HUB75 composite display migration)
+  epic-hw-1: in-progress
+  hw-1-1-toolchain-and-library-swap: done  # build-verified both envs; display-dead intermediate until HW-1.2
