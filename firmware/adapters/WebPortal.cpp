@@ -29,6 +29,7 @@ GET /api/status extended JSON (Story 2.4):
 #include <esp_ota_ops.h>
 #include <vector>
 #include "core/ConfigManager.h"
+#include "config/HardwareConfiguration.h"
 #include "core/SystemStatus.h"
 #include "core/LogoManager.h"
 #include "core/OTAUpdater.h"
@@ -1497,11 +1498,16 @@ void WebPortal::_handleGetLayout(AsyncWebServerRequest* request) {
     telemetry["h"] = layout.telemetryZone.h;
 
     JsonObject hardware = data["hardware"].to<JsonObject>();
-    hardware["tiles_x"] = hw.tiles_x;
-    hardware["tiles_y"] = hw.tiles_y;
-    hardware["tile_pixels"] = hw.tile_pixels;
+    // Post hw-1.3: canvas is fixed by the HW-1 master/composite build.
+    // tile_pixels is the nominal 64 so the LE-1 editor's snap-grid still works;
+    // tiles_x/tiles_y are derived from the true canvas dims.
+    hardware["tiles_x"] = layout.matrixWidth / HardwareConfiguration::NOMINAL_TILE_PIXELS;
+    hardware["tiles_y"] = (layout.matrixHeight + HardwareConfiguration::NOMINAL_TILE_PIXELS - 1)
+                          / HardwareConfiguration::NOMINAL_TILE_PIXELS;
+    hardware["tile_pixels"] = HardwareConfiguration::NOMINAL_TILE_PIXELS;
     hardware["zone_layout"] = hw.zone_layout;
     hardware["zone_pad_x"] = hw.zone_pad_x;
+    hardware["slave_enabled"] = hw.slave_enabled;
 
     String output;
     serializeJson(doc, output);

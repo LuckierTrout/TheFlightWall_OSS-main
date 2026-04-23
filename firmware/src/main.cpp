@@ -350,10 +350,7 @@ static void queueWiFiStateMessage(WiFiState state)
 
 static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
 {
-    return lhs.tiles_x != rhs.tiles_x ||
-           lhs.tiles_y != rhs.tiles_y ||
-           lhs.tile_pixels != rhs.tile_pixels ||
-           lhs.display_pin != rhs.display_pin ||
+    return lhs.slave_enabled != rhs.slave_enabled ||
            lhs.origin_corner != rhs.origin_corner ||
            lhs.scan_dir != rhs.scan_dir ||
            lhs.zigzag != rhs.zigzag ||
@@ -365,10 +362,10 @@ static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfi
 
 static bool hardwareGeometryChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
 {
-    return lhs.tiles_x != rhs.tiles_x ||
-           lhs.tiles_y != rhs.tiles_y ||
-           lhs.tile_pixels != rhs.tile_pixels ||
-           lhs.display_pin != rhs.display_pin;
+    // Post hw-1.3: canvas is fixed by the HW-1 build; only slave_enabled
+    // changes reported geometry. That key is reboot-required so this check
+    // rarely fires in practice, but it remains correct for the hot-reload path.
+    return lhs.slave_enabled != rhs.slave_enabled;
 }
 
 static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)

@@ -43,12 +43,14 @@ void test_defaults_location() {
 }
 
 void test_defaults_hardware() {
+    // Post hw-1.3: canvas dimensions are fixed by the HW-1 HUB75 build;
+    // only layout/zone knobs and slave_enabled remain configurable.
     HardwareConfig h = ConfigManager::getHardware();
-    TEST_ASSERT_EQUAL_UINT8(10, h.tiles_x);
-    TEST_ASSERT_EQUAL_UINT8(2, h.tiles_y);
-    TEST_ASSERT_EQUAL_UINT8(16, h.tile_pixels);
-    TEST_ASSERT_EQUAL_UINT8(25, h.display_pin);
+    TEST_ASSERT_FALSE(h.slave_enabled);
     TEST_ASSERT_EQUAL_UINT8(0, h.zone_pad_x);
+    TEST_ASSERT_EQUAL_UINT8(0, h.zone_logo_pct);
+    TEST_ASSERT_EQUAL_UINT8(0, h.zone_split_pct);
+    TEST_ASSERT_EQUAL_UINT8(0, h.zone_layout);
 }
 
 void test_defaults_timing() {
@@ -213,13 +215,16 @@ void test_requires_reboot_known_keys() {
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_password"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_url"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_token"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("display_pin"));
+    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("slave_enabled"));
 }
 
-void test_requires_reboot_hardware_layout_keys() {
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_x"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tiles_y"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("tile_pixels"));
+void test_requires_reboot_retired_keys_not_rebooting() {
+    // Post hw-1.3: tile/pin keys are silently accepted by applyJson for
+    // backward compat but never trigger a reboot (they don't change anything).
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tiles_x"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tiles_y"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tile_pixels"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("display_pin"));
 }
 
 void test_requires_reboot_hot_reload_keys() {
@@ -390,14 +395,25 @@ void test_apply_json_schedule_validation() {
     ApplyResult result6 = ConfigManager::applyJson(doc6.as<JsonObject>());
     TEST_ASSERT_EQUAL(0, result6.applied.size());
 
-    // 5x2 @ 16px => 80x32, so max safe pad per side is floor((80-32-1)/2)=23.
+    // Post hw-1.3: master canvas is fixed at 192x128, so max safe pad per side
+    // is floor((192-128-1)/2) = 31. A pad of 32 must be rejected.
     JsonDocument doc7;
-    doc7["tiles_x"] = 5;
-    doc7["tiles_y"] = 2;
-    doc7["tile_pixels"] = 16;
-    doc7["zone_pad_x"] = 24;
+    doc7["zone_pad_x"] = 32;
     ApplyResult result7 = ConfigManager::applyJson(doc7.as<JsonObject>());
     TEST_ASSERT_EQUAL(0, result7.applied.size());
+
+    // Legacy tile/pin keys are silently accepted for backward compat (no reboot,
+    // no error) so older wizard/dashboard POSTs keep working until hw-1.4.
+    JsonDocument doc8;
+    doc8["tiles_x"] = 99;
+    doc8["tiles_y"] = 99;
+    doc8["tile_pixels"] = 99;
+    doc8["display_pin"] = 99;
+    doc8["brightness"] = 77;
+    ApplyResult result8 = ConfigManager::applyJson(doc8.as<JsonObject>());
+    TEST_ASSERT_TRUE(result8.applied.size() >= 1);
+    TEST_ASSERT_FALSE(result8.reboot_required);
+    TEST_ASSERT_EQUAL_UINT8(77, ConfigManager::getDisplay().brightness);
 }
 
 void test_dump_settings_json_includes_schedule() {
@@ -729,7 +745,7 @@ void setup() {
 
     // Reboot key detection
     RUN_TEST(test_requires_reboot_known_keys);
-    RUN_TEST(test_requires_reboot_hardware_layout_keys);
+    RUN_TEST(test_requires_reboot_retired_keys_not_rebooting);
     RUN_TEST(test_requires_reboot_hot_reload_keys);
 
     // Factory reset

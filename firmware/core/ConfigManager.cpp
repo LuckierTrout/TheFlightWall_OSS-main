@@ -48,27 +48,15 @@ public:
     }
 };
 
-static bool isSupportedDisplayPin(uint8_t pin);
-static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels);
-static uint8_t maxHorizontalZonePadX(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels);
-
-// Reject tile configs that would exceed ESP32 RAM (~160KB usable).
-// CRGB is 3 bytes per pixel; cap at 16,384 pixels (~49KB).
-static bool isValidTileConfig(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels) {
-    if (tiles_x == 0 || tiles_y == 0 || tile_pixels == 0) return false;
-    uint32_t total = (uint32_t)tiles_x * tiles_y * tile_pixels * tile_pixels;
-    return total <= 16384;
-}
-
-static uint8_t maxHorizontalZonePadX(uint8_t tiles_x, uint8_t tiles_y, uint8_t tile_pixels) {
-    if (tiles_x == 0 || tiles_y == 0 || tile_pixels == 0) return 0;
-
-    const uint16_t mw = static_cast<uint16_t>(tiles_x) * tile_pixels;
-    const uint16_t mh = static_cast<uint16_t>(tiles_y) * tile_pixels;
+// Post hw-1.3: canvas dimensions are fixed by the HW-1 HUB75 master chain
+// (192x128 master-only, 192x160 when slave_enabled), so the old tile-based
+// validation helpers are replaced with a single canvas helper that reports
+// the padding ceiling for the current mode.
+static uint8_t maxHorizontalZonePadX(bool slave_enabled) {
+    const uint16_t mw = HardwareConfiguration::MASTER_CANVAS_WIDTH;
+    const uint16_t mh = slave_enabled ? HardwareConfiguration::COMPOSITE_HEIGHT
+                                      : HardwareConfiguration::MASTER_CANVAS_HEIGHT;
     if (mw <= mh) return 0;
-
-    // Keep the default square logo width plus at least one column for the
-    // right-hand panel after applying left/right padding.
     return static_cast<uint8_t>((mw - mh - 1U) / 2U);
 }
 
@@ -91,28 +79,20 @@ static bool updateConfigValue(DisplayConfig& display,
     if (strcmp(key, "center_lon") == 0)        { location.center_lon = value.as<double>(); return true; }
     if (strcmp(key, "radius_km") == 0)         { location.radius_km = value.as<double>(); return true; }
 
-    // Hardware — validate tile values to prevent OOM
-    if (strcmp(key, "tiles_x") == 0) {
-        uint8_t v = value.as<uint8_t>();
-        if (!isValidTileConfig(v, hardware.tiles_y, hardware.tile_pixels)) return false;
-        hardware.tiles_x = v; return true;
+    // Hardware — legacy tile/pin keys retired in hw-1.3. The HW-1 master chain
+    // is fixed at 3x2 of 64x64 (192x128); there is no user-configurable data
+    // pin. Silently accept and discard these keys so older wizard/dashboard
+    // POSTs keep working until hw-1.4 strips them from the UI.
+    if (strcmp(key, "tiles_x") == 0 ||
+        strcmp(key, "tiles_y") == 0 ||
+        strcmp(key, "tile_pixels") == 0 ||
+        strcmp(key, "display_pin") == 0) {
+        (void)value;
+        return true;  // accepted-but-ignored
     }
-    if (strcmp(key, "tiles_y") == 0) {
-        uint8_t v = value.as<uint8_t>();
-        if (!isValidTileConfig(hardware.tiles_x, v, hardware.tile_pixels)) return false;
-        hardware.tiles_y = v; return true;
-    }
-    if (strcmp(key, "tile_pixels") == 0) {
-        uint8_t v = value.as<uint8_t>();
-        if (!isValidTileConfig(hardware.tiles_x, hardware.tiles_y, v)) return false;
-        hardware.tile_pixels = v; return true;
-    }
-    if (strcmp(key, "display_pin") == 0) {
-        const uint8_t pin = value.as<uint8_t>();
-        if (!isSupportedDisplayPin(pin)) {
-            return false;
-        }
-        hardware.display_pin = pin;
+    if (strcmp(key, "slave_enabled") == 0) {
+        if (!value.is<bool>() && !value.is<unsigned int>()) return false;
+        hardware.slave_enabled = value.as<bool>();
         return true;
     }
     if (strcmp(key, "origin_corner") == 0)     { hardware.origin_corner = value.as<uint8_t>(); return true; }
@@ -135,7 +115,7 @@ static bool updateConfigValue(DisplayConfig& display,
     }
     if (strcmp(key, "zone_pad_x") == 0) {
         uint8_t v = value.as<uint8_t>();
-        if (v > maxHorizontalZonePadX(hardware.tiles_x, hardware.tiles_y, hardware.tile_pixels)) return false;
+        if (v > maxHorizontalZonePadX(hardware.slave_enabled)) return false;
         hardware.zone_pad_x = v; return true;
     }
 
@@ -192,44 +172,13 @@ static bool updateConfigValue(DisplayConfig& display,
     return false;
 }
 
-static bool isSupportedDisplayPin(uint8_t pin) {
-    switch (pin) {
-        case 0:
-        case 2:
-        case 4:
-        case 5:
-        case 12:
-        case 13:
-        case 14:
-        case 15:
-        case 16:
-        case 17:
-        case 18:
-        case 19:
-        case 21:
-#if !defined(CONFIG_IDF_TARGET_ESP32S3)
-        case 22:
-        case 23:
-        case 25:
-#endif
-        case 26:
-#if !defined(CONFIG_IDF_TARGET_ESP32S3)
-        case 27:
-        case 32:
-#endif
-        case 33:
-            return true;
-        default:
-            return false;
-    }
-}
-
-// Reboot-required keys
+// Reboot-required keys. Post hw-1.3: the legacy tile/pin keys are gone
+// (silent-discarded above if a client still POSTs them); slave_enabled
+// changes canvas dimensions so it requires a reboot.
 static const char* REBOOT_KEYS[] = {
     "wifi_ssid", "wifi_password",
     "agg_url", "agg_token",
-    "display_pin",
-    "tiles_x", "tiles_y", "tile_pixels"
+    "slave_enabled",
 };
 static const size_t REBOOT_KEY_COUNT = sizeof(REBOOT_KEYS) / sizeof(REBOOT_KEYS[0]);
 
@@ -254,10 +203,6 @@ void ConfigManager::loadDefaults() {
     _location.center_lon = UserConfiguration::CENTER_LON;
     _location.radius_km = UserConfiguration::RADIUS_KM;
 
-    _hardware.tiles_x = HardwareConfiguration::DISPLAY_TILES_X;
-    _hardware.tiles_y = HardwareConfiguration::DISPLAY_TILES_Y;
-    _hardware.tile_pixels = HardwareConfiguration::DISPLAY_TILE_PIXEL_W;
-    _hardware.display_pin = HardwareConfiguration::DISPLAY_PIN;
     _hardware.origin_corner = 0;
     _hardware.scan_dir = 0;
     _hardware.zigzag = 0;
@@ -265,6 +210,7 @@ void ConfigManager::loadDefaults() {
     _hardware.zone_split_pct = 0;
     _hardware.zone_layout = 0;
     _hardware.zone_pad_x = 0;
+    _hardware.slave_enabled = false;
 
     _timing.fetch_interval = TimingConfiguration::FETCH_INTERVAL_SECONDS;
     _timing.display_cycle = TimingConfiguration::DISPLAY_CYCLE_SECONDS;
@@ -377,24 +323,17 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("center_lon"))     snapshot.location.center_lon = prefs.getDouble("center_lon", snapshot.location.center_lon);
     if (prefs.isKey("radius_km"))      snapshot.location.radius_km = prefs.getDouble("radius_km", snapshot.location.radius_km);
 
-    // Hardware — validate tile config to prevent OOM crash
-    if (prefs.isKey("tiles_x") || prefs.isKey("tiles_y") || prefs.isKey("tile_pixels")) {
-        uint8_t tx = prefs.isKey("tiles_x") ? prefs.getUChar("tiles_x", snapshot.hardware.tiles_x) : snapshot.hardware.tiles_x;
-        uint8_t ty = prefs.isKey("tiles_y") ? prefs.getUChar("tiles_y", snapshot.hardware.tiles_y) : snapshot.hardware.tiles_y;
-        uint8_t tp = prefs.isKey("tile_pixels") ? prefs.getUChar("tile_pixels", snapshot.hardware.tile_pixels) : snapshot.hardware.tile_pixels;
-        if (isValidTileConfig(tx, ty, tp)) {
-            snapshot.hardware.tiles_x = tx;
-            snapshot.hardware.tiles_y = ty;
-            snapshot.hardware.tile_pixels = tp;
-        } else {
-            LOG_E("ConfigManager", "NVS tile config invalid — using defaults");
+    // Hardware — legacy tile/pin keys retired in hw-1.3. If they're still
+    // present in NVS from a prior firmware install, remove them so the
+    // schema drifts cleanly to the new shape on subsequent boots.
+    for (const char* legacyKey : {"tiles_x", "tiles_y", "tile_pixels", "display_pin"}) {
+        if (prefs.isKey(legacyKey)) {
+            prefs.remove(legacyKey);
+            LOG_I("ConfigManager", "Removed legacy NVS key");
         }
     }
-    if (prefs.isKey("display_pin")) {
-        const uint8_t storedPin = prefs.getUChar("display_pin", snapshot.hardware.display_pin);
-        if (isSupportedDisplayPin(storedPin)) {
-            snapshot.hardware.display_pin = storedPin;
-        }
+    if (prefs.isKey("slave_enabled")) {
+        snapshot.hardware.slave_enabled = prefs.getBool("slave_enabled", snapshot.hardware.slave_enabled);
     }
     if (prefs.isKey("origin_corner"))  snapshot.hardware.origin_corner = prefs.getUChar("origin_corner", snapshot.hardware.origin_corner);
     if (prefs.isKey("scan_dir"))       snapshot.hardware.scan_dir = prefs.getUChar("scan_dir", snapshot.hardware.scan_dir);
@@ -404,9 +343,7 @@ void ConfigManager::loadFromNvs() {
     if (prefs.isKey("zone_layout"))    snapshot.hardware.zone_layout = prefs.getUChar("zone_layout", snapshot.hardware.zone_layout);
     if (prefs.isKey("zone_pad_x")) {
         const uint8_t storedPad = prefs.getUChar("zone_pad_x", snapshot.hardware.zone_pad_x);
-        if (storedPad <= maxHorizontalZonePadX(snapshot.hardware.tiles_x,
-                                               snapshot.hardware.tiles_y,
-                                               snapshot.hardware.tile_pixels)) {
+        if (storedPad <= maxHorizontalZonePadX(snapshot.hardware.slave_enabled)) {
             snapshot.hardware.zone_pad_x = storedPad;
         } else {
             LOG_W("ConfigManager", "NVS zone_pad_x invalid — using default");
@@ -497,11 +434,7 @@ void ConfigManager::persistToNvs() {
     prefs.putDouble("center_lon", _location.center_lon);
     prefs.putDouble("radius_km", _location.radius_km);
 
-    // Hardware
-    prefs.putUChar("tiles_x", _hardware.tiles_x);
-    prefs.putUChar("tiles_y", _hardware.tiles_y);
-    prefs.putUChar("tile_pixels", _hardware.tile_pixels);
-    prefs.putUChar("display_pin", _hardware.display_pin);
+    // Hardware — post hw-1.3: no tile/pin keys persisted.
     prefs.putUChar("origin_corner", _hardware.origin_corner);
     prefs.putUChar("scan_dir", _hardware.scan_dir);
     prefs.putUChar("zigzag", _hardware.zigzag);
@@ -509,6 +442,7 @@ void ConfigManager::persistToNvs() {
     prefs.putUChar("zone_split_pct", _hardware.zone_split_pct);
     prefs.putUChar("zone_layout", _hardware.zone_layout);
     prefs.putUChar("zone_pad_x", _hardware.zone_pad_x);
+    prefs.putBool("slave_enabled", _hardware.slave_enabled);
 
     // Timing
     prefs.putUShort("fetch_interval", _timing.fetch_interval);
@@ -556,11 +490,8 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     out["center_lon"] = snapshot.location.center_lon;
     out["radius_km"] = snapshot.location.radius_km;
 
-    // Hardware
-    out["tiles_x"] = snapshot.hardware.tiles_x;
-    out["tiles_y"] = snapshot.hardware.tiles_y;
-    out["tile_pixels"] = snapshot.hardware.tile_pixels;
-    out["display_pin"] = snapshot.hardware.display_pin;
+    // Hardware — post hw-1.3: canvas is fixed (192x128 master-only, 192x160
+    // composite when slave_enabled). Legacy tile/pin keys are not exposed.
     out["origin_corner"] = snapshot.hardware.origin_corner;
     out["scan_dir"] = snapshot.hardware.scan_dir;
     out["zigzag"] = snapshot.hardware.zigzag;
@@ -568,6 +499,7 @@ void ConfigManager::dumpSettingsJson(JsonObject& out) {
     out["zone_split_pct"] = snapshot.hardware.zone_split_pct;
     out["zone_layout"] = snapshot.hardware.zone_layout;
     out["zone_pad_x"] = snapshot.hardware.zone_pad_x;
+    out["slave_enabled"] = snapshot.hardware.slave_enabled;
 
     // Timing
     out["fetch_interval"] = snapshot.timing.fetch_interval;

@@ -2,24 +2,31 @@
 
 #include <Arduino.h>
 
+/*
+  Hardware configuration constants (post hw-1.3).
+
+  The legacy tile/pin scheme (DISPLAY_PIN / DISPLAY_TILES_X/Y /
+  DISPLAY_TILE_PIXEL_W/H / DISPLAY_MATRIX_WIDTH/HEIGHT) is retired:
+  the HW-1 HUB75 migration fixes the master chain at 3x2 of 64x64
+  panels (192x128) driven through LCD_CAM + VirtualMatrixPanel_T,
+  and the optional slave chain adds a 192x32 top strip for a
+  192x160 composite. Pin map for the master chain lives in
+  adapters/HUB75PinMap.h; there is no user-configurable "data pin".
+*/
+
 namespace HardwareConfiguration
 {
-    // Display configuration (FastLED NeoMatrix)
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-    static const uint8_t DISPLAY_PIN = 21;
-#else
-    static const uint8_t DISPLAY_PIN = 25;
-#endif
+    // Master chain: 6x 64x64 panels arranged 3 wide x 2 tall.
+    static constexpr uint16_t MASTER_CANVAS_WIDTH  = 192;
+    static constexpr uint16_t MASTER_CANVAS_HEIGHT = 128;
 
-    // Physical tile size (pixels per 16x16 tile commonly)
-    static const uint16_t DISPLAY_TILE_PIXEL_W = 16;
-    static const uint16_t DISPLAY_TILE_PIXEL_H = 16;
+    // Composite (master + slave top strip): 192x160. Only reported
+    // when HardwareConfig::slave_enabled is true.
+    static constexpr uint16_t COMPOSITE_WIDTH  = 192;
+    static constexpr uint16_t COMPOSITE_HEIGHT = 160;
 
-    // Tile arrangement (number of tiles horizontally and vertically)
-    static const uint8_t DISPLAY_TILES_X = 1;  // Single 16x16 panel
-    static const uint8_t DISPLAY_TILES_Y = 1;
-
-    // Derived matrix dimensions
-    static const uint16_t DISPLAY_MATRIX_WIDTH = DISPLAY_TILE_PIXEL_W * DISPLAY_TILES_X;
-    static const uint16_t DISPLAY_MATRIX_HEIGHT = DISPLAY_TILE_PIXEL_H * DISPLAY_TILES_Y;
+    // Nominal "tile pixels" surfaced via /api/layout so the LE-1
+    // editor's snap-grid keeps working. Matches the physical panel
+    // size on the master chain.
+    static constexpr uint16_t NOMINAL_TILE_PIXELS = 64;
 }
