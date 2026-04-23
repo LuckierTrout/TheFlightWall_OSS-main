@@ -1,30 +1,32 @@
 #pragma once
 /*
-  HUB75MatrixDisplay — HW-1.1 placeholder stub.
+  HUB75MatrixDisplay - master chain driver (hw-1.2).
 
-  Presents a 192x96 virtual canvas (the HW-1 composite target) as an
-  Adafruit_GFX surface so modes, widgets, and the Layout Engine compile
-  and link against the new display stack. No physical panels are wired
-  up yet — that's HW-1.2's job. The stub owns a GFXcanvas16 as its
-  drawable buffer; all render methods draw into it, show() is a no-op.
+  Drives 6x 64x64 HUB75 panels arranged as a 3-wide x 2-tall grid
+  (192x128 virtual canvas) via the mrfaptastic ESP32-HUB75-MatrixPanel-DMA
+  library. Uses a single MatrixPanel_I2S_DMA instance (one chain of 6
+  panels at 1/32 scan) wrapped by VirtualMatrixPanel_T so modes and
+  widgets draw into one contiguous Adafruit_GFX surface.
 
-  Surface mirrors the former NeoMatrixDisplay so main.cpp / WebPortal /
-  ModeRegistry don't need call-site changes beyond the instantiation type.
+  Public surface mirrors the hw-1.1 stub so main.cpp / WebPortal /
+  ModeRegistry compile unchanged. show() now really flips DMA buffers;
+  updateBrightness really dims the panels.
+
+  The top-strip chain (3x 64x32 via a slave S3 over SPI) is NOT owned
+  here - it will arrive as a separate composite wrapper in hw-1.7.
 */
 
 #include <atomic>
 #include <stdint.h>
 #include <vector>
-#include <Adafruit_GFX.h>
+
+#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <ESP32-HUB75-VirtualMatrixPanel_T.hpp>
 
 #include "interfaces/BaseDisplay.h"
 #include "interfaces/DisplayMode.h"
 #include "core/ConfigManager.h"
 #include "core/LayoutEngine.h"
-
-// Forward declaration keeps this header light — GFXcanvas16's real
-// definition comes in via Adafruit_GFX.h at the .cpp level.
-class GFXcanvas16;
 
 class HUB75MatrixDisplay : public BaseDisplay
 {
@@ -54,14 +56,23 @@ public:
     bool isPositioningMode() const;
     void renderPositioningPattern();
 
-    // HW-1.1 stub returns the HW-1 composite target dimensions (192 x 96)
-    // even though no panel is attached. HW-1.2 will replace this class
-    // with real MatrixPanel_I2S_DMA chains.
-    static constexpr uint16_t CANVAS_WIDTH  = 192;
-    static constexpr uint16_t CANVAS_HEIGHT = 96;
+    // 6x 64x64 panels, 3 cols x 2 rows = 192x128.
+    static constexpr uint16_t PANEL_W       = 64;
+    static constexpr uint16_t PANEL_H       = 64;
+    static constexpr uint8_t  COLS          = 3;
+    static constexpr uint8_t  ROWS          = 2;
+    static constexpr uint8_t  CHAIN_LEN     = COLS * ROWS;  // 6
+    static constexpr uint16_t CANVAS_WIDTH  = PANEL_W * COLS;  // 192
+    static constexpr uint16_t CANVAS_HEIGHT = PANEL_H * ROWS;  // 128
+
+    // Chain routing preset from the mrfaptastic lib. Serpentine start top-left,
+    // wrap down. Adjust here if ribbon routing ends up Z-pattern or starts
+    // from a different corner - single-line change, no other callers.
+    using VirtualPanel = VirtualMatrixPanel_T<CHAIN_TOP_LEFT_DOWN>;
 
 private:
-    GFXcanvas16 *_canvas = nullptr;
+    MatrixPanel_I2S_DMA *_dma     = nullptr;
+    VirtualPanel        *_virtual = nullptr;
 
     LayoutResult _layout = {};
     uint8_t _activeBrightness = 128;
