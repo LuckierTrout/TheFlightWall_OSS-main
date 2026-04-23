@@ -350,8 +350,7 @@ static void queueWiFiStateMessage(WiFiState state)
 
 static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
 {
-    return lhs.slave_enabled != rhs.slave_enabled ||
-           lhs.origin_corner != rhs.origin_corner ||
+    return lhs.origin_corner != rhs.origin_corner ||
            lhs.scan_dir != rhs.scan_dir ||
            lhs.zigzag != rhs.zigzag ||
            lhs.zone_logo_pct != rhs.zone_logo_pct ||     // ds-3.2 synthesis: hot-reload zone layout
@@ -360,12 +359,12 @@ static bool hardwareConfigChanged(const HardwareConfig &lhs, const HardwareConfi
            lhs.zone_pad_x != rhs.zone_pad_x;
 }
 
-static bool hardwareGeometryChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)
+static bool hardwareGeometryChanged(const HardwareConfig & /*lhs*/, const HardwareConfig & /*rhs*/)
 {
-    // Post hw-1.3: canvas is fixed by the HW-1 build; only slave_enabled
-    // changes reported geometry. That key is reboot-required so this check
-    // rarely fires in practice, but it remains correct for the hot-reload path.
-    return lhs.slave_enabled != rhs.slave_enabled;
+    // Post hw-1.3 (revised 2026-04-23): canvas is fixed at 256x192; nothing
+    // a user can tweak at runtime changes reported geometry. Retained as a
+    // hook for any future field that does.
+    return false;
 }
 
 static bool hardwareMappingChanged(const HardwareConfig &lhs, const HardwareConfig &rhs)

@@ -89,67 +89,49 @@ void test_invalid_width_less_than_height() {
     TEST_ASSERT_EQUAL_UINT16(160, r.matrixHeight);
 }
 
-// --- HardwareConfig overload (post hw-1.3) ---
-// Canvas dimensions are fixed by the HW-1 HUB75 build. compute(HardwareConfig)
-// always returns 192x128 (master-only) or 192x160 (composite when slave_enabled)
-// regardless of any tile values in the caller's struct. These tests verify the
-// new dimensions and that zone knobs still flow through correctly.
+// --- HardwareConfig overload (post hw-1.3, revised 2026-04-23) ---
+// Canvas dimensions are fixed at 256x192 (uniform 4x3 of 64x64 panels).
+// compute(HardwareConfig) always returns 256x192 regardless of any tile
+// values or retired fields in the caller's struct.
 
-void test_compute_from_hardware_config_master_only() {
+void test_compute_from_hardware_config_uniform_wall() {
     HardwareConfig hw = {};
-    hw.slave_enabled = false;
 
     LayoutResult r = LayoutEngine::compute(hw);
     TEST_ASSERT_TRUE(r.valid);
-    TEST_ASSERT_EQUAL_UINT16(192, r.matrixWidth);
-    TEST_ASSERT_EQUAL_UINT16(128, r.matrixHeight);
+    TEST_ASSERT_EQUAL_UINT16(256, r.matrixWidth);
+    TEST_ASSERT_EQUAL_UINT16(192, r.matrixHeight);
     TEST_ASSERT_EQUAL_STRING("expanded", r.mode);
-    // Default layout: classic, auto zones — logo is a 128x128 square on the
-    // left, flight/telemetry on the right. Precise rect coords depend on
-    // FRAME_INSET_PX and LOGO_GAP_PX which are engine internals; just sanity-check
-    // the geometry is non-degenerate and fits within the canvas.
+    // Default layout: classic, auto zones. Precise rect coords depend on
+    // FRAME_INSET_PX and LOGO_GAP_PX engine internals; sanity-check geometry
+    // is non-degenerate and fits within the canvas.
     TEST_ASSERT_GREATER_THAN(0, r.logoZone.w);
     TEST_ASSERT_GREATER_THAN(0, r.flightZone.w);
     TEST_ASSERT_GREATER_THAN(0, r.telemetryZone.w);
-    TEST_ASSERT_LESS_OR_EQUAL(192, r.logoZone.x + r.logoZone.w);
-    TEST_ASSERT_LESS_OR_EQUAL(128, r.logoZone.y + r.logoZone.h);
-}
-
-void test_compute_from_hardware_config_composite() {
-    HardwareConfig hw = {};
-    hw.slave_enabled = true;
-
-    LayoutResult r = LayoutEngine::compute(hw);
-    TEST_ASSERT_TRUE(r.valid);
-    TEST_ASSERT_EQUAL_UINT16(192, r.matrixWidth);
-    TEST_ASSERT_EQUAL_UINT16(160, r.matrixHeight);
-    TEST_ASSERT_EQUAL_STRING("expanded", r.mode);
+    TEST_ASSERT_LESS_OR_EQUAL(256, r.logoZone.x + r.logoZone.w);
+    TEST_ASSERT_LESS_OR_EQUAL(192, r.logoZone.y + r.logoZone.h);
 }
 
 void test_compute_from_hardware_config_with_horizontal_padding() {
     HardwareConfig hw = {};
-    hw.slave_enabled = false;
     hw.zone_pad_x = 4;
 
     LayoutResult r = LayoutEngine::compute(hw);
     TEST_ASSERT_TRUE(r.valid);
-    TEST_ASSERT_EQUAL_UINT16(192, r.matrixWidth);
-    TEST_ASSERT_EQUAL_UINT16(128, r.matrixHeight);
+    TEST_ASSERT_EQUAL_UINT16(256, r.matrixWidth);
+    TEST_ASSERT_EQUAL_UINT16(192, r.matrixHeight);
     // With pad=4, logo x should start at 4 + FRAME_INSET_PX.
     TEST_ASSERT_GREATER_OR_EQUAL(4, r.logoZone.x);
 }
 
 void test_compute_full_width_bottom_with_horizontal_padding() {
     HardwareConfig hw = {};
-    hw.slave_enabled = false;
     hw.zone_layout = 1;
     hw.zone_pad_x = 4;
 
     LayoutResult r = LayoutEngine::compute(hw);
     TEST_ASSERT_TRUE(r.valid);
-    // zone_layout=1 means the telemetry band spans full content width below
-    // the split line; sanity-check that the telemetry zone is wider than
-    // either the logo or flight zones.
+    // zone_layout=1: telemetry band spans full content width below the split.
     TEST_ASSERT_GREATER_THAN(r.logoZone.w, r.telemetryZone.w);
 }
 
@@ -168,8 +150,7 @@ void setup() {
     RUN_TEST(test_invalid_width_less_than_height);
 
     // HardwareConfig overload
-    RUN_TEST(test_compute_from_hardware_config_master_only);
-    RUN_TEST(test_compute_from_hardware_config_composite);
+    RUN_TEST(test_compute_from_hardware_config_uniform_wall);
     RUN_TEST(test_compute_from_hardware_config_with_horizontal_padding);
     RUN_TEST(test_compute_full_width_bottom_with_horizontal_padding);
 

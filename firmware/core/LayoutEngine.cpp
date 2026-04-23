@@ -147,27 +147,17 @@ LayoutResult LayoutEngine::compute(uint8_t tilesX, uint8_t tilesY, uint8_t tileP
 }
 
 LayoutResult LayoutEngine::compute(const HardwareConfig& hw) {
-    // Post hw-1.3: canvas dimensions are fixed by the HW-1 HUB75 build.
-    // Master-only = 192x128 (3x2 of 64x64 panels). When slave_enabled,
-    // a 192x32 strip joins at the top for a 192x160 composite. Nominal
-    // tile size (64) is passed so the downstream helper scales mode
-    // breakpoints and snap-grid hints consistently.
-    const uint8_t tiles_x = 3;
-    const uint8_t tiles_y = hw.slave_enabled
-        ? static_cast<uint8_t>(HardwareConfiguration::COMPOSITE_HEIGHT
-                               / HardwareConfiguration::NOMINAL_TILE_PIXELS)  // 2 (rounded down; loses top 32)
-        : 2;
-    const uint8_t tile_pixels = HardwareConfiguration::NOMINAL_TILE_PIXELS;
+    // Post hw-1.3 (revised 2026-04-23): canvas is fixed at 256x192 uniform
+    // (4x3 of 64x64 panels). Nominal tile size (64) is passed so the
+    // downstream helper scales mode breakpoints and snap-grid hints.
+    constexpr uint8_t tiles_x = static_cast<uint8_t>(
+        HardwareConfiguration::MASTER_CANVAS_WIDTH / HardwareConfiguration::NOMINAL_TILE_PIXELS);
+    constexpr uint8_t tiles_y = static_cast<uint8_t>(
+        HardwareConfiguration::MASTER_CANVAS_HEIGHT / HardwareConfiguration::NOMINAL_TILE_PIXELS);
+    constexpr uint8_t tile_pixels = static_cast<uint8_t>(HardwareConfiguration::NOMINAL_TILE_PIXELS);
 
     LayoutResult result = compute(tiles_x, tiles_y, tile_pixels);
     if (!result.valid) return result;
-
-    // When slave_enabled, override the reported height to the true composite
-    // dimension (160) so zones can span the full 192x160 surface. The
-    // tile-math path rounds down to 128 because 160 isn't a tile multiple.
-    if (hw.slave_enabled) {
-        result.matrixHeight = HardwareConfiguration::COMPOSITE_HEIGHT;
-    }
 
     uint16_t mw = result.matrixWidth;
     uint16_t mh = result.matrixHeight;

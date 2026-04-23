@@ -86,3 +86,4 @@ Adding/removing the slave changes the canvas dimensions reported by `/api/layout
 |------------|---------|-------------|
 | 2026-04-22 | 0.1     | Draft created. |
 | 2026-04-22 | 0.2     | Implementation complete. Both envs compile; both test suites compile. Wizard/dashboard JS cleanup and smoke test update remain for hw-1.4. |
+| 2026-04-23 | 0.3     | Scope revised for the uniform 12-panel decision. `slave_enabled` retired from HardwareConfig, NVS, applyJson, REBOOT_KEYS, dumpSettingsJson, /api/layout, /api/settings, and main.cpp diff functions (it's now in the legacy-key NVS cleanup list for clean migration). `HardwareConfiguration.h` dropped `COMPOSITE_WIDTH/HEIGHT` and bumped `MASTER_CANVAS_WIDTH/HEIGHT` to 256/192. `LayoutEngine::compute(HardwareConfig)` simplified to target the fixed 256×192 directly. `maxHorizontalZonePadX` collapsed to a constexpr compile-time constant. Tests updated accordingly. All builds and tests still compile. |

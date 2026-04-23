@@ -107,3 +107,4 @@ The master S3 at 192×128 is a complete, useful product after this story plus hw
 |------------|---------|-------------|
 | 2026-04-22 | 0.1     | Draft created; epic revised to dual-MCU direction. |
 | 2026-04-22 | 0.2     | Implementation complete: HUB75PinMap.h, rewritten HUB75MatrixDisplay, gnu++17 bump. Both envs compile; awaiting on-device bring-up after user photographs WatangTech (E) silkscreen for pin map. |
+| 2026-04-23 | 0.3     | Scope revised: uniform 12-panel wall (4×3 of 64×64 = 256×192) in place of the dual-MCU 192×128 master + 192×32 slave plan. Constants bumped (`COLS=4`, `ROWS=3`, `CHAIN_LEN=12`, `CANVAS_WIDTH=256`, `CANVAS_HEIGHT=192`). Calibration pattern swatch table expanded from 2×3 to 3×4. No structural changes — single-chain single-MCU drops all slave-related stories (see epic-hw-1.md). Filename retained for history; story title is now effectively "Master HUB75MatrixDisplay — single chain, 256×192". |

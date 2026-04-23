@@ -67,7 +67,7 @@ bool HUB75MatrixDisplay::initialize()
 
     _layout = LayoutEngine::compute(COLS, ROWS, PANEL_W);
 
-    LOG_I("HUB75", "initialized 192x128 (6x 64x64, 1/32 scan, double-buff)");
+    LOG_I("HUB75", "initialized 256x192 (12x 64x64, 1/32 scan, double-buff)");
     return true;
 }
 
@@ -136,16 +136,21 @@ bool HUB75MatrixDisplay::isCalibrationMode() const
 
 void HUB75MatrixDisplay::renderCalibrationPattern()
 {
-    // Per-panel blocks of primary/secondary colors so each of the 6 panels
-    // in the 3x2 grid is individually identifiable, plus corner markers and
+    // Per-panel blocks of primary/secondary colors so each of the 12 panels
+    // in the 4x3 grid is individually identifiable, plus corner markers and
     // a row/col label in each panel's top-left so misrouted chains or
     // swapped-channel panels are immediately visible.
     if (_virtual == nullptr) return;
 
     struct Swatch { uint8_t r, g, b; };
+    // 3 rows x 4 cols. Row 0 = primaries + white; row 1 = secondaries;
+    // row 2 = mid-grey/tan variants. The 12 swatches are chosen to be
+    // visibly distinct from neighbors on all four sides so a swapped
+    // panel is obvious.
     static const Swatch PANEL_COLORS[ROWS][COLS] = {
-        { {128,   0,   0}, {  0, 128,   0}, {  0,   0, 128} },  // row 0: R  G  B
-        { {128, 128,   0}, {  0, 128, 128}, {128,   0, 128} },  // row 1: Y  C  M
+        { {128,   0,   0}, {  0, 128,   0}, {  0,   0, 128}, {128, 128, 128} },  // R G B W
+        { {128, 128,   0}, {  0, 128, 128}, {128,   0, 128}, {192,  96,   0} },  // Y C M Orange
+        { { 64,  64,   0}, {  0,  64,  64}, { 64,   0,  64}, { 96,  96,  96} },  // darker variants
     };
 
     for (uint8_t r = 0; r < ROWS; ++r) {
@@ -167,7 +172,7 @@ void HUB75MatrixDisplay::renderCalibrationPattern()
         }
     }
 
-    // Corner markers across the whole 192x128 canvas
+    // Corner markers across the whole 256x192 canvas
     _virtual->drawPixel(0,                 0,                  DisplayUtils::rgb565(255, 255, 255));
     _virtual->drawPixel(CANVAS_WIDTH - 1,  0,                  DisplayUtils::rgb565(255,   0,   0));
     _virtual->drawPixel(0,                 CANVAS_HEIGHT - 1,  DisplayUtils::rgb565(  0, 255,   0));

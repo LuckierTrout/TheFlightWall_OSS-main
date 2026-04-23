@@ -30,15 +30,14 @@ struct LocationConfig {
 
 struct HardwareConfig {
     // tiles_x / tiles_y / tile_pixels / display_pin retired in hw-1.3 —
-    // the HW-1 HUB75 master chain is fixed at 3x2 of 64x64 panels (192x128).
+    // the HW-1 HUB75 wall is fixed at 4x3 of 64x64 panels (256x192).
     // See config/HardwareConfiguration.h for the canvas constants and
-    // adapters/HUB75PinMap.h for the master chain's pin map.
+    // adapters/HUB75PinMap.h for the pin map.
     uint8_t origin_corner, scan_dir, zigzag;
     uint8_t zone_logo_pct;   // 0 = auto (square logo), 1-99 = % of matrix width
     uint8_t zone_split_pct;  // 0 = auto (50/50), 1-99 = % of matrix height for flight zone
     uint8_t zone_layout;     // 0 = classic (logo full-height left), 1 = full-width bottom
     uint8_t zone_pad_x;      // 0 = no outer gutter, N = blank columns per side around the panel
-    bool    slave_enabled;   // false = 192x128 master-only; true = 192x160 composite (hw-1.7+)
 };
 
 struct TimingConfig {

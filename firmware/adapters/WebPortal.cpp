@@ -1507,7 +1507,6 @@ void WebPortal::_handleGetLayout(AsyncWebServerRequest* request) {
     hardware["tile_pixels"] = HardwareConfiguration::NOMINAL_TILE_PIXELS;
     hardware["zone_layout"] = hw.zone_layout;
     hardware["zone_pad_x"] = hw.zone_pad_x;
-    hardware["slave_enabled"] = hw.slave_enabled;
 
     String output;
     serializeJson(doc, output);

@@ -43,10 +43,9 @@ void test_defaults_location() {
 }
 
 void test_defaults_hardware() {
-    // Post hw-1.3: canvas dimensions are fixed by the HW-1 HUB75 build;
-    // only layout/zone knobs and slave_enabled remain configurable.
+    // Post hw-1.3 (revised 2026-04-23): canvas is fixed at 256x192 uniform;
+    // only layout/zone knobs remain configurable.
     HardwareConfig h = ConfigManager::getHardware();
-    TEST_ASSERT_FALSE(h.slave_enabled);
     TEST_ASSERT_EQUAL_UINT8(0, h.zone_pad_x);
     TEST_ASSERT_EQUAL_UINT8(0, h.zone_logo_pct);
     TEST_ASSERT_EQUAL_UINT8(0, h.zone_split_pct);
@@ -215,16 +214,17 @@ void test_requires_reboot_known_keys() {
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("wifi_password"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_url"));
     TEST_ASSERT_TRUE(ConfigManager::requiresReboot("agg_token"));
-    TEST_ASSERT_TRUE(ConfigManager::requiresReboot("slave_enabled"));
 }
 
 void test_requires_reboot_retired_keys_not_rebooting() {
-    // Post hw-1.3: tile/pin keys are silently accepted by applyJson for
-    // backward compat but never trigger a reboot (they don't change anything).
+    // Post hw-1.3 (revised 2026-04-23): tile/pin keys and slave_enabled are
+    // silently accepted by applyJson for backward compat but never trigger a
+    // reboot (none of them change anything on the uniform-wall build).
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tiles_x"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tiles_y"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("tile_pixels"));
     TEST_ASSERT_FALSE(ConfigManager::requiresReboot("display_pin"));
+    TEST_ASSERT_FALSE(ConfigManager::requiresReboot("slave_enabled"));
 }
 
 void test_requires_reboot_hot_reload_keys() {

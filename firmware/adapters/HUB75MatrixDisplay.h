@@ -1,19 +1,21 @@
 #pragma once
 /*
-  HUB75MatrixDisplay - master chain driver (hw-1.2).
+  HUB75MatrixDisplay - uniform 12-panel driver (hw-1.2, revised 2026-04-23).
 
-  Drives 6x 64x64 HUB75 panels arranged as a 3-wide x 2-tall grid
-  (192x128 virtual canvas) via the mrfaptastic ESP32-HUB75-MatrixPanel-DMA
-  library. Uses a single MatrixPanel_I2S_DMA instance (one chain of 6
+  Drives 12x 64x64 HUB75 panels arranged as a 4-wide x 3-tall grid
+  (256x192 virtual canvas) via the mrfaptastic ESP32-HUB75-MatrixPanel-DMA
+  library. Uses a single MatrixPanel_I2S_DMA instance (one chain of 12
   panels at 1/32 scan) wrapped by VirtualMatrixPanel_T so modes and
   widgets draw into one contiguous Adafruit_GFX surface.
 
   Public surface mirrors the hw-1.1 stub so main.cpp / WebPortal /
-  ModeRegistry compile unchanged. show() now really flips DMA buffers;
-  updateBrightness really dims the panels.
+  ModeRegistry compile unchanged. show() flips DMA buffers;
+  updateBrightness dims the panels.
 
-  The top-strip chain (3x 64x32 via a slave S3 over SPI) is NOT owned
-  here - it will arrive as a separate composite wrapper in hw-1.7.
+  NOTE: 256x192 double-buffered 16bpp = ~196 KB. The mrfaptastic library
+  auto-reduces color depth (likely to 5-6 bpc) to keep the framebuffer in
+  SRAM and maintain >=60 Hz refresh. Expected and acceptable for the
+  FlightWall use case (flight cards, tickers, logos).
 */
 
 #include <atomic>
@@ -56,14 +58,14 @@ public:
     bool isPositioningMode() const;
     void renderPositioningPattern();
 
-    // 6x 64x64 panels, 3 cols x 2 rows = 192x128.
+    // 12x 64x64 panels, 4 cols x 3 rows = 256x192.
     static constexpr uint16_t PANEL_W       = 64;
     static constexpr uint16_t PANEL_H       = 64;
-    static constexpr uint8_t  COLS          = 3;
-    static constexpr uint8_t  ROWS          = 2;
-    static constexpr uint8_t  CHAIN_LEN     = COLS * ROWS;  // 6
-    static constexpr uint16_t CANVAS_WIDTH  = PANEL_W * COLS;  // 192
-    static constexpr uint16_t CANVAS_HEIGHT = PANEL_H * ROWS;  // 128
+    static constexpr uint8_t  COLS          = 4;
+    static constexpr uint8_t  ROWS          = 3;
+    static constexpr uint8_t  CHAIN_LEN     = COLS * ROWS;  // 12
+    static constexpr uint16_t CANVAS_WIDTH  = PANEL_W * COLS;  // 256
+    static constexpr uint16_t CANVAS_HEIGHT = PANEL_H * ROWS;  // 192
 
     // Chain routing preset from the mrfaptastic lib. Serpentine start top-left,
     // wrap down. Adjust here if ribbon routing ends up Z-pattern or starts
