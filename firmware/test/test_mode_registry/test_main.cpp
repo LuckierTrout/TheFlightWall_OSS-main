@@ -15,8 +15,8 @@
 #include <unity.h>
 #include <Preferences.h>
 #include <cstring>
-#include <FastLED.h>
-#include <FastLED_NeoMatrix.h>
+#include <Adafruit_GFX.h>
+#include "utils/DisplayUtils.h"
 
 // Include ModeRegistry (brings in DisplayMode.h, vector, FlightInfo)
 #include "core/ModeRegistry.h"
@@ -189,36 +189,31 @@ static RenderContext makeTestCtx() {
 
 static constexpr uint16_t TEST_MATRIX_W = 64;
 static constexpr uint16_t TEST_MATRIX_H = 32;
-static constexpr uint16_t TEST_PIXEL_COUNT = TEST_MATRIX_W * TEST_MATRIX_H;
-static CRGB testLeds[TEST_PIXEL_COUNT];
 
-static FastLED_NeoMatrix* createTestMatrix() {
-    memset(testLeds, 0, sizeof(testLeds));
-    FastLED_NeoMatrix* m = new FastLED_NeoMatrix(
-        testLeds, 16, 16, 4, 2,
-        NEO_MATRIX_TOP + NEO_MATRIX_LEFT +
-        NEO_MATRIX_ROWS + NEO_MATRIX_PROGRESSIVE +
-        NEO_TILE_TOP + NEO_TILE_LEFT +
-        NEO_TILE_ROWS + NEO_TILE_PROGRESSIVE);
+// Post hw-1.1: FastLED_NeoMatrix replaced with GFXcanvas16 (Adafruit_GFX
+// subclass) — same GFX contract as the real HUB75 runtime surface.
+static GFXcanvas16* createTestMatrix() {
+    GFXcanvas16* m = new GFXcanvas16(TEST_MATRIX_W, TEST_MATRIX_H);
+    m->fillScreen(0);
     m->setTextWrap(false);
     return m;
 }
 
-static RenderContext makeRealMatrixCtx(FastLED_NeoMatrix* m) {
+static RenderContext makeRealMatrixCtx(GFXcanvas16* m) {
     RenderContext ctx = makeTestCtx();
     ctx.matrix = m;
-    ctx.textColor = m->Color(255, 255, 255);
+    ctx.textColor = DisplayUtils::rgb565(255, 255, 255);
     ctx.layout.matrixWidth = TEST_MATRIX_W;
     ctx.layout.matrixHeight = TEST_MATRIX_H;
     return ctx;
 }
 
-static int countNonBlackPixels() {
+static int countNonBlackPixels(GFXcanvas16* m) {
     int count = 0;
-    for (uint16_t i = 0; i < TEST_PIXEL_COUNT; ++i) {
-        if (testLeds[i].r != 0 || testLeds[i].g != 0 || testLeds[i].b != 0) {
-            count++;
-        }
+    const uint16_t* buf = m->getBuffer();
+    const uint32_t pixelCount = static_cast<uint32_t>(TEST_MATRIX_W) * TEST_MATRIX_H;
+    for (uint32_t i = 0; i < pixelCount; ++i) {
+        if (buf[i] != 0) count++;
     }
     return count;
 }
@@ -692,10 +687,10 @@ void test_clock_mode_render_with_null_matrix_no_crash() {
 }
 
 void test_clock_mode_render_clears_stale_pixels() {
-    FastLED_NeoMatrix* m = createTestMatrix();
-    for (uint16_t i = 0; i < TEST_PIXEL_COUNT; ++i) {
-        testLeds[i] = CRGB(32, 0, 0);
-    }
+    GFXcanvas16* m = createTestMatrix();
+    // Pre-fill with a dim red to simulate a stale frame from a prior render;
+    // ClockMode must clear this on its own redraw.
+    m->fillScreen(DisplayUtils::rgb565(32, 0, 0));
 
     ClockMode mode;
     RenderContext ctx = makeRealMatrixCtx(m);
@@ -704,10 +699,11 @@ void test_clock_mode_render_clears_stale_pixels() {
     std::vector<FlightInfo> empty;
     mode.render(ctx, empty);  // NTP stub is false, so fallback "--:--" renders.
 
-    const int nonBlack = countNonBlackPixels();
+    const int nonBlack = countNonBlackPixels(m);
+    const uint32_t pixelCount = static_cast<uint32_t>(TEST_MATRIX_W) * TEST_MATRIX_H;
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Expected fallback clock glyphs to render");
-    TEST_ASSERT_TRUE_MESSAGE(nonBlack < TEST_PIXEL_COUNT,
+    TEST_ASSERT_TRUE_MESSAGE(static_cast<uint32_t>(nonBlack) < pixelCount,
         "Expected ClockMode to clear stale pixels from the previous frame");
 
     mode.teardown();

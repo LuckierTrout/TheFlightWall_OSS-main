@@ -16,9 +16,11 @@
  */
 #include <Arduino.h>
 #include <unity.h>
+#include <Adafruit_GFX.h>
 
 #include "modes/ClassicCardMode.h"
 #include "core/ConfigManager.h"
+#include "utils/DisplayUtils.h"
 
 #define TEST_WITH_FLIGHT_INFO
 #define TEST_WITH_LAYOUT_ENGINE
@@ -72,42 +74,38 @@ static FlightInfo makeTestFlight(const char* airlineIcao, const char* origin,
 }
 
 // ============================================================================
-// Helper: Real FastLED_NeoMatrix for draw-call verification
-// Uses a CRGB pixel buffer without hardware — tests pixel writes, not LEDs.
+// Helper: Real GFXcanvas16 (Adafruit_GFX subclass) for draw-call verification.
+// Post hw-1.1: FastLED_NeoMatrix is gone. Tests use an in-memory RGB565
+// canvas — same Adafruit_GFX contract as the real HUB75 runtime surface
+// (VirtualMatrixPanel_T, also Adafruit_GFX), so ctx.matrix behaves identically.
 // ============================================================================
 
 static constexpr uint16_t TEST_MATRIX_W = 64;
 static constexpr uint16_t TEST_MATRIX_H = 32;
 static constexpr uint16_t TEST_PIXEL_COUNT = TEST_MATRIX_W * TEST_MATRIX_H;
-static CRGB testLeds[TEST_PIXEL_COUNT];
 
-static FastLED_NeoMatrix* createTestMatrix() {
-    memset(testLeds, 0, sizeof(testLeds));
-    // 4 tiles x 2 tiles of 16x16 = 64x32
-    FastLED_NeoMatrix* m = new FastLED_NeoMatrix(
-        testLeds, 16, 16, 4, 2,
-        NEO_MATRIX_TOP + NEO_MATRIX_LEFT +
-        NEO_MATRIX_ROWS + NEO_MATRIX_PROGRESSIVE +
-        NEO_TILE_TOP + NEO_TILE_LEFT +
-        NEO_TILE_ROWS + NEO_TILE_PROGRESSIVE);
+static GFXcanvas16* createTestMatrix() {
+    GFXcanvas16* m = new GFXcanvas16(TEST_MATRIX_W, TEST_MATRIX_H);
+    m->fillScreen(0);
     m->setTextWrap(false);
     return m;
 }
 
-static int countNonBlackPixels() {
+// Reads the last-created canvas's pixel buffer. The render pipeline keeps the
+// canvas alive via ctx.matrix during the test, so walking its buffer is safe.
+static int countNonBlackPixels(GFXcanvas16* m) {
     int count = 0;
+    const uint16_t* buf = m->getBuffer();
     for (uint16_t i = 0; i < TEST_PIXEL_COUNT; i++) {
-        if (testLeds[i].r != 0 || testLeds[i].g != 0 || testLeds[i].b != 0) {
-            count++;
-        }
+        if (buf[i] != 0) count++;
     }
     return count;
 }
 
-static RenderContext makeRealMatrixCtx(FastLED_NeoMatrix* m) {
+static RenderContext makeRealMatrixCtx(GFXcanvas16* m) {
     RenderContext ctx = {};
     ctx.matrix = m;
-    ctx.textColor = m->Color(255, 255, 255); // White in RGB565
+    ctx.textColor = DisplayUtils::rgb565(255, 255, 255);
     ctx.brightness = 40;
     ctx.logoBuffer = nullptr;  // Skip logo zone (no LittleFS in test)
     ctx.displayCycleMs = 5000;
@@ -398,7 +396,7 @@ void test_teardown_resets_cycling() {
 // ============================================================================
 
 void test_render_valid_layout_draws_pixels() {
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ClassicCardMode mode;
@@ -409,7 +407,7 @@ void test_render_valid_layout_draws_pixels() {
 
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Expected non-black pixels after render with valid layout");
 
@@ -418,7 +416,7 @@ void test_render_valid_layout_draws_pixels() {
 }
 
 void test_render_loading_screen_draws_border() {
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ClassicCardMode mode;
@@ -427,7 +425,7 @@ void test_render_loading_screen_draws_border() {
     std::vector<FlightInfo> empty;
     mode.render(ctx, empty);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Expected non-black pixels from loading screen border and text");
 
@@ -436,7 +434,7 @@ void test_render_loading_screen_draws_border() {
 }
 
 void test_render_fallback_card_draws_border() {
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
     ctx.layout.valid = false;  // Force fallback card path
 
@@ -448,7 +446,7 @@ void test_render_fallback_card_draws_border() {
 
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Expected non-black pixels from fallback card border and text");
 
@@ -457,7 +455,7 @@ void test_render_fallback_card_draws_border() {
 }
 
 void test_render_with_matrix_no_heap_leak() {
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ClassicCardMode mode;
@@ -483,7 +481,7 @@ void test_render_with_matrix_no_heap_leak() {
 
 void test_render_zone_clamping_oversized_zones() {
     // Test that oversized zones are clamped to matrix dimensions (item #4)
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     // Set zones that extend beyond matrix dimensions
@@ -506,12 +504,12 @@ void test_render_zone_clamping_oversized_zones() {
     // After render the buffer should have non-black pixels (zones still partially visible),
     // but all writes must have stayed within the 64x32 matrix (no buffer overrun detectable
     // as a crash, and FastLED clips drawPixel to matrix bounds as a second safety net).
-    int nonBlackBefore = countNonBlackPixels();
+    int nonBlackBefore = countNonBlackPixels(m);
     (void)nonBlackBefore;
     mode.render(ctx, flights);
     // Verify the matrix is still intact (no crash means clamping worked).
     // The flight zone (x=20,w=80) is clamped to (x=20,w=44); text should still be visible.
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Expected pixels inside matrix bounds after clamping oversized zones");
 
@@ -521,7 +519,7 @@ void test_render_zone_clamping_oversized_zones() {
 
 void test_render_zone_completely_outside_matrix() {
     // Zone entirely outside matrix bounds should be silently skipped
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ctx.layout.valid = true;
@@ -540,7 +538,7 @@ void test_render_zone_completely_outside_matrix() {
     mode.render(ctx, flights);
 
     // With all zones outside matrix, only fillScreen(0) ran — all black
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_EQUAL_MESSAGE(0, nonBlack,
         "Expected all black when zones are outside matrix bounds");
 
@@ -601,7 +599,7 @@ static FlightInfo makeFlightNoRoute() {
 
 void test_render_flight_zone_1_line_path() {
     // Zone height = 8px → linesAvailable = 1 (compact path)
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
     ctx.layout.valid = true;
     ctx.layout.flightZone = {20, 0, 44, 8};  // h=8 → 1 line
@@ -614,10 +612,10 @@ void test_render_flight_zone_1_line_path() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightWithAllFields());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "1-line flight zone should draw compact text");
 
@@ -627,7 +625,7 @@ void test_render_flight_zone_1_line_path() {
 
 void test_render_flight_zone_2_line_path() {
     // Zone height = 16px → linesAvailable = 2 (full path)
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
     ctx.layout.valid = true;
     ctx.layout.flightZone = {20, 0, 44, 16};  // h=16 → 2 lines
@@ -640,10 +638,10 @@ void test_render_flight_zone_2_line_path() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightWithAllFields());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "2-line flight zone should draw airline + route/aircraft");
 
@@ -653,7 +651,7 @@ void test_render_flight_zone_2_line_path() {
 
 void test_render_flight_zone_3_line_path() {
     // Zone height = 24px → linesAvailable = 3 (expanded path)
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
     ctx.layout.valid = true;
     ctx.layout.flightZone = {20, 0, 44, 24};  // h=24 → 3 lines
@@ -666,10 +664,10 @@ void test_render_flight_zone_3_line_path() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightWithAllFields());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "3-line flight zone should draw airline, route, aircraft separately");
 
@@ -679,7 +677,7 @@ void test_render_flight_zone_3_line_path() {
 
 void test_render_telemetry_nan_shows_placeholders() {
     // NaN telemetry values should produce "--" placeholders, not crash
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ClassicCardMode mode;
@@ -688,10 +686,10 @@ void test_render_telemetry_nan_shows_placeholders() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightNanTelemetry());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "NaN telemetry should draw '--' placeholders, not blank");
 
@@ -701,7 +699,7 @@ void test_render_telemetry_nan_shows_placeholders() {
 
 void test_render_flight_zone_no_route() {
     // Flight with no origin/destination — route is "" — should fall back to airline
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     ClassicCardMode mode;
@@ -710,10 +708,10 @@ void test_render_flight_zone_no_route() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightNoRoute());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Flight with no route should still render (airline/aircraft fallback)");
 
@@ -723,7 +721,7 @@ void test_render_flight_zone_no_route() {
 
 void test_render_flight_zone_1_line_no_route_uses_airline() {
     // 1-line path with no route: compactSrc should fall back to airline
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
     ctx.layout.valid = true;
     ctx.layout.flightZone = {20, 0, 44, 8};  // h=8 → 1 line
@@ -736,11 +734,11 @@ void test_render_flight_zone_1_line_no_route_uses_airline() {
     std::vector<FlightInfo> flights;
     flights.push_back(makeFlightNoRoute());
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
     // Should not crash — compact path uses airline when route is empty
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "1-line path with no route should display airline name");
 
@@ -754,7 +752,7 @@ void test_render_flight_zone_1_line_no_route_uses_airline() {
 // ============================================================================
 
 void test_render_logo_zone_with_buffer() {
-    FastLED_NeoMatrix* m = createTestMatrix();
+    GFXcanvas16* m = createTestMatrix();
     RenderContext ctx = makeRealMatrixCtx(m);
 
     // Create a dummy 32x32 RGB565 logo buffer with some non-zero pixels.
@@ -774,13 +772,13 @@ void test_render_logo_zone_with_buffer() {
     FlightInfo f = makeFlightWithAllFields();
     flights.push_back(f);
 
-    memset(testLeds, 0, sizeof(testLeds));
+    m->fillScreen(0);
     mode.render(ctx, flights);
 
     // With a logo buffer filled with red, the logo zone should have non-black pixels.
     // Note: LogoManager::loadLogo may overwrite our buffer (with fallback sprite
     // or LittleFS data), but either way drawBitmapRGB565 runs on non-null buffer.
-    int nonBlack = countNonBlackPixels();
+    int nonBlack = countNonBlackPixels(m);
     TEST_ASSERT_TRUE_MESSAGE(nonBlack > 0,
         "Logo zone with non-null buffer should draw bitmap pixels");
 
