@@ -10,42 +10,29 @@ This is the open source version with some basic guides to the panels, mounting t
 *Airline logo lookup will be added soon!*
 
 # Component List
-- Main components
-    - 20x [16x16 LED panels](https://www.aliexpress.us/item/2255800358269772.html)
-    - ESP32 dev board (we used the [R32 D1](https://www.amazon.com/HiLetgo-ESP-32-Development-Bluetooth-Arduino/dp/B07WFZCBH8) but any ESP dev board should work)
-    - 3D printed brackets (or MDF / cardboard)
-    - 2x 6ft wooden trim pieces (for support)
-- Power
-    - [5V >20A power supply](https://www.amazon.com/dp/B07KC55TJF) (for 20 panels)
-    - [3.3V - 5V voltage level shifter](https://www.amazon.com/dp/B07F7W91LC)
-- Data
-    - FlightWall **aggregator Worker** (Cloudflare) that pulls ADS-B state vectors from [adsb.lol](https://adsb.lol/), joins route metadata, and exposes a single bearer-protected endpoint to the ESP32. See [`workers/flightwall-aggregator/`](workers/flightwall-aggregator/).
-    - FlightWall **CDN** for airline / aircraft display-name enrichment (resolves ICAO codes like `UAL` / `B738` to `United Airlines` / `Boeing 737-800`).
+
+See [`docs/hardware-build-guide.md`](docs/hardware-build-guide.md) for the full bill of materials, wiring reference, and assembly steps.
+
+**Quick summary:**
+- **MCU:** ESP32-S3 N16R8 (Lonely Binary Gold Edition recommended — 16MB flash, PSRAM disabled for Wi-Fi compatibility)
+- **Adapter:** 1× WatangTech RGB Matrix Adapter Board (E) — HUB75 level shifter + power distribution, E-pin broken out for 1/32 scan panels
+- **Display:** 12× 64×64 HUB75 LED panels (1/32 scan), arranged 4 wide × 3 tall → **256×192 canvas**
+- **Power:** 5V / 50A PSU (≈240W peak at full white across 12 panels)
+- **Wiring:** 12× HUB75 ribbons (1 adapter→panel + 11 panel→panel serpentine) + 12× VH-4P power pigtails with multi-point injection
+- **Mounting:** 48+ M3 magnetic screws + steel/iron backer plate
+- **Data:**
+  - FlightWall **aggregator Worker** (Cloudflare) that pulls ADS-B state vectors from [adsb.lol](https://adsb.lol/), joins route metadata, and exposes a bearer-protected endpoint to the ESP32. See [`workers/flightwall-aggregator/`](workers/flightwall-aggregator/).
+  - FlightWall **CDN** for airline / aircraft display-name enrichment (resolves ICAO codes like `UAL` / `B738` to `United Airlines` / `Boeing 737-800`).
+
+> **NOTE:** Earlier versions of this project used WS2812B addressable strips (`20× 16×16` panels, 160×32 canvas) driven via a single data pin with FastLED. Epic `hw-1` migrated to HUB75 in April 2026. If you're looking at old photos, old BOM links, or older forks, they'll show that older configuration — the current canonical hardware is the 12-panel HUB75 build above.
 
 # Hardware
 
+See [`docs/hardware-build-guide.md`](docs/hardware-build-guide.md) for wiring diagrams, power distribution, panel mounting, and first-boot steps.
+
 ## Dimensions
 
-With 20 panels (10x2) - ~63 inches x ~12.6 inches
-
-## LED Panels
-[These are the LED panels we used](https://www.aliexpress.us/item/2255800358269772.html), but any similar LED matrix should work.
-
-We designed 3D printable brackets to attach the panels together, this is one approach, but you could also use MDF board or even cardboard (as we did originally haha)
-
-Then two 63 inch horizontal supports for extra strength. We bought wooden floor trim and cut it to size.
-
-![LED Panel Wiring and Brackets](images/led-panel-wiring-and-brackets.jpg)
-
-Obviously this is just one way to hold them together, but we're sure there are better ways!
-
-## Wiring
-
-Here is a wiring diagram for how to connect the whole system together.
-
-![Wiring Diagram](images/wiring-diagram.png)
-
-The entire panel is controlled by one data line - simple electronics in exchange for very low refresh rates, don't expect any 60 FPS gaming on this panel!
+At P3 pitch (3mm LED spacing): ~24" wide × ~18" tall. At P4: ~32" × ~24". Measure the specific panels you buy — pitch varies.
 
 # Data and Software
 
@@ -93,7 +80,7 @@ The firmware can be built and uploaded to the ESP32 using [PlatformIO](https://p
 2. **Configure your settings**:
    - Wi-Fi, aggregator URL/token, and location are entered in the on-device setup wizard — no code changes needed for those.
    - Compile-time defaults for display preferences live in [UserConfiguration.h](firmware/config/UserConfiguration.h).
-   - Display hardware (pin, tile layout) in [HardwareConfiguration.h](firmware/config/HardwareConfiguration.h).
+   - Display hardware constants (canvas width/height, nominal tile size) in [HardwareConfiguration.h](firmware/config/HardwareConfiguration.h). The HUB75 pin map is fixed in [HUB75PinMap.h](firmware/adapters/HUB75PinMap.h) to match the WatangTech (E) adapter's silkscreen routing — change only if you're using a different adapter.
    - The FlightWall CDN base URL lives in [APIConfiguration.h](firmware/config/APIConfiguration.h) (only change this if you're self-hosting the CDN).
 
 3. **Build and upload**:

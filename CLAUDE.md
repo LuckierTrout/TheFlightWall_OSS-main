@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TheFlightWall is an ESP32 firmware for a large WS2812B LED wall that displays live flight information. It pulls a normalized fleet snapshot from a Cloudflare Worker (the "aggregator" at `workers/flightwall-aggregator/`, which in turn pulls adsb.lol and joins route data), resolves airline/aircraft display names via the FlightWall CDN, and renders flight cards on tiled LED panels. A captive-portal web UI handles configuration, display mode selection, OTA updates, and diagnostics.
+TheFlightWall is an ESP32-S3 firmware for a 256×192 HUB75 LED wall (12× 64×64 panels arranged 4 wide × 3 tall, single chain at 1/32 scan) that displays live flight information. It pulls a normalized fleet snapshot from a Cloudflare Worker (the "aggregator" at `workers/flightwall-aggregator/`, which in turn pulls adsb.lol and joins route data), resolves airline/aircraft display names via the FlightWall CDN, and renders flight cards on the HUB75 canvas. A captive-portal web UI handles configuration, display mode selection, OTA updates, and diagnostics.
 
-**NOTE — legacy:** earlier versions of the firmware called OpenSky and FlightAware AeroAPI directly. That path has been fully removed; there is no rollback. Any reference to OpenSky / AeroAPI / `os_client_id` / `aeroapi_key` in old docs or comments is stale.
+**NOTE — legacy:**
+- Earlier versions of the firmware used WS2812B addressable strips via FastLED + FastLED_NeoMatrix (epic hw-1 migrated to HUB75; the old `display_pin`/`tiles_x`/`tiles_y`/`tile_pixels` NVS keys were retired on 2026-04-22/23). Any reference to FastLED, WS2812, NeoMatrix, data-pin setup, or tile configuration in old docs or comments is stale.
+- Earlier versions called OpenSky and FlightAware AeroAPI directly. That path was fully removed when the Cloudflare aggregator shipped; `os_client_id` / `aeroapi_key` references are stale.
 
 ## Build & Flash Commands
 
@@ -42,7 +44,7 @@ Then `pio run -t uploadfs` to flash the updated assets.
 
 **Hexagonal (Ports & Adapters)** with **dual-core FreeRTOS**:
 
-- **Core 0** — Display rendering. Runs `FastLED.show()`, mode render loops, layout engine. Must never block on network I/O.
+- **Core 0** — Display rendering. Runs `MatrixPanel_I2S_DMA::flipDMABuffer()` (HUB75 LCD_CAM double-buffer flip), mode render loops, layout engine. Must never block on network I/O.
 - **Core 1** — WiFi, HTTP server (ESPAsyncWebServer), API fetches, OTA downloads, config writes.
 - **Synchronization** — `std::atomic` flags for cross-core signals (config changed, NTP synced, flight count). FreeRTOS queues for flight data producer-consumer. No mutexes between cores.
 
@@ -52,7 +54,7 @@ Then `pio run -t uploadfs` to flash the updated assets.
 |-----------|------|
 | `src/main.cpp` | Entry point, FreeRTOS task setup, mode table registration |
 | `core/` | Business logic: ConfigManager, ModeOrchestrator, ModeRegistry, OTAUpdater, SystemStatus |
-| `adapters/` | External integrations: WebPortal, WiFiManager, NeoMatrixDisplay, API fetchers |
+| `adapters/` | External integrations: WebPortal, WiFiManager, HUB75MatrixDisplay, HUB75PinMap, API fetchers |
 | `interfaces/` | Abstract base classes: DisplayMode, BaseDisplay, BaseFlightFetcher |
 | `modes/` | DisplayMode implementations: ClassicCardMode, LiveFlightCardMode, ClockMode, DeparturesBoardMode |
 | `models/` | Data structs: StateVector, FlightInfo, AirportInfo |
@@ -72,7 +74,7 @@ Adding a new mode requires: a `DisplayMode` subclass in `modes/`, a factory func
 
 `ConfigManager` wraps ESP32 NVS (namespace `"flightwall"`). Only ConfigManager.cpp includes compile-time config headers. Other components use category struct getters (`getDisplay()`, `getHardware()`, `getNetwork()`, etc.) which return thread-safe copies.
 
-Reboot-required NVS keys: `wifi_ssid`, `wifi_password`, `agg_url`, `agg_token`, `display_pin`, `tiles_x`, `tiles_y`, `tile_pixels`.
+Reboot-required NVS keys: `wifi_ssid`, `wifi_password`, `agg_url`, `agg_token`. (The legacy `display_pin`/`tiles_x`/`tiles_y`/`tile_pixels` keys were retired in hw-1.3 — the HUB75 wall is fixed at 256×192 and its pin map lives in `adapters/HUB75PinMap.h`.)
 
 ### REST API Pattern
 
@@ -110,9 +112,11 @@ python3 tests/smoke/test_web_portal_smoke.py --base-url http://flightwall.local
 
 ## Critical Constraints
 
-- **Heap**: ESP32 has ~160KB usable. Modes require a 30KB heap margin before switching. OTA download requires 80KB free. Prefer static allocation over dynamic.
-- **Binary size**: Must fit in 1.5MB OTA partition. Currently ~81% used.
+- **Heap**: ESP32-S3 has ~160KB usable internal SRAM (PSRAM disabled per the td-7 Wi-Fi-driver incompatibility with OPI PSRAM on the Lonely Binary N16R8). Modes require a 30KB heap margin before switching. OTA download requires 80KB free. Prefer static allocation over dynamic.
+- **HUB75 framebuffer**: a 256×192 double-buffered 16bpp frame is ~196KB, which exceeds internal SRAM. The mrfaptastic `MatrixPanel_I2S_DMA` library auto-reduces color depth (typically to 5-6 bpc) to fit the framebuffer and maintain ≥60Hz refresh. Expected behaviour — do not set `FORCE_COLOR_DEPTH`.
+- **Binary size**: esp32s3_n16r8 targets a 3MB OTA partition (uses ~1.16MB, 38.7%). The classic esp32dev env targets 1.5MB (uses ~1.23MB, 81%). `check_size.py` enforces both at build time.
 - **NVS keys**: 15-character limit. Many are abbreviated (e.g., `agg_url`/`agg_token` for the Cloudflare aggregator Worker, `sched_dim_start` for the night-mode schedule).
+- **C++ standard**: project builds with `gnu++17` (required by the HUB75 library's `VirtualMatrixPanel_T` `if constexpr` usage). Set via `build_unflags = -std=gnu++11` + `build_flags = -std=gnu++17` in `platformio.ini`.
 - **ArduinoJson v7**: Use `JsonDocument` (not deprecated `StaticJsonDocument`/`DynamicJsonDocument`). Use filter documents for large payloads.
 - **Web JS**: ES5 syntax only (no arrow functions, no `let`/`const`, no template literals). `FW.get()`, `FW.post()`, `FW.del()` return promises with `{ status, body }`. `FW.showToast(msg, severity)` for notifications.
 

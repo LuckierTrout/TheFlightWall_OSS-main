@@ -6,7 +6,7 @@ This file contains project-specific guidance for AI coding agents. The reader is
 
 ## Project Overview
 
-TheFlightWall is an ESP32-based embedded firmware project that drives a 160×32 pixel WS2812B LED matrix (20× 16×16 panels in a 10×2 arrangement) to display live flight information. It pulls a normalized fleet snapshot from a **Cloudflare Worker** (the "aggregator" at `workers/flightwall-aggregator/`, which polls adsb.lol and joins route metadata), enriches display names via the FlightWall CDN, and renders flight cards / custom layouts / clock / departures boards on the LED wall.
+TheFlightWall is an ESP32-S3 embedded firmware project that drives a 256×192 pixel HUB75 LED matrix (12× 64×64 panels arranged 4 wide × 3 tall, single DMA chain at 1/32 scan) to display live flight information. It pulls a normalized fleet snapshot from a **Cloudflare Worker** (the "aggregator" at `workers/flightwall-aggregator/`, which polls adsb.lol and joins route metadata), enriches display names via the FlightWall CDN, and renders flight cards / custom layouts / clock / departures boards on the LED wall.
 
 **Legacy note:** earlier firmware called OpenSky Network and FlightAware AeroAPI directly. That path was removed 2026-04-20; no rollback. Any reference to OpenSky, AeroAPI, `os_client_id`, or `aeroapi_key` in stale docs is wrong.
 
@@ -25,12 +25,11 @@ The project follows a **Hexagonal (Ports & Adapters)** architecture: abstract in
 
 | Category | Technology | Version / Notes |
 |----------|-----------|-----------------|
-| Language | C++ | C++11 (Arduino framework dialect) |
-| Platform | ESP32 | espressif32 (PlatformIO) |
+| Language | C++ | C++17 (gnu++17 — required by HUB75 library's `if constexpr`) |
+| Platform | ESP32-S3 | espressif32 (PlatformIO); primary target is Lonely Binary N16R8 |
 | Build System | PlatformIO | `platformio.ini` in `firmware/` |
-| LED Control | FastLED | ^3.6.0 |
 | Graphics | Adafruit GFX Library | ^1.11.9 |
-| Matrix Abstraction | FastLED NeoMatrix | ^1.2 |
+| HUB75 Driver | mrcodetastic/esp32-hub75-matrixpanel-dma | ^3.0.11 (LCD_CAM DMA on S3) |
 | JSON Parsing | ArduinoJson | ^7.4.2 |
 | Web Server | ESPAsyncWebServer | ^3.6.0 |
 | Networking | WiFi + HTTPClient | Built-in ESP32 Arduino core |
@@ -168,7 +167,7 @@ Hexagonal (Ports & Adapters):
 |-----------|---------|
 | `firmware/src/` | `main.cpp` — entry point, FreeRTOS task creation, startup sequence |
 | `firmware/core/` | `FlightDataFetcher`, `ConfigManager`, `ModeRegistry`, `ModeOrchestrator`, `LayoutEngine`, `LayoutStore`, `LogoManager`, `OTAUpdater`, `SystemStatus`, `WidgetRegistry` |
-| `firmware/adapters/` | `AggregatorFetcher`, `FlightWallFetcher`, `NeoMatrixDisplay`, `WiFiManager`, `WebPortal` |
+| `firmware/adapters/` | `AggregatorFetcher`, `FlightWallFetcher`, `HUB75MatrixDisplay`, `HUB75PinMap`, `WiFiManager`, `WebPortal` |
 | `firmware/interfaces/` | `BaseDisplay`, `BaseFlightFetcher`, `BaseStateVectorFetcher`, `DisplayMode` |
 | `firmware/models/` | `StateVector`, `FlightInfo`, `AirportInfo` |
 | `firmware/modes/` | `ClassicCardMode`, `LiveFlightCardMode`, `ClockMode`, `DeparturesBoardMode`, `CustomLayoutMode` |
@@ -182,7 +181,7 @@ Hexagonal (Ports & Adapters):
 2. `AggregatorFetcher.fetchStateVectors()` → `GET https://<worker>.workers.dev/fleet` with `Authorization: Bearer <agg_token>` → parse + geo-filter + populate an in-memory enrichment map keyed by callsign
 3. For each callsign: `AggregatorFetcher.fetchFlightInfo()` reads the in-memory map (no HTTPS) + `FlightWallFetcher` resolves airline/aircraft ICAO codes to display names via the CDN
 4. Enriched flights pushed via FreeRTOS queue to display task on Core 0
-5. `ModeRegistry::tick()` → active `DisplayMode` renders via `NeoMatrixDisplay`
+5. `ModeRegistry::tick()` → active `DisplayMode` renders via `HUB75MatrixDisplay` (owns a `MatrixPanel_I2S_DMA` + `VirtualMatrixPanel_T<CHAIN_TOP_LEFT_DOWN>` that presents a single 256×192 `Adafruit_GFX` canvas)
 
 ---
 
