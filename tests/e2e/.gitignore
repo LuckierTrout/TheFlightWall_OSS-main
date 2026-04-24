@@ -1,0 +1,4 @@
+# Playwright transient outputs — regenerated on every run. Snapshots are
+# checked in under tests/*-snapshots/ and are NOT covered by these patterns.
+playwright-report/
+test-results/
