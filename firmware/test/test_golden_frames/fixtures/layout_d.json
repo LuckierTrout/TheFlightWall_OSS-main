@@ -1,0 +1,44 @@
+{
+  "id": "gf_d",
+  "name": "Golden D - LE-2 Catalog",
+  "v": 1,
+  "canvas": {"w": 160, "h": 32},
+  "bg": "#000000",
+  "widgets": [
+    {
+      "id": "d1",
+      "type": "flight_field",
+      "x": 0, "y": 0, "w": 80, "h": 8,
+      "color": "#FFFFFF",
+      "content": "aircraft_short"
+    },
+    {
+      "id": "d2",
+      "type": "flight_field",
+      "x": 0, "y": 8, "w": 80, "h": 8,
+      "color": "#FFFFFF",
+      "content": "aircraft_full"
+    },
+    {
+      "id": "d3",
+      "type": "flight_field",
+      "x": 0, "y": 16, "w": 40, "h": 8,
+      "color": "#00FF00",
+      "content": "origin_iata"
+    },
+    {
+      "id": "d4",
+      "type": "flight_field",
+      "x": 40, "y": 16, "w": 40, "h": 8,
+      "color": "#00FF00",
+      "content": "destination_iata"
+    },
+    {
+      "id": "d5",
+      "type": "metric",
+      "x": 80, "y": 0, "w": 64, "h": 8,
+      "color": "#FFFF00",
+      "content": "speed_mph"
+    }
+  ]
+}

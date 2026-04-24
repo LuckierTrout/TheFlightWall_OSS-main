@@ -202,6 +202,92 @@ class FlightWallSmokeTests(unittest.TestCase):
         for key in ("matrix", "logo_zone", "flight_zone", "telemetry_zone", "hardware"):
             self.assertIn(key, data)
 
+    # ── LE-2.7 Preview-renderer contract tests ────────────────────────────
+
+    def test_get_widgets_types_contract(self) -> None:
+        """LE-2.7: /api/widgets/types must advertise the full LE-2 catalog.
+
+        The editor field-picker and layout save-whitelist read this endpoint.
+        If the catalog drifts (missing aircraft_short or speed_mph, etc.),
+        the editor silently drops the field from the dropdown while the
+        backend still accepts it — exactly the "works in preview, breaks on
+        device" class of bug LE-2.7 gates.
+        """
+        payload = self.assert_json_object(self.client.request("GET", "/api/widgets/types"))
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, list)
+
+        by_type = {entry.get("type"): entry for entry in data if isinstance(entry, dict)}
+        for required_type in ("text", "clock", "logo", "flight_field", "metric"):
+            self.assertIn(required_type, by_type, f"missing widget type: {required_type}")
+
+        def field_options(entry: dict, key: str) -> list:
+            for field in entry.get("fields", []):
+                if field.get("key") == key:
+                    return field.get("options") or []
+            return []
+
+        # FlightField content options must cover the 10-entry LE-2 catalog.
+        ff_options = set(field_options(by_type["flight_field"], "content"))
+        for expected in (
+            "callsign", "airline", "aircraft_type",
+            "aircraft_short", "aircraft_full",
+            "origin_icao", "origin_iata",
+            "destination_icao", "destination_iata",
+            "flight_number",
+        ):
+            self.assertIn(expected, ff_options,
+                          f"flight_field.content missing option: {expected}")
+
+        # Metric content options must include every LE-2 catalog entry.
+        m_options = set(field_options(by_type["metric"], "content"))
+        for expected in (
+            "altitude_ft", "speed_kts", "speed_mph",
+            "heading_deg", "vertical_rate_fpm",
+            "distance_nm", "bearing_deg",
+        ):
+            self.assertIn(expected, m_options,
+                          f"metric.content missing option: {expected}")
+
+    def test_get_flights_current_contract(self) -> None:
+        """LE-2.7: /api/flights/current envelope must match what preview.js reads.
+
+        Adding a field to FlightInfo without wiring it into this response
+        means the layout preview silently shows "--" for that field. Asserts
+        the envelope shape and — when the fleet isn't empty — the presence of
+        every key the browser-side renderer consumes (including the LE-2
+        additions origin_iata / destination_iata / aircraft_display_name_full).
+        """
+        payload = self.assert_json_object(self.client.request("GET", "/api/flights/current"))
+        self.assertTrue(payload.get("ok"))
+        data = payload.get("data")
+        self.assertIsInstance(data, dict)
+        self.assertIn("flights", data)
+        self.assertIsInstance(data["flights"], list)
+
+        # Only field-presence-check a populated row. Empty fleet (device just
+        # booted, no flights in range yet) is a legitimate state — skip the
+        # row-level assertions rather than failing.
+        if not data["flights"]:
+            self.skipTest("no live flights to sample — run when fleet non-empty")
+        row = data["flights"][0]
+        self.assertIsInstance(row, dict)
+        for key in (
+            "ident", "ident_icao", "ident_iata",
+            "operator_code", "operator_icao", "operator_iata",
+            "origin_icao", "origin_iata",
+            "destination_icao", "destination_iata",
+            "aircraft_code",
+            "airline_display_name_full",
+            "aircraft_display_name_short",
+            "aircraft_display_name_full",
+            "altitude_kft", "speed_mph",
+            "track_deg", "vertical_rate_fps",
+            "distance_km", "bearing_deg",
+        ):
+            self.assertIn(key, row, f"/api/flights/current row missing: {key}")
+
     def test_get_wifi_scan_contract(self) -> None:
         payload = self.assert_json_object(self.client.request("GET", "/api/wifi/scan"))
         self.assertTrue(payload.get("ok"))

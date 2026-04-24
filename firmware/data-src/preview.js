@@ -462,7 +462,9 @@
           || '';
     },
     origin_icao: function (f) { return f.origin_icao || ''; },
-    destination_icao: function (f) { return f.destination_icao || ''; }
+    origin_iata: function (f) { return f.origin_iata || ''; },
+    destination_icao: function (f) { return f.destination_icao || ''; },
+    destination_iata: function (f) { return f.destination_iata || ''; }
   };
 
   function resolveFlightField(id, flight) {

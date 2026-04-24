@@ -471,6 +471,104 @@ async function handleApiRoute(
     return;
   }
 
+  // GET /api/widgets/types (LE-1.4, LE-2.1-2.2) — editor field-picker source.
+  // Minimal shape for the preview-regression spec; real firmware returns a
+  // richer catalog with sibling font/size/align options per widget type.
+  if (pathname === '/api/widgets/types' && method === 'GET') {
+    sendJson(res, {
+      ok: true,
+      data: [
+        {
+          type: 'text',
+          label: 'Text',
+          fields: [{ key: 'content', kind: 'string', default: '' }],
+        },
+        {
+          type: 'clock',
+          label: 'Clock',
+          fields: [
+            { key: 'content', kind: 'enum', default: '24h', options: ['24h', '12h'] },
+          ],
+        },
+        {
+          type: 'logo',
+          label: 'Logo',
+          fields: [{ key: 'content', kind: 'string', default: '' }],
+        },
+        {
+          type: 'flight_field',
+          label: 'Flight Field',
+          fields: [
+            {
+              key: 'content',
+              kind: 'enum',
+              default: 'callsign',
+              options: [
+                'callsign', 'airline', 'aircraft_type',
+                'aircraft_short', 'aircraft_full',
+                'origin_icao', 'origin_iata',
+                'destination_icao', 'destination_iata',
+                'flight_number',
+              ],
+            },
+          ],
+        },
+        {
+          type: 'metric',
+          label: 'Metric',
+          fields: [
+            {
+              key: 'content',
+              kind: 'enum',
+              default: 'altitude_ft',
+              options: [
+                'altitude_ft', 'speed_kts', 'speed_mph',
+                'heading_deg', 'vertical_rate_fpm',
+                'distance_nm', 'bearing_deg',
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    return;
+  }
+
+  // GET /api/flights/current (LE-2.4) — snapshot of enriched flights.
+  // Returns a small canned fleet sufficient for the preview-regression harness.
+  if (pathname === '/api/flights/current' && method === 'GET') {
+    sendJson(res, {
+      ok: true,
+      data: {
+        flights: [
+          {
+            ident: 'UAL123',
+            ident_icao: 'UAL123',
+            ident_iata: 'UA123',
+            operator_code: 'UAL',
+            operator_icao: 'UAL',
+            operator_iata: 'UA',
+            origin_icao: 'KSFO',
+            origin_iata: 'SFO',
+            destination_icao: 'KLAX',
+            destination_iata: 'LAX',
+            aircraft_code: 'B738',
+            airline_display_name_full: 'United Airlines',
+            aircraft_display_name_short: '737-800',
+            aircraft_display_name_full: 'Boeing 737-800',
+            altitude_kft: 34.0,
+            speed_mph: 487.0,
+            track_deg: 247.0,
+            vertical_rate_fps: -12.5,
+            distance_km: 18.2,
+            bearing_deg: 213.0,
+          },
+        ],
+      },
+    });
+    return;
+  }
+
   // 404 for unknown API routes
   sendError(res, 'Not found', 'NOT_FOUND', 404);
 }

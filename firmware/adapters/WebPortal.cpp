@@ -1080,7 +1080,9 @@ void WebPortal::_handleGetCurrentFlights(AsyncWebServerRequest* request) {
         row["operator_icao"] = f.operator_icao;
         row["operator_iata"] = f.operator_iata;
         row["origin_icao"] = f.origin.code_icao;
+        row["origin_iata"] = f.origin.code_iata;
         row["destination_icao"] = f.destination.code_icao;
+        row["destination_iata"] = f.destination.code_iata;
         row["aircraft_code"] = f.aircraft_code;
         row["airline_display_name_full"] = f.airline_display_name_full;
         row["aircraft_display_name_short"] = f.aircraft_display_name_short;

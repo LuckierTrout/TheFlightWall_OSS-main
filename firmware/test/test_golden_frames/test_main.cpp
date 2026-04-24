@@ -96,6 +96,20 @@ static const char kFixtureC[] =
     "{\"id\":\"c24\",\"type\":\"text\",\"x\":140,\"y\":0,\"w\":20,\"h\":8,\"color\":\"#888888\",\"content\":\"h\"}"
     "]}";
 
+// Fixture D (LE-2.7): exercises every catalog entry added in LE-2 —
+// aircraft_short, aircraft_full, origin_iata, destination_iata, and the
+// speed_mph metric. Must stay in lockstep with fixtures/layout_d.json.
+static const char kFixtureD[] =
+    "{\"id\":\"gf_d\",\"name\":\"Golden D - LE-2 Catalog\",\"v\":1,"
+    "\"canvas\":{\"w\":160,\"h\":32},\"bg\":\"#000000\","
+    "\"widgets\":["
+    "{\"id\":\"d1\",\"type\":\"flight_field\",\"x\":0,\"y\":0,\"w\":80,\"h\":8,\"color\":\"#FFFFFF\",\"content\":\"aircraft_short\"},"
+    "{\"id\":\"d2\",\"type\":\"flight_field\",\"x\":0,\"y\":8,\"w\":80,\"h\":8,\"color\":\"#FFFFFF\",\"content\":\"aircraft_full\"},"
+    "{\"id\":\"d3\",\"type\":\"flight_field\",\"x\":0,\"y\":16,\"w\":40,\"h\":8,\"color\":\"#00FF00\",\"content\":\"origin_iata\"},"
+    "{\"id\":\"d4\",\"type\":\"flight_field\",\"x\":40,\"y\":16,\"w\":40,\"h\":8,\"color\":\"#00FF00\",\"content\":\"destination_iata\"},"
+    "{\"id\":\"d5\",\"type\":\"metric\",\"x\":80,\"y\":0,\"w\":64,\"h\":8,\"color\":\"#FFFF00\",\"content\":\"speed_mph\"}"
+    "]}";
+
 // -----------------------------------------------------------------------
 // Test helpers
 // -----------------------------------------------------------------------
@@ -118,10 +132,13 @@ static FlightInfo makeKnownFlight() {
     f.ident_iata                  = "UA123";
     f.operator_icao               = "UAL";
     f.origin.code_icao            = "KSFO";
+    f.origin.code_iata            = "SFO";
     f.destination.code_icao       = "KLAX";
+    f.destination.code_iata       = "LAX";
     f.aircraft_code               = "B738";
     f.airline_display_name_full   = "United Airlines";
-    f.aircraft_display_name_short = "737";
+    f.aircraft_display_name_short = "737-800";
+    f.aircraft_display_name_full  = "Boeing 737-800";
     f.altitude_kft                = 34.0;
     f.speed_mph                   = 487.0;
     f.track_deg                   = 247.0;
@@ -303,6 +320,105 @@ void test_golden_c_heap_floor() {
 }
 
 // -----------------------------------------------------------------------
+// Fixture D (LE-2.7): LE-2 catalog coverage
+// -----------------------------------------------------------------------
+
+void test_golden_d_parse_and_widget_count() {
+    cleanLayouts();
+    LayoutStore::init();
+    CustomLayoutMode mode;
+    TEST_ASSERT_TRUE(loadFixture(mode, kFixtureD, "gf_d"));
+    TEST_ASSERT_EQUAL_UINT(5, (unsigned)mode.testWidgetCount());
+    TEST_ASSERT_FALSE(mode.testInvalid());
+}
+
+void test_golden_d_render_with_flight_does_not_crash() {
+    cleanLayouts();
+    LayoutStore::init();
+    CustomLayoutMode mode;
+    TEST_ASSERT_TRUE(loadFixture(mode, kFixtureD, "gf_d"));
+    FlightInfo flight = makeKnownFlight();
+    RenderContext ctx = makeCtx();
+    ctx.currentFlight = &flight;
+    std::vector<FlightInfo> flights;
+    flights.push_back(flight);
+    mode.render(ctx, flights);
+    TEST_PASS();
+}
+
+// Catalog-presence assertions for every LE-2 FlightField entry. A missing
+// key here would indicate the catalog in FlightFieldWidget.cpp has drifted
+// from the story AC; the editor UI and the save-time whitelist depend on
+// this set being stable.
+void test_golden_d_flight_field_catalog_includes_le2_entries() {
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("aircraft_short"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("aircraft_full"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("origin_iata"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("destination_iata"));
+
+    // Sanity: the five legacy entries that le-2 didn't touch remain.
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("callsign"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("airline"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("aircraft_type"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("origin_icao"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("destination_icao"));
+    TEST_ASSERT_TRUE(FlightFieldWidgetCatalog::isKnownFieldId("flight_number"));
+
+    // Unknown key must fail closed.
+    TEST_ASSERT_FALSE(FlightFieldWidgetCatalog::isKnownFieldId("not_a_real_field"));
+}
+
+void test_golden_d_metric_catalog_includes_speed_mph() {
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("speed_mph"));
+
+    // Sanity: the six legacy metric entries remain.
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("altitude_ft"));
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("speed_kts"));
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("heading_deg"));
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("vertical_rate_fpm"));
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("distance_nm"));
+    TEST_ASSERT_TRUE(MetricWidgetCatalog::isKnownFieldId("bearing_deg"));
+
+    TEST_ASSERT_FALSE(MetricWidgetCatalog::isKnownFieldId("not_a_real_metric"));
+}
+
+// Integration-level resolver smoke — LE-2 FlightField keys against the
+// known flight. Following the LE-1.9 philosophy: render path accepting
+// the key (returning true) is the structural assertion. Deeper pixel
+// assertions are handled by the Playwright preview-regression spec.
+void test_golden_d_flight_field_resolves_le2_keys() {
+    FlightInfo f = makeKnownFlight();
+    const char* le2Keys[] = {
+        "aircraft_short", "aircraft_full", "origin_iata", "destination_iata"
+    };
+    for (const char* key : le2Keys) {
+        WidgetSpec spec{};
+        spec.type  = WidgetType::FlightField;
+        spec.x = 0; spec.y = 0; spec.w = 80; spec.h = 8;
+        spec.color = 0xFFFF;
+        strncpy(spec.id, "d_le2", sizeof(spec.id) - 1);
+        strncpy(spec.content, key, sizeof(spec.content) - 1);
+        RenderContext ctx = makeCtx();
+        ctx.currentFlight = &f;
+        TEST_ASSERT_TRUE_MESSAGE(renderFlightField(spec, ctx),
+            "renderFlightField must accept every LE-2 catalog key");
+    }
+}
+
+void test_golden_d_metric_resolves_speed_mph() {
+    FlightInfo f = makeKnownFlight();
+    WidgetSpec spec{};
+    spec.type  = WidgetType::Metric;
+    spec.x = 80; spec.y = 0; spec.w = 64; spec.h = 8;
+    spec.color = 0xFFFF;
+    strncpy(spec.id, "d5", sizeof(spec.id) - 1);
+    strncpy(spec.content, "speed_mph", sizeof(spec.content) - 1);
+    RenderContext ctx = makeCtx();
+    ctx.currentFlight = &f;
+    TEST_ASSERT_TRUE(renderMetric(spec, ctx));
+}
+
+// -----------------------------------------------------------------------
 // Unity driver
 // -----------------------------------------------------------------------
 
@@ -328,6 +444,13 @@ void setup() {
     RUN_TEST(test_golden_c_parse_and_widget_count);
     RUN_TEST(test_golden_c_render_does_not_crash);
     RUN_TEST(test_golden_c_heap_floor);
+
+    RUN_TEST(test_golden_d_parse_and_widget_count);
+    RUN_TEST(test_golden_d_render_with_flight_does_not_crash);
+    RUN_TEST(test_golden_d_flight_field_catalog_includes_le2_entries);
+    RUN_TEST(test_golden_d_metric_catalog_includes_speed_mph);
+    RUN_TEST(test_golden_d_flight_field_resolves_le2_keys);
+    RUN_TEST(test_golden_d_metric_resolves_speed_mph);
 
     cleanLayouts();
     UNITY_END();
