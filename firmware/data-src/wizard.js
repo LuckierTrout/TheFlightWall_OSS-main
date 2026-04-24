@@ -105,7 +105,9 @@ function getTimezoneConfig() {
   var TOTAL_STEPS = 6;
   var currentStep = 1;
 
-  // In-memory wizard state using exact firmware config key names
+  // In-memory wizard state using exact firmware config key names.
+  // Post hw-1.4: tiles_x/tiles_y/tile_pixels/display_pin retired — the
+  // HW-1 HUB75 wall is fixed at 256x192 (12x 64x64, 4 wide x 3 tall).
   var state = {
     wifi_ssid: '',
     wifi_password: '',
@@ -115,24 +117,23 @@ function getTimezoneConfig() {
     center_lon: '',
     radius_km: '',
     timezone: '',
-    tiles_x: '',
-    tiles_y: '',
-    tile_pixels: '',
-    display_pin: '',
     origin_corner: '0',
     scan_dir: '0',
     zigzag: '0'
   };
 
-  // Valid GPIO pins for display_pin (matches ConfigManager validation)
-  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
+  // Fixed hardware constants mirrored from config/HardwareConfiguration.h.
+  // Used by renderPositionCanvas() to draw the panel grid preview.
+  var TILES_X = 4;
+  var TILES_Y = 3;
+  var CANVAS_WIDTH = 256;
+  var CANVAS_HEIGHT = 192;
 
-  // Keys that map to wizard form fields (16 keys)
+  // Keys that map to wizard form fields
   var WIZARD_KEYS = [
     'wifi_ssid', 'wifi_password',
     'agg_url', 'agg_token',
     'center_lat', 'center_lon', 'radius_km', 'timezone',
-    'tiles_x', 'tiles_y', 'tile_pixels', 'display_pin',
     'origin_corner', 'scan_dir', 'zigzag'
   ];
 
@@ -189,16 +190,11 @@ function getTimezoneConfig() {
     if (!POSIX_TO_IANA[TZ_MAP[iana]]) POSIX_TO_IANA[TZ_MAP[iana]] = iana;
   });
 
-  // DOM references — Step 4
-  var tilesX = document.getElementById('tiles-x');
-  var tilesY = document.getElementById('tiles-y');
-  var tilePixels = document.getElementById('tile-pixels');
-  var displayPin = document.getElementById('display-pin');
+  // DOM references — Step 4 (post hw-1.4: tile/pin inputs removed)
   var originCorner = document.getElementById('origin-corner');
   var scanDir = document.getElementById('scan-dir');
   var zigzagSel = document.getElementById('zigzag');
   var hwErr = document.getElementById('hw-err');
-  var resolutionText = document.getElementById('resolution-text');
 
   // DOM references — Step 5
   var reviewSections = document.getElementById('review-sections');
@@ -219,10 +215,8 @@ function getTimezoneConfig() {
       if (!state.center_lat && d.center_lat !== undefined) state.center_lat = String(d.center_lat);
       if (!state.center_lon && d.center_lon !== undefined) state.center_lon = String(d.center_lon);
       if (!state.radius_km && d.radius_km !== undefined) state.radius_km = String(d.radius_km);
-      if (!state.tiles_x && d.tiles_x !== undefined) state.tiles_x = String(d.tiles_x);
-      if (!state.tiles_y && d.tiles_y !== undefined) state.tiles_y = String(d.tiles_y);
-      if (!state.tile_pixels && d.tile_pixels !== undefined) state.tile_pixels = String(d.tile_pixels);
-      if (!state.display_pin && d.display_pin !== undefined) state.display_pin = String(d.display_pin);
+      // tiles_x/tiles_y/tile_pixels/display_pin retired in hw-1.3; the firmware no
+      // longer returns them from /api/settings so there's nothing to hydrate.
       if (d.origin_corner !== undefined) state.origin_corner = String(d.origin_corner);
       if (d.scan_dir !== undefined) state.scan_dir = String(d.scan_dir);
       if (d.zigzag !== undefined) state.zigzag = String(d.zigzag);
@@ -389,17 +383,9 @@ function getTimezoneConfig() {
     geoStatus.className = 'geo-status' + (isError ? ' geo-error' : ' geo-ok');
   }
 
-  // --- Hardware resolution text (Step 4) ---
-  function updateResolution() {
-    var tx = parseStrictPositiveInt(tilesX.value.trim());
-    var ty = parseStrictPositiveInt(tilesY.value.trim());
-    var tp = parseStrictPositiveInt(tilePixels.value.trim());
-    if (tx !== null && ty !== null && tp !== null) {
-      resolutionText.textContent = 'Your display: ' + (tx * tp) + ' x ' + (ty * tp) + ' pixels';
-    } else {
-      resolutionText.textContent = '';
-    }
-  }
+  // updateResolution() retired in hw-1.4 — canvas is fixed at 256x192 and
+  // the static summary paragraph in wizard.html step 4 replaces the dynamic
+  // "Your display: X x Y pixels" text.
 
   // --- Review (Step 5) ---
   function buildReview() {
@@ -419,10 +405,9 @@ function getTimezoneConfig() {
         { label: 'Radius', value: state.radius_km + ' km' },
         { label: 'Timezone', value: state.timezone || 'UTC' }
       ]},
-      { title: 'Hardware', step: 4, items: [
-        { label: 'Display', value: state.tiles_x + ' x ' + state.tiles_y + ' tiles (' + (parseInt(state.tiles_x,10)*parseInt(state.tile_pixels,10)) + ' x ' + (parseInt(state.tiles_y,10)*parseInt(state.tile_pixels,10)) + ' px)' },
-        { label: 'Pixels per tile', value: state.tile_pixels },
-        { label: 'Data pin', value: 'GPIO ' + state.display_pin },
+      { title: 'Display', step: 4, items: [
+        { label: 'Resolution', value: CANVAS_WIDTH + ' x ' + CANVAS_HEIGHT + ' px' },
+        { label: 'Panels', value: '12 x 64x64 (' + TILES_X + ' wide x ' + TILES_Y + ' tall)' },
         { label: 'Origin', value: ['Top-Left','Top-Right','Bottom-Left','Bottom-Right'][parseInt(state.origin_corner,10)] || 'Top-Left' },
         { label: 'Scan', value: parseInt(state.scan_dir,10) === 1 ? 'Columns' : 'Rows' },
         { label: 'Zigzag', value: parseInt(state.zigzag,10) === 1 ? 'Yes' : 'No' }
@@ -503,16 +488,11 @@ function getTimezoneConfig() {
       clearInputErrors([centerLat, centerLon, radiusKm]);
     }
     if (n === 4) {
-      tilesX.value = state.tiles_x;
-      tilesY.value = state.tiles_y;
-      tilePixels.value = state.tile_pixels;
-      displayPin.value = state.display_pin;
+      // Tile/pin inputs retired in hw-1.4; canvas is fixed at 256x192.
       originCorner.value = state.origin_corner || '0';
       scanDir.value = state.scan_dir || '0';
       zigzagSel.value = state.zigzag || '0';
       hwErr.style.display = 'none';
-      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
-      updateResolution();
     }
     if (n === 5) {
       buildReview();
@@ -535,10 +515,6 @@ function getTimezoneConfig() {
       state.radius_km = radiusKm.value.trim();
       state.timezone = wizardTimezone.value;
     } else if (currentStep === 4) {
-      state.tiles_x = tilesX.value.trim();
-      state.tiles_y = tilesY.value.trim();
-      state.tile_pixels = tilePixels.value.trim();
-      state.display_pin = displayPin.value.trim();
       state.origin_corner = originCorner.value;
       state.scan_dir = scanDir.value;
       state.zigzag = zigzagSel.value;
@@ -598,33 +574,10 @@ function getTimezoneConfig() {
       return true;
     }
     if (n === 4) {
-      state.tiles_x = tilesX.value.trim();
-      state.tiles_y = tilesY.value.trim();
-      state.tile_pixels = tilePixels.value.trim();
-      state.display_pin = displayPin.value.trim();
-      var errs4 = [];
-      var tx = parseStrictPositiveInt(state.tiles_x);
-      var ty = parseStrictPositiveInt(state.tiles_y);
-      var tp = parseStrictPositiveInt(state.tile_pixels);
-      // display_pin allows 0 (GPIO 0 is in VALID_PINS); use inclusive int parse
-      var dpStr = state.display_pin.trim();
-      var dp = (/^\d+$/.test(dpStr)) ? parseInt(dpStr, 10) : NaN;
-      if (tx === null) errs4.push(tilesX);
-      if (ty === null) errs4.push(tilesY);
-      if (tp === null) errs4.push(tilePixels);
-      if (isNaN(dp) || VALID_PINS.indexOf(dp) === -1) errs4.push(displayPin);
-      if (errs4.length > 0) {
-        var msg = 'All fields must be positive integers.';
-        if (errs4.length === 1 && errs4[0] === displayPin) {
-          msg = 'Invalid GPIO pin. Supported: ' + VALID_PINS.join(', ') + '.';
-        }
-        hwErr.textContent = msg;
-        hwErr.style.display = '';
-        markInputErrors(errs4);
-        return false;
-      }
+      // Post hw-1.4: hardware step is a read-only summary plus three selectors
+      // (origin_corner / scan_dir / zigzag) that have constrained values.
+      // Nothing to validate beyond existence of the elements.
       hwErr.style.display = 'none';
-      clearInputErrors([tilesX, tilesY, tilePixels, displayPin]);
       return true;
     }
     // Step 5: no field validation — review only
@@ -656,10 +609,6 @@ function getTimezoneConfig() {
       center_lon: Number(state.center_lon),
       radius_km: Number(state.radius_km),
       timezone: TZ_MAP[state.timezone] || 'UTC0',
-      tiles_x: Number(state.tiles_x),
-      tiles_y: Number(state.tiles_y),
-      tile_pixels: Number(state.tile_pixels),
-      display_pin: Number(state.display_pin),
       origin_corner: Number(state.origin_corner),
       scan_dir: Number(state.scan_dir),
       zigzag: Number(state.zigzag)
@@ -762,10 +711,7 @@ function getTimezoneConfig() {
   btnManual.addEventListener('click', enterManual);
   btnGeolocate.addEventListener('click', requestGeolocation);
 
-  // Live resolution update on Step 4 inputs
-  tilesX.addEventListener('input', updateResolution);
-  tilesY.addEventListener('input', updateResolution);
-  tilePixels.addEventListener('input', updateResolution);
+  // Live resolution listeners retired in hw-1.4 — canvas is fixed at 256x192.
 
   // --- Step 6: Test Your Wall ---
 
@@ -809,8 +755,9 @@ function getTimezoneConfig() {
     if (!wizardCanvas || !wizardCanvas.getContext) return;
     var ctx = wizardCanvas.getContext('2d');
 
-    var tx = parseInt(state.tiles_x, 10) || 1;
-    var ty = parseInt(state.tiles_y, 10) || 1;
+    // Post hw-1.4: canvas is fixed at 4 wide x 3 tall of 64x64 panels (256x192).
+    var tx = TILES_X;
+    var ty = TILES_Y;
     var totalTiles = tx * ty;
 
     // Size canvas to fit container; cap height to prevent extreme aspect ratios

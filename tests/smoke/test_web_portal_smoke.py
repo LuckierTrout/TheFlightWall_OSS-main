@@ -175,7 +175,10 @@ class FlightWallSmokeTests(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         data = payload.get("data")
         self.assertIsInstance(data, dict)
-        for key in ("brightness", "fetch_interval", "display_cycle", "tiles_x", "tiles_y", "tile_pixels"):
+        # Post hw-1.3: tiles_x/tiles_y/tile_pixels/display_pin retired from
+        # /api/settings — they're no longer configurable (HW-1 HUB75 wall is
+        # fixed at 256x192). /api/layout still exposes them as derived values.
+        for key in ("brightness", "fetch_interval", "display_cycle"):
             self.assertIn(key, data)
 
     def test_get_status_contract(self) -> None:

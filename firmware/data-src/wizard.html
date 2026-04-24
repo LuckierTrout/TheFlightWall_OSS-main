@@ -73,17 +73,10 @@
 
     <!-- Step 4: Hardware -->
     <section id="step-4" class="step">
-      <h2>Hardware</h2>
-      <p class="step-desc">Configure your LED matrix dimensions.</p>
+      <h2>Display</h2>
+      <p class="step-desc">Your FlightWall hardware is fixed: 12 HUB75 panels driven by a single ESP32-S3. No pin or tile configuration is required.</p>
+      <p class="hw-summary"><strong>256 &times; 192 pixels</strong><br>12 &times; 64&times;64 HUB75 panels arranged 4 wide &times; 3 tall, single chain, 1/32 scan.</p>
       <div class="form-fields">
-        <label for="tiles-x">Tiles Wide</label>
-        <input type="text" id="tiles-x" inputmode="numeric" autocomplete="off" placeholder="10">
-        <label for="tiles-y">Tiles High</label>
-        <input type="text" id="tiles-y" inputmode="numeric" autocomplete="off" placeholder="2">
-        <label for="tile-pixels">Pixels per Tile</label>
-        <input type="text" id="tile-pixels" inputmode="numeric" autocomplete="off" placeholder="16">
-        <label for="display-pin">Data Pin (GPIO)</label>
-        <input type="text" id="display-pin" inputmode="numeric" autocomplete="off" placeholder="25">
         <label for="origin-corner">Origin Corner</label>
         <select id="origin-corner" class="cal-select">
           <option value="0">Top-Left</option>
@@ -103,7 +96,6 @@
         </select>
         <p id="hw-err" class="field-error" style="display:none"></p>
       </div>
-      <p id="resolution-text" class="resolution-text"></p>
     </section>
 
     <!-- Step 5: Review -->

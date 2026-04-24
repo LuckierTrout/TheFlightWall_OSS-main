@@ -204,10 +204,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   var dScanResults = document.getElementById('d-scan-results');
 
   // --- Hardware card DOM ---
-  var dTilesX = document.getElementById('d-tiles-x');
-  var dTilesY = document.getElementById('d-tiles-y');
-  var dTilePixels = document.getElementById('d-tile-pixels');
-  var dDisplayPin = document.getElementById('d-display-pin');
+  // Tile/pin DOM refs retired in hw-1.4 — canvas is fixed at 256x192.
   var dOriginCorner = document.getElementById('d-origin-corner');
   var dScanDir = document.getElementById('d-scan-dir');
   var dZigzag = document.getElementById('d-zigzag');
@@ -297,17 +294,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       payload.agg_token = dAggToken.value.trim();
     }
     if (dirtySections.hardware) {
-      var tilesX = parseUint8Field(dTilesX, 'Tiles X', false);
-      if (tilesX === null) return null;
-      var tilesY = parseUint8Field(dTilesY, 'Tiles Y', false);
-      if (tilesY === null) return null;
-      var tilePixels = parseUint8Field(dTilePixels, 'Pixels per tile', false);
-      if (tilePixels === null) return null;
-      var dp = parseUint8Field(dDisplayPin, 'Display data pin', true);
-      if (dp === null || VALID_PINS.indexOf(dp) === -1) {
-        FW.showToast('Invalid GPIO pin. Supported: ' + VALID_PINS.join(', '), 'error');
-        return null;
-      }
+      // Tile/pin inputs retired in hw-1.4 — canvas is fixed at 256x192.
       var originCorner = parseUint8Field(dOriginCorner, 'Origin corner', true);
       if (originCorner === null) return null;
       var scanDir = parseUint8Field(dScanDir, 'Scan direction', true);
@@ -316,10 +303,6 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
       if (zigzag === null) return null;
       var zonePadX = parseZonePadX(true);
       if (zonePadX === null) return null;
-      payload.tiles_x = tilesX;
-      payload.tiles_y = tilesY;
-      payload.tile_pixels = tilePixels;
-      payload.display_pin = dp;
       payload.origin_corner = originCorner;
       payload.scan_dir = scanDir;
       payload.zigzag = zigzag;
@@ -345,7 +328,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     return payload;
   }
 
-  var VALID_PINS = [0,2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
+  // VALID_PINS retired in hw-1.4 — HUB75 pin map is fixed in firmware (HUB75PinMap.h).
 
   var debounceTimer = null;
   var DEBOUNCE_MS = 400;
@@ -442,11 +425,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
         }
       }
 
-      // Hardware
-      if (d.tiles_x !== undefined) dTilesX.value = d.tiles_x;
-      if (d.tiles_y !== undefined) dTilesY.value = d.tiles_y;
-      if (d.tile_pixels !== undefined) dTilePixels.value = d.tile_pixels;
-      if (d.display_pin !== undefined) dDisplayPin.value = d.display_pin;
+      // Hardware — tile/pin fields retired in hw-1.3/1.4; canvas is fixed.
       if (d.origin_corner !== undefined) dOriginCorner.value = d.origin_corner;
       if (d.scan_dir !== undefined) dScanDir.value = d.scan_dir;
       if (d.zigzag !== undefined) dZigzag.value = d.zigzag;
@@ -729,17 +708,14 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
   }
 
   function parseHardwareDimensionsFromInputs() {
-    var tx = parseStrictInteger(dTilesX.value);
-    var ty = parseStrictInteger(dTilesY.value);
-    var tp = parseStrictInteger(dTilePixels.value);
-    if (tx === null || ty === null || tp === null) return null;
-    if (tx < 1 || ty < 1 || tp < 1 || tx > 255 || ty > 255 || tp > 255) return null;
+    // Post hw-1.4: canvas is fixed at 256x192 (12x 64x64, 4 wide x 3 tall).
+    // Mirror config/HardwareConfiguration.h constants.
     return {
-      tilesX: tx,
-      tilesY: ty,
-      tilePixels: tp,
-      matrixWidth: tx * tp,
-      matrixHeight: ty * tp
+      tilesX: 4,
+      tilesY: 3,
+      tilePixels: 64,
+      matrixWidth: 256,
+      matrixHeight: 192
     };
   }
 
@@ -1038,9 +1014,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     updatePreviewFromInputs();
   }
 
-  dTilesX.addEventListener('input', onHardwareInput);
-  dTilesY.addEventListener('input', onHardwareInput);
-  dTilePixels.addEventListener('input', onHardwareInput);
+  // Tile/pin input listeners retired in hw-1.4 — canvas is fixed.
   if (dZonePadX) dZonePadX.addEventListener('input', onHardwareInput);
   window.addEventListener('resize', function() {
     if (previewLastLayout) {
@@ -1139,7 +1113,7 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
 
   // --- Hardware: mark dirty on change ---
   function onHardwareDirty() { markSectionDirty('hardware'); }
-  dDisplayPin.addEventListener('input', onHardwareDirty);
+  // dDisplayPin listener retired in hw-1.4 — HUB75 pin map is firmware-fixed.
   dOriginCorner.addEventListener('change', onHardwareDirty);
   dScanDir.addEventListener('change', onHardwareDirty);
   dZigzag.addEventListener('change', onHardwareDirty);
@@ -4430,9 +4404,8 @@ function computeLayout(tilesX, tilesY, tilePixels, logoWidthPct, flightHeightPct
     if (!layout) return;
 
     suppressHardwareInputHandler = true;
-    dTilesX.value = layout.hardware.tilesX;
-    dTilesY.value = layout.hardware.tilesY;
-    dTilePixels.value = layout.hardware.tilePixels;
+    // Tile/pin fields retired in hw-1.4; only the downstream zone/layout
+    // knobs remain hydratable from /api/layout's hardware block.
     zoneLayout = layout.hardware.zoneLayout;
     if (dZoneLayout) dZoneLayout.value = layout.hardware.zoneLayout;
     if (dZonePadX) dZonePadX.value = layout.hardware.zonePadX;
